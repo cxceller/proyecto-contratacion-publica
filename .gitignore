@@ -1,0 +1,19 @@
+# Entorno virtual
+.venv/
+
+# Bytecode / cache de Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Base de datos SQLite local
+data/*.db
+data/*.sqlite3
+
+# Archivos de depuracion generados por scripts/scrape_portal.py
+debug_sin_tabla.html
+page_dump.html
+page_dump.png
+
+# Configuracion local de Claude Code (permisos especificos de esta maquina)
+.claude/settings.local.json

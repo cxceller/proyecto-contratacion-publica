@@ -1,0 +1,142 @@
+"""Tests de la API de contratacion publica (pytest + httpx TestClient)."""
+import sys
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src import database  # noqa: E402
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    """App con una base de datos SQLite temporal y aislada por test."""
+    db_file = tmp_path / "test_contrataciones.db"
+    monkeypatch.setattr(database, "DB_PATH", str(db_file))
+
+    from src.main import app
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture()
+def contratacion_payload():
+    return {
+        "codigo": "SIE-001-2026",
+        "entidad_contratante": "GAD Municipal de Quito",
+        "objeto_proceso": "Adquisicion de equipos informaticos",
+        "estado": "Adjudicada",
+        "provincia_canton": "Pichincha / Quito",
+        "presupuesto_referencial": 15000.50,
+        "fecha_publicacion": "2026-01-15",
+    }
+
+
+def crear_contratacion(client, payload):
+    response = client.post("/api/todos", json=payload)
+    assert response.status_code == 201
+    return response.json()
+
+
+class TestPost:
+    def test_crear_contratacion_valida(self, client, contratacion_payload):
+        creada = crear_contratacion(client, contratacion_payload)
+        assert creada["codigo"] == contratacion_payload["codigo"]
+        assert creada["estado"] == "Adjudicada"
+        assert "id" in creada
+
+    def test_crear_contratacion_invalida_devuelve_422(self, client):
+        response = client.post(
+            "/api/todos",
+            json={
+                "codigo": "",
+                "entidad_contratante": "",
+                "objeto_proceso": "obj",
+                "estado": "Adjudicada",
+            },
+        )
+        assert response.status_code == 422
+
+    def test_crear_contratacion_presupuesto_negativo_devuelve_422(
+        self, client, contratacion_payload
+    ):
+        contratacion_payload["presupuesto_referencial"] = -100
+        response = client.post("/api/todos", json=contratacion_payload)
+        assert response.status_code == 422
+
+
+class TestGetTodos:
+    def test_listar_contrataciones_vacio(self, client):
+        response = client.get("/api/todos")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_listar_contrataciones(self, client, contratacion_payload):
+        crear_contratacion(client, contratacion_payload)
+        response = client.get("/api/todos")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["codigo"] == contratacion_payload["codigo"]
+
+    def test_filtrar_por_status_prefijo(self, client, contratacion_payload):
+        contratacion_payload["estado"] = "Adjudicado - Contratado"
+        crear_contratacion(client, contratacion_payload)
+
+        response = client.get("/api/todos", params={"status": "Adjudicado -"})
+        assert response.status_code == 200
+        assert len(response.json()) == 1
+
+        response_sin_match = client.get("/api/todos", params={"status": "Desierta"})
+        assert response_sin_match.status_code == 200
+        assert response_sin_match.json() == []
+
+
+class TestGetById:
+    def test_obtener_contratacion_existente(self, client, contratacion_payload):
+        creada = crear_contratacion(client, contratacion_payload)
+        response = client.get(f"/api/todos/{creada['id']}")
+        assert response.status_code == 200
+        assert response.json()["id"] == creada["id"]
+
+    def test_obtener_contratacion_inexistente_devuelve_404(self, client):
+        response = client.get("/api/todos/9999")
+        assert response.status_code == 404
+        assert "no encontrado" in response.json()["detail"]
+
+
+class TestPatch:
+    def test_actualizar_estado(self, client, contratacion_payload):
+        creada = crear_contratacion(client, contratacion_payload)
+        response = client.patch(
+            f"/api/todos/{creada['id']}", json={"estado": "Finalizada"}
+        )
+        assert response.status_code == 200
+        assert response.json()["estado"] == "Finalizada"
+        assert response.json()["codigo"] == contratacion_payload["codigo"]
+
+    def test_actualizar_contratacion_inexistente_devuelve_404(self, client):
+        response = client.patch("/api/todos/9999", json={"estado": "Finalizada"})
+        assert response.status_code == 404
+
+    def test_actualizar_sin_campos_devuelve_400(self, client, contratacion_payload):
+        creada = crear_contratacion(client, contratacion_payload)
+        response = client.patch(f"/api/todos/{creada['id']}", json={})
+        assert response.status_code == 400
+
+
+class TestDelete:
+    def test_eliminar_contratacion_existente(self, client, contratacion_payload):
+        creada = crear_contratacion(client, contratacion_payload)
+        response = client.delete(f"/api/todos/{creada['id']}")
+        assert response.status_code == 204
+
+        response_get = client.get(f"/api/todos/{creada['id']}")
+        assert response_get.status_code == 404
+
+    def test_eliminar_contratacion_inexistente_devuelve_404(self, client):
+        response = client.delete("/api/todos/9999")
+        assert response.status_code == 404
