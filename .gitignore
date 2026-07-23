@@ -16,5 +16,8 @@ debug_rutas_red.txt
 page_dump.html
 page_dump.png
 
+# Capturas de pantalla por pagina generadas por scripts/scrape_portal.py
+capturas/
+
 # Configuracion local de Claude Code (permisos especificos de esta maquina)
 .claude/settings.local.json

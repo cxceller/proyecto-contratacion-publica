@@ -24,7 +24,9 @@ Flujo:
        los resultados, ej. "Procesos del 1 al 20 de 169": el script hace
        clic en "Siguiente" hasta la ultima pagina), incluyendo el enlace
        directo de cada proceso (el `href` del codigo, que `pd.read_html`
-       no preserva), y guarda todo en la base de datos.
+       no preserva), y guarda todo en la base de datos. Por cada pagina con
+       datos, guarda tambien una captura de pantalla completa en
+       `capturas/[palabra_clave]_[fecha]_pag_[numero].png`.
     5. Al terminar cierra el navegador e imprime cuantos procesos guardo.
        Si no encontro ninguna tabla reconocible, guarda el HTML de la
        pagina en un archivo de depuracion para poder revisarlo.
@@ -43,6 +45,7 @@ import re
 import sys
 import time
 import unicodedata
+from datetime import date
 from io import StringIO
 from pathlib import Path
 from urllib.parse import urljoin
@@ -63,6 +66,13 @@ ESPERA_POR_DEFECTO_S = 90  # tiempo maximo para completar el captcha y la busque
 MAX_PAGINAS = 50
 DEBUG_DUMP_PATH = Path(__file__).resolve().parent.parent / "debug_sin_tabla.html"
 DEBUG_ROUTE_LOG_PATH = Path(__file__).resolve().parent.parent / "debug_rutas_red.txt"
+CAPTURAS_DIR = Path(__file__).resolve().parent.parent / "capturas"
+
+MESES_ES = {
+    1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 5: "mayo", 6: "junio",
+    7: "julio", 8: "agosto", 9: "septiembre", 10: "octubre", 11: "noviembre",
+    12: "diciembre",
+}
 
 
 def _normalizar(texto: str) -> str:
@@ -294,6 +304,36 @@ def _intentar_siguiente_pagina(page: Page) -> bool:
     return False
 
 
+def _slug_palabra_clave(palabra_clave: str | None) -> str:
+    """Convierte la palabra clave en un slug seguro para nombre de archivo
+    (minusculas, sin acentos, solo alfanumericos y guion bajo). Si no hay
+    palabra clave, devuelve un valor de respaldo en vez de dejar el nombre
+    del archivo con un "None" literal."""
+    if not palabra_clave:
+        return "sin_palabra_clave"
+    sin_acentos = unicodedata.normalize("NFKD", palabra_clave)
+    sin_acentos = "".join(c for c in sin_acentos if not unicodedata.combining(c))
+    slug = re.sub(r"[^a-z0-9]+", "_", sin_acentos.lower()).strip("_")
+    return slug or "sin_palabra_clave"
+
+
+def _nombre_captura(palabra_clave: str | None, numero_pagina: int) -> str:
+    """Arma el nombre de archivo [palabra_clave]_[fecha]_pag_[numero].png,
+    ej. "repotenciacion_23-julio-2026_pag_1.png"."""
+    hoy = date.today()
+    fecha_texto = f"{hoy.day:02d}-{MESES_ES[hoy.month]}-{hoy.year}"
+    return f"{_slug_palabra_clave(palabra_clave)}_{fecha_texto}_pag_{numero_pagina}.png"
+
+
+def _capturar_pantalla_pagina(page: Page, palabra_clave: str | None, numero_pagina: int) -> Path:
+    """Guarda una captura de pantalla completa (full_page=True, sin cortes)
+    de la pagina de resultados actual, con nombre secuencial por pagina."""
+    CAPTURAS_DIR.mkdir(parents=True, exist_ok=True)
+    ruta = CAPTURAS_DIR / _nombre_captura(palabra_clave, numero_pagina)
+    page.screenshot(path=str(ruta), full_page=True)
+    return ruta
+
+
 def _procesar_busqueda(page: Page, palabra_clave: str | None = None) -> tuple[int, int, int]:
     """Extrae e importa todas las paginas de resultados disponibles tras la
     busqueda ya realizada por el usuario. Si se indica `palabra_clave`, se
@@ -328,7 +368,12 @@ def _procesar_busqueda(page: Page, palabra_clave: str | None = None) -> tuple[in
         importados_total += importados
         con_error_total += con_error
         paginas += 1
-        print(f"  Pagina {paginas}: {importados} importados, {con_error} con error.")
+
+        ruta_captura = _capturar_pantalla_pagina(page, palabra_clave, paginas)
+        print(
+            f"  Pagina {paginas}: {importados} importados, {con_error} con error. "
+            f"Captura: {ruta_captura}"
+        )
 
         if not _intentar_siguiente_pagina(page):
             break
