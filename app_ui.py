@@ -24,6 +24,8 @@ ESTADOS = [
     "Terminado U",
     "Adjudicado -",
     "Adjudicada",
+    "Suspendido",
+    "Por Adjudicar",
 ]
 
 COLUMNAS_TABLA = {
@@ -57,6 +59,8 @@ def color_por_estado(estado: str) -> str:
         return "#f9a825"  # ambar (en curso)
     if e.startswith("en recepci"):
         return "#00838f"  # teal (en curso)
+    if e.startswith("por adjudicar"):
+        return "#3949ab"  # indigo (pendiente de decision)
     return "#616161"  # gris (desconocido)
 
 
@@ -129,10 +133,15 @@ def render_contadores(registros_totales: list[dict]):
             for r in registros_totales
             if r.get("estado", "").strip().lower().startswith(estado_categoria.lower())
         )
+    # Estados que no calzan con ninguna categoria conocida (el portal tiene
+    # varios poco frecuentes, ej. "Convalidacion de Errores", "Publicar
+    # resultado"): se agrupan aqui para que el desglose siempre sume el Total.
+    conteos["Otros"] = total - sum(conteos.values())
 
+    etiquetas = ESTADOS + ["Otros"]
     cols = st.columns(4)
     cols[0].metric("Total", total)
-    for i, estado_categoria in enumerate(ESTADOS, start=1):
+    for i, estado_categoria in enumerate(etiquetas, start=1):
         cols[i % 4].metric(estado_categoria, conteos[estado_categoria])
 
 

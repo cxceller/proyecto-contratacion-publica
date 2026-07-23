@@ -12,6 +12,7 @@ data/*.sqlite3
 
 # Archivos de depuracion generados por scripts/scrape_portal.py
 debug_sin_tabla.html
+debug_rutas_red.txt
 page_dump.html
 page_dump.png
 

@@ -13,9 +13,10 @@ Flujo:
        entidad, etc.), LEES el codigo del CAPTCHA en la imagen, lo escribes
        en el campo junto a la imagen, y presionas el boton "Buscar" del
        propio sitio.
-    3. El script espera --espera segundos (1 minuto por defecto) para que
-       cargue la busqueda, y luego extrae TODAS las paginas de resultados
-       (el portal pagina los resultados, ej. "Procesos del 1 al 20 de 169":
+    3. El script espera (hasta --espera segundos como maximo, pero continua
+       en cuanto detecta resultados) a que aparezca contenido en la tabla
+       de resultados, y luego extrae TODAS las paginas disponibles (el
+       portal pagina los resultados, ej. "Procesos del 1 al 20 de 169":
        el script hace clic en "Siguiente" hasta la ultima pagina) guardando
        cada una en la base de datos.
     4. Al terminar cierra el navegador e imprime cuantos procesos guardo.
@@ -29,8 +30,7 @@ a ejecutar el script.
 Nota: el script hace una unica busqueda por ejecucion y no pregunta si
 quieres continuar, porque la terminal desde la que se lanza normalmente
 pierde la entrada estandar interactiva cuando el proceso tarda mas de
-~2 minutos (lo que ya ocurre solo con la espera por defecto), y cualquier
-pregunta por teclado fallaria con EOFError.
+~2 minutos, y cualquier pregunta por teclado fallaria con EOFError.
 """
 import argparse
 import re
@@ -41,7 +41,7 @@ from io import StringIO
 from pathlib import Path
 
 import pandas as pd
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Page, Route, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -51,9 +51,10 @@ URL_BUSQUEDA = (
     "https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/PC/"
     "buscarProceso.cpe?sg=1"
 )
-ESPERA_POR_DEFECTO_S = 60  # 1 minuto para completar el captcha y la busqueda
+ESPERA_POR_DEFECTO_S = 90  # tiempo maximo para completar el captcha y la busqueda
 MAX_PAGINAS = 50
 DEBUG_DUMP_PATH = Path(__file__).resolve().parent.parent / "debug_sin_tabla.html"
+DEBUG_ROUTE_LOG_PATH = Path(__file__).resolve().parent.parent / "debug_rutas_red.txt"
 
 
 def _normalizar(texto: str) -> str:
@@ -103,40 +104,50 @@ def _con_encabezado_valido(tabla: pd.DataFrame) -> pd.DataFrame | None:
     return None
 
 
-def _decodificar_html(datos: bytes) -> str:
-    """El portal de SERCOP declara charset=utf-8 pero algunas paginas (las
-    de resultados) en realidad no vienen en utf-8 valido; si se usa el DOM
-    ya decodificado por Chromium (`page.content()`) los caracteres invalidos
-    quedan sustituidos por `?` de forma irreversible. Por eso se decodifican
-    los bytes crudos de la respuesta HTTP aqui mismo, con un fallback a
-    windows-1252 cuando utf-8 estricto falla."""
+def _forzar_codificacion_windows1252(route: Route) -> None:
+    """El portal declara `charset=utf-8` en sus paginas HTML, pero los bytes
+    reales de la pagina de resultados no son utf-8 valido (son windows-1252
+    o equivalente). Si se deja que Chromium decodifique segun lo declarado,
+    los caracteres con tilde/ene quedan sustituidos por un caracter de
+    reemplazo de forma IRREVERSIBLE (la informacion original ya no se puede
+    recuperar despues). Por eso se intercepta cada respuesta (de cualquier
+    tipo, no solo "document"/"xhr"/"fetch": no hay certeza de como clasifica
+    Playwright la llamada que arma la tabla en este sitio) y se le indica al
+    navegador la codificacion real antes de que la parsee, sin tocar ni
+    perder ningun byte del contenido. Se registra cada intento en
+    DEBUG_ROUTE_LOG_PATH para poder diagnosticar si algo no se reescribe."""
+    request = route.request
+    entrada = f"{request.resource_type} {request.method} {request.url}"
+
     try:
-        return datos.decode("utf-8")
-    except UnicodeDecodeError:
-        return datos.decode("windows-1252", errors="replace")
-
-
-def _registrar_captura_html(page: Page) -> dict[str, bytes]:
-    """Registra un listener que guarda los bytes crudos del ultimo
-    documento HTML principal recibido en la pagina (busqueda inicial,
-    resultados, cada pagina de paginacion), para decodificarlos nosotros
-    mismos en vez de depender de `page.content()`."""
-    captura: dict[str, bytes] = {}
-
-    def _al_recibir_respuesta(response):
+        response = route.fetch()
+    except Exception as exc:
+        _registrar_linea_debug(f"{entrada} | FETCH_ERROR: {exc}")
         try:
-            if response.frame == page.main_frame and response.status == 200:
-                captura["bytes"] = response.body()
+            route.continue_()
         except Exception:
             pass
+        return
 
-    page.on("response", _al_recibir_respuesta)
-    return captura
+    content_type = response.headers.get("content-type", "")
+    entrada += f" | status={response.status} content-type={content_type!r}"
+
+    try:
+        if "text/html" in content_type.lower() or "text/plain" in content_type.lower():
+            headers = {**response.headers, "content-type": "text/html; charset=windows-1252"}
+            route.fulfill(response=response, headers=headers)
+            entrada += " | reescrito a windows-1252"
+        else:
+            route.fulfill(response=response)
+    except Exception as exc:
+        entrada += f" | FULFILL_ERROR: {exc}"
+
+    _registrar_linea_debug(entrada)
 
 
-def _html_actual(page: Page, captura: dict[str, bytes]) -> str:
-    datos = captura.get("bytes")
-    return _decodificar_html(datos) if datos else page.content()
+def _registrar_linea_debug(linea: str) -> None:
+    with open(DEBUG_ROUTE_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(linea + "\n")
 
 
 def _extraer_tabla_resultados(html: str) -> pd.DataFrame | None:
@@ -152,6 +163,29 @@ def _extraer_tabla_resultados(html: str) -> pd.DataFrame | None:
         if encontrada is not None:
             return encontrada
     return None
+
+
+def _esperar_resultados(page: Page, espera_s: int) -> None:
+    """Espera activamente (a diferencia de un `time.sleep` fijo) a que el
+    contenedor de resultados del portal (`div#divProcesos`) tenga contenido,
+    hasta un maximo de `espera_s` segundos. Como el portal arma la tabla de
+    resultados dinamicamente en el navegador (no hay una unica respuesta de
+    red reconocible como "la tabla"), esta es la forma confiable de saber
+    que la busqueda ya cargo, sin depender de adivinar cuanto tarda el
+    usuario en resolver el captcha y hacer clic en Buscar."""
+    try:
+        page.wait_for_function(
+            "() => {"
+            "  const el = document.getElementById('divProcesos');"
+            "  return !!el && el.textContent.trim().length > 0;"
+            "}",
+            timeout=espera_s * 1000,
+        )
+    except Exception:
+        print(
+            f"  No se detecto contenido en los resultados tras {espera_s} "
+            "segundos; se intentara extraer de todos modos."
+        )
 
 
 def _intentar_siguiente_pagina(page: Page) -> bool:
@@ -175,13 +209,13 @@ def _intentar_siguiente_pagina(page: Page) -> bool:
     return False
 
 
-def _procesar_busqueda(page: Page, captura: dict[str, bytes]) -> tuple[int, int, int]:
+def _procesar_busqueda(page: Page) -> tuple[int, int, int]:
     """Extrae e importa todas las paginas de resultados disponibles tras la
     busqueda ya realizada por el usuario. Devuelve
     (importados, con_error, paginas)."""
     importados_total, con_error_total, paginas = 0, 0, 0
     while paginas < MAX_PAGINAS:
-        html = _html_actual(page, captura)
+        html = page.content()
         tabla = _extraer_tabla_resultados(html)
         if tabla is None:
             if paginas == 0:
@@ -193,6 +227,13 @@ def _procesar_busqueda(page: Page, captura: dict[str, bytes]) -> tuple[int, int,
             break
 
         df = mapear_columnas(tabla)
+        if len(df) == 0:
+            # Algunas paginaciones del portal dejan el enlace "Siguiente"
+            # clickeable aun sin mas datos, mostrando una tabla vacia (solo
+            # encabezado). Sin este corte, el bucle seguiria "avanzando"
+            # sobre paginas vacias hasta MAX_PAGINAS.
+            break
+
         importados, con_error = importar_dataframe(df)
         importados_total += importados
         con_error_total += con_error
@@ -213,8 +254,9 @@ def main() -> None:
         type=int,
         default=ESPERA_POR_DEFECTO_S,
         help=(
-            "Segundos de espera para completar el CAPTCHA y la busqueda "
-            f"antes de extraer la tabla. Por defecto {ESPERA_POR_DEFECTO_S}."
+            "Segundos maximos a esperar a que aparezcan resultados (el "
+            "script continua antes si los detecta). "
+            f"Por defecto {ESPERA_POR_DEFECTO_S}."
         ),
     )
     args = parser.parse_args()
@@ -226,14 +268,15 @@ def main() -> None:
         "publicacion), LEE el codigo del CAPTCHA en la imagen, escribelo en "
         "el cuadro de texto de al lado y presiona el boton 'Buscar' del "
         "propio sitio.\n"
-        "Este script NO lee ni resuelve el captcha por ti; solo espera "
-        f"{args.espera} segundos y luego importa todas las paginas de resultados."
+        "Este script NO lee ni resuelve el captcha por ti; espera hasta "
+        f"{args.espera} segundos a que aparezcan resultados y luego importa "
+        "todas las paginas."
     )
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         page = browser.new_page()
-        captura = _registrar_captura_html(page)
+        page.route("**/*", _forzar_codificacion_windows1252)
         page.goto(URL_BUSQUEDA, timeout=60000)
 
         try:
@@ -241,10 +284,10 @@ def main() -> None:
         except Exception:
             pass
 
-        print(f"\nEsperando {args.espera} segundos para que completes la busqueda...")
-        time.sleep(args.espera)
+        print(f"\nEsperando hasta {args.espera} segundos a que completes la busqueda...")
+        _esperar_resultados(page, args.espera)
 
-        importados, con_error, paginas = _procesar_busqueda(page, captura)
+        importados, con_error, paginas = _procesar_busqueda(page)
 
         print(
             f"\nBusqueda completa: {importados} registro(s) insertado(s) en "
