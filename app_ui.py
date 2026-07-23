@@ -5,7 +5,6 @@ Consume la API FastAPI (src/main.py) via requests. Arranque:
     uvicorn src.main:app --port 8000
     streamlit run app_ui.py --server.port 8501
 """
-import html
 import os
 from datetime import date
 
@@ -99,6 +98,33 @@ def obtener_contrataciones(status=None, fecha_inicio=None, fecha_fin=None, palab
     return response.json()
 
 
+def render_metricas_resumen(registros: list[dict]):
+    """Tarjetas de resumen sobre los resultados actualmente filtrados. No
+    existe en el esquema un campo separado de "valor final adjudicado"
+    (solo `presupuesto_referencial`), asi que ese total se calcula como la
+    suma del presupuesto referencial de los procesos cuyo estado empieza
+    por "Adjudicad..." (ver `color_por_estado`/`ESTADOS`)."""
+    presupuesto_total = sum(r.get("presupuesto_referencial") or 0 for r in registros)
+    valor_adjudicado_total = sum(
+        r.get("presupuesto_referencial") or 0
+        for r in registros
+        if r.get("estado", "").strip().lower().startswith("adjudicad")
+    )
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Número de Procesos", len(registros))
+    col2.metric("Presupuesto Total", f"$ {presupuesto_total:,.2f}")
+    col3.metric(
+        "Valor Adjudicado Total",
+        f"$ {valor_adjudicado_total:,.2f}",
+        help=(
+            "Suma del Presupuesto Referencial de los procesos con estado "
+            "Adjudicada/Adjudicado. No hay un campo separado de valor final "
+            "adjudicado en los datos disponibles."
+        ),
+    )
+
+
 def render_tabla_con_color(registros: list[dict]):
     if not registros:
         st.info("No hay procesos de contratación para mostrar.")
@@ -108,51 +134,64 @@ def render_tabla_con_color(registros: list[dict]):
     columnas_presentes = [c for c in COLUMNAS_TABLA if c in df.columns]
     df_mostrar = df[columnas_presentes].rename(columns=COLUMNAS_TABLA)
 
-    # Se arma la tabla como HTML propio (en vez de st.dataframe) porque
-    # necesitamos que "Código" sea un hipervinculo clicable hacia una URL
-    # de otra columna con texto de display independiente (abrir en pestaña
-    # nueva); el componente nativo de Streamlit (column_config.LinkColumn)
-    # solo puede mostrar/derivar texto a partir de la propia URL de la celda.
-    columnas_visibles = [c for c in df_mostrar.columns if c != "URL"]
-    urls = df_mostrar["URL"] if "URL" in df_mostrar.columns else [None] * len(df_mostrar)
+    # El CSV conserva la URL como columna de texto propia, para referencia,
+    # aunque en la tabla interactiva el enlace queda embebido en "Código".
+    csv_bytes = df_mostrar.to_csv(index=False).encode("utf-8-sig")
 
-    encabezado_html = "".join(
-        f'<th style="padding:6px 10px; text-align:left; position:sticky; top:0; '
-        f'background:#f0f2f6;">{html.escape(col)}</th>'
-        for col in columnas_visibles
-    )
+    # "Código" se convierte en un enlace clicable (column_config.LinkColumn)
+    # hacia el detalle del proceso en el portal, mostrando el texto del
+    # codigo en vez de la URL: LinkColumn solo puede derivar el texto de la
+    # propia URL via una regex de captura, asi que se le agrega el codigo
+    # como fragmento (#codigo) al final de la URL real (los fragmentos no
+    # se envian al servidor, no afectan el enlace) y se extrae con esa
+    # regex. Si un proceso no tiene URL conocida, el enlace queda como un
+    # ancla local (#codigo) que no navega a ningun lado.
+    if "URL" in df_mostrar.columns:
+        base_url = df_mostrar["URL"].fillna("")
+    else:
+        base_url = pd.Series([""] * len(df_mostrar), index=df_mostrar.index)
+    df_mostrar["Código"] = base_url.astype(str) + "#" + df_mostrar["Código"].astype(str)
 
-    filas_html = []
-    for (_, fila), url in zip(df_mostrar.iterrows(), urls):
-        color = color_por_estado(fila.get("Estado del Proceso", ""))
-        celdas = []
-        for columna in columnas_visibles:
-            valor = fila[columna]
-            texto = "" if pd.isna(valor) else str(valor)
-            if columna == "Código" and url and pd.notna(url):
-                celda = (
-                    f'<td style="padding:6px 10px;">'
-                    f'<a href="{html.escape(str(url))}" target="_blank" '
-                    f'rel="noopener noreferrer" style="color:#ffffff; font-weight:600;">'
-                    f"{html.escape(texto)}</a></td>"
-                )
-            else:
-                celda = f'<td style="padding:6px 10px;">{html.escape(texto)}</td>'
-            celdas.append(celda)
-        filas_html.append(
-            f'<tr style="background-color:{color}; color:white;">' + "".join(celdas) + "</tr>"
+    if "Fecha de Publicación" in df_mostrar.columns:
+        df_mostrar["Fecha de Publicación"] = pd.to_datetime(
+            df_mostrar["Fecha de Publicación"], errors="coerce"
         )
 
-    tabla_html = (
-        '<div style="max-height:520px; overflow:auto; border:1px solid #e0e0e0;">'
-        '<table style="width:100%; border-collapse:collapse; font-size:0.9rem;">'
-        f"<thead><tr>{encabezado_html}</tr></thead>"
-        f"<tbody>{''.join(filas_html)}</tbody>"
-        "</table></div>"
-    )
-    st.markdown(tabla_html, unsafe_allow_html=True)
+    columnas_visibles = [c for c in df_mostrar.columns if c != "URL"]
+    df_visible = df_mostrar[columnas_visibles]
 
-    csv_bytes = df_mostrar.to_csv(index=False).encode("utf-8-sig")
+    estilo = df_visible.style.map(
+        lambda estado: (
+            f"background-color: {color_por_estado(estado)}; color: white; "
+            "border-radius: 999px; padding: 2px 10px; font-weight: 600; "
+            "text-align: center;"
+        ),
+        subset=["Estado del Proceso"],
+    )
+
+    column_config = {
+        "Código": st.column_config.LinkColumn(
+            "Código", pinned=True, display_text=r"#(.*)$", width="medium"
+        ),
+        "Objeto del Proceso": st.column_config.TextColumn(
+            "Objeto del Proceso", width="large"
+        ),
+        "Presupuesto Referencial (sin IVA)": st.column_config.NumberColumn(
+            "Presupuesto Referencial (sin IVA)", format="$ %.2f", width="medium"
+        ),
+        "Fecha de Publicación": st.column_config.DateColumn(
+            "Fecha de Publicación", format="YYYY-MM-DD"
+        ),
+    }
+
+    st.dataframe(
+        estilo,
+        column_config=column_config,
+        use_container_width=True,
+        hide_index=True,
+        height=520,
+    )
+
     st.download_button(
         label="⬇ Descargar tabla (CSV)",
         data=csv_bytes,
@@ -346,6 +385,7 @@ def main():
         if st.session_state.resultados is not None
         else registros_totales
     )
+    render_metricas_resumen(registros_mostrar)
     render_tabla_con_color(registros_mostrar)
 
 
