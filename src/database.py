@@ -13,6 +13,10 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _columnas_existentes(conn: sqlite3.Connection) -> set[str]:
+    return {row["name"] for row in conn.execute("PRAGMA table_info(contrataciones)").fetchall()}
+
+
 def init_db() -> None:
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = get_connection()
@@ -28,10 +32,16 @@ def init_db() -> None:
                 provincia_canton TEXT,
                 presupuesto_referencial REAL,
                 fecha_publicacion TEXT,
+                palabra_clave TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
         )
+        # Migracion para bases de datos creadas antes de que existiera esta
+        # columna: CREATE TABLE IF NOT EXISTS no la agrega a tablas ya
+        # existentes, asi que se agrega aparte si hace falta.
+        if "palabra_clave" not in _columnas_existentes(conn):
+            conn.execute("ALTER TABLE contrataciones ADD COLUMN palabra_clave TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -44,8 +54,9 @@ def insert_contratacion(data: dict[str, Any]) -> int:
             """
             INSERT INTO contrataciones
                 (codigo, entidad_contratante, objeto_proceso, estado,
-                 provincia_canton, presupuesto_referencial, fecha_publicacion)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 provincia_canton, presupuesto_referencial, fecha_publicacion,
+                 palabra_clave)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["codigo"],
@@ -55,6 +66,7 @@ def insert_contratacion(data: dict[str, Any]) -> int:
                 data.get("provincia_canton"),
                 data.get("presupuesto_referencial"),
                 data.get("fecha_publicacion"),
+                data.get("palabra_clave"),
             ),
         )
         conn.commit()
@@ -67,6 +79,7 @@ def get_all_contrataciones(
     status: str | None = None,
     fecha_inicio: str | None = None,
     fecha_fin: str | None = None,
+    palabra_clave: str | None = None,
 ) -> list[dict[str, Any]]:
     query = "SELECT * FROM contrataciones WHERE 1=1"
     params: list[Any] = []
@@ -83,6 +96,9 @@ def get_all_contrataciones(
     if fecha_fin:
         query += " AND fecha_publicacion <= ?"
         params.append(fecha_fin)
+    if palabra_clave:
+        query += " AND palabra_clave LIKE ?"
+        params.append(f"%{palabra_clave}%")
 
     query += " ORDER BY id DESC"
 
@@ -131,5 +147,15 @@ def delete_contratacion(contratacion_id: int) -> bool:
         )
         conn.commit()
         return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_all_contrataciones() -> int:
+    conn = get_connection()
+    try:
+        cursor = conn.execute("DELETE FROM contrataciones")
+        conn.commit()
+        return cursor.rowcount
     finally:
         conn.close()

@@ -128,9 +128,11 @@ def mapear_columnas(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, [c for c in df.columns if c is not None]]
 
 
-def importar_dataframe(df: pd.DataFrame) -> tuple[int, int]:
+def importar_dataframe(df: pd.DataFrame, palabra_clave: str | None = None) -> tuple[int, int]:
     """Valida e inserta en SQLite las filas de un DataFrame ya mapeado a
     los nombres de campo internos (codigo, entidad_contratante, ...).
+    Si se indica `palabra_clave`, se asigna a todas las filas importadas
+    (para registrar con que busqueda del portal se obtuvieron).
     Devuelve (registros_importados, registros_con_error)."""
     faltantes = {"codigo", "entidad_contratante", "objeto_proceso", "estado"} - set(df.columns)
     if faltantes:
@@ -161,6 +163,7 @@ def importar_dataframe(df: pd.DataFrame) -> tuple[int, int]:
                 if "fecha_publicacion" in df.columns
                 else None
             ),
+            "palabra_clave": palabra_clave,
         }
 
         try:
@@ -179,19 +182,25 @@ def importar_dataframe(df: pd.DataFrame) -> tuple[int, int]:
     return importados, con_error
 
 
-def importar(ruta: Path) -> None:
+def importar(ruta: Path, palabra_clave: str | None = None) -> None:
     df = mapear_columnas(cargar_archivo(ruta))
-    importados, con_error = importar_dataframe(df)
+    importados, con_error = importar_dataframe(df, palabra_clave=palabra_clave)
     print(f"\nImportacion completa: {importados} registro(s) insertado(s), {con_error} omitido(s).")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archivo", type=Path, help="Ruta al CSV/Excel exportado del portal")
+    parser.add_argument(
+        "--palabra-clave",
+        type=str,
+        default=None,
+        help="Palabra clave usada en la busqueda del portal, para registrarla en cada fila importada.",
+    )
     args = parser.parse_args()
 
     if not args.archivo.exists():
         print(f"ERROR: no existe el archivo {args.archivo}")
         sys.exit(1)
 
-    importar(args.archivo)
+    importar(args.archivo, palabra_clave=args.palabra_clave)

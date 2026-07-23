@@ -52,11 +52,12 @@ al arrancar si no existe.
 
 | Metodo | Ruta                         | Descripcion                                   |
 |--------|------------------------------|------------------------------------------------|
-| GET    | `/api/todos`                 | Lista procesos (filtros: `status`, `fecha_inicio`, `fecha_fin`) |
+| GET    | `/api/todos`                 | Lista procesos (filtros: `status`, `fecha_inicio`, `fecha_fin`, `palabra_clave`) |
 | GET    | `/api/todos/{id}`             | Obtiene un proceso por id                      |
 | POST   | `/api/todos`                  | Crea un proceso                                |
 | PATCH  | `/api/todos/{id}`             | Actualiza campos de un proceso                 |
 | DELETE | `/api/todos/{id}`             | Elimina un proceso                             |
+| DELETE | `/api/todos`                  | Elimina **todos** los procesos (vaciar la base de datos) |
 
 El filtro `status` compara por prefijo (no igualdad exacta), porque el
 portal de SERCOP a veces trunca el estado (ej. `"Adjudicado -"`, `"Terminado U"`).
@@ -76,8 +77,10 @@ usa la variable de entorno `API_URL`:
 API_URL=http://localhost:8010 .venv/Scripts/python.exe -m streamlit run app_ui.py --server.port 8501
 ```
 
-La interfaz permite buscar/filtrar por estado y rango de fechas, ver contadores
-por estado, crear un proceso nuevo, eliminar por id y descargar la tabla como CSV.
+La interfaz permite buscar/filtrar por estado, rango de fechas y palabra clave,
+ver contadores por estado, crear un proceso nuevo, eliminar por id, descargar
+la tabla como CSV y vaciar la base de datos por completo (en la barra lateral,
+con doble confirmacion para evitar borrados accidentales).
 
 ## Tests
 
@@ -100,7 +103,7 @@ Si ya hiciste la busqueda en el portal y exportaste el resultado:
 
 ```bash
 .venv/Scripts/python.exe scripts/import_csv.py ruta/al/archivo.csv
-.venv/Scripts/python.exe scripts/import_csv.py ruta/al/archivo.xlsx
+.venv/Scripts/python.exe scripts/import_csv.py ruta/al/archivo.xlsx [--palabra-clave TEXTO]
 ```
 
 ### 2. Scraping asistido (`scrape_portal.py`)
@@ -111,12 +114,18 @@ busqueda tu mismo; el script espera, extrae todas las paginas de resultados
 en la base de datos.
 
 ```bash
-.venv/Scripts/python.exe scripts/scrape_portal.py [--espera SEGUNDOS]
+.venv/Scripts/python.exe scripts/scrape_portal.py [--espera SEGUNDOS] [--palabra-clave TEXTO]
 ```
 
-- `--espera` (por defecto 60): segundos que espera el script antes de
-  intentar extraer la tabla, para darte tiempo de leer el CAPTCHA, llenar
-  los filtros y presionar "Buscar" en el propio sitio.
+- `--espera` (por defecto 90): segundos maximos que espera el script a que
+  aparezcan resultados (continua antes si los detecta), para darte tiempo
+  de leer el CAPTCHA, llenar los filtros y presionar "Buscar" en el propio
+  sitio.
+- `--palabra-clave` (opcional): la palabra clave con la que vas a buscar en
+  el portal (la misma que escribes en el campo "Palabras claves" del
+  sitio). Se guarda en la columna `palabra_clave` de todos los procesos
+  importados en esa ejecucion, para poder filtrar despues por con que
+  busqueda se obtuvo cada registro.
 - Cada ejecucion hace **una sola busqueda**. El portal solo permite un rango
   de fechas de 6 meses antes y 15 dias despues de la fecha de publicacion,
   asi que para cubrir varios periodos o palabras clave hay que ejecutar el

@@ -5,7 +5,7 @@ espera a que completes la busqueda manualmente y extrae TODAS las paginas
 de resultados hacia la base de datos SQLite local).
 
 Uso:
-    .venv/Scripts/python.exe scripts/scrape_portal.py [--espera SEGUNDOS]
+    .venv/Scripts/python.exe scripts/scrape_portal.py [--espera SEGUNDOS] [--palabra-clave TEXTO]
 
 Flujo:
     1. Se abre una ventana de Chromium en la pagina de busqueda del SERCOP.
@@ -209,9 +209,10 @@ def _intentar_siguiente_pagina(page: Page) -> bool:
     return False
 
 
-def _procesar_busqueda(page: Page) -> tuple[int, int, int]:
+def _procesar_busqueda(page: Page, palabra_clave: str | None = None) -> tuple[int, int, int]:
     """Extrae e importa todas las paginas de resultados disponibles tras la
-    busqueda ya realizada por el usuario. Devuelve
+    busqueda ya realizada por el usuario. Si se indica `palabra_clave`, se
+    asigna a todos los registros importados en esta ejecucion. Devuelve
     (importados, con_error, paginas)."""
     importados_total, con_error_total, paginas = 0, 0, 0
     while paginas < MAX_PAGINAS:
@@ -234,7 +235,7 @@ def _procesar_busqueda(page: Page) -> tuple[int, int, int]:
             # sobre paginas vacias hasta MAX_PAGINAS.
             break
 
-        importados, con_error = importar_dataframe(df)
+        importados, con_error = importar_dataframe(df, palabra_clave=palabra_clave)
         importados_total += importados
         con_error_total += con_error
         paginas += 1
@@ -259,6 +260,16 @@ def main() -> None:
             f"Por defecto {ESPERA_POR_DEFECTO_S}."
         ),
     )
+    parser.add_argument(
+        "--palabra-clave",
+        type=str,
+        default=None,
+        help=(
+            "Palabra clave con la que se va a buscar en el portal (la misma "
+            "que escribiras en el campo 'Palabras claves' del sitio). Se "
+            "guarda en todos los procesos importados en esta ejecucion."
+        ),
+    )
     args = parser.parse_args()
 
     print(f"Abriendo Chromium en: {URL_BUSQUEDA}")
@@ -272,6 +283,8 @@ def main() -> None:
         f"{args.espera} segundos a que aparezcan resultados y luego importa "
         "todas las paginas."
     )
+    if args.palabra_clave:
+        print(f"Se registrara la palabra clave {args.palabra_clave!r} en cada proceso importado.")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -287,7 +300,7 @@ def main() -> None:
         print(f"\nEsperando hasta {args.espera} segundos a que completes la busqueda...")
         _esperar_resultados(page, args.espera)
 
-        importados, con_error, paginas = _procesar_busqueda(page)
+        importados, con_error, paginas = _procesar_busqueda(page, palabra_clave=args.palabra_clave)
 
         print(
             f"\nBusqueda completa: {importados} registro(s) insertado(s) en "

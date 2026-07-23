@@ -36,6 +36,7 @@ COLUMNAS_TABLA = {
     "provincia_canton": "Provincia/Cantón",
     "presupuesto_referencial": "Presupuesto Referencial (sin IVA)",
     "fecha_publicacion": "Fecha de Publicación",
+    "palabra_clave": "Palabra Clave",
 }
 
 
@@ -76,7 +77,7 @@ def api_request(method: str, path: str, **kwargs):
     return response
 
 
-def obtener_contrataciones(status=None, fecha_inicio=None, fecha_fin=None):
+def obtener_contrataciones(status=None, fecha_inicio=None, fecha_fin=None, palabra_clave=None):
     params = {}
     if status:
         params["status"] = status
@@ -84,6 +85,8 @@ def obtener_contrataciones(status=None, fecha_inicio=None, fecha_fin=None):
         params["fecha_inicio"] = fecha_inicio.isoformat()
     if fecha_fin:
         params["fecha_fin"] = fecha_fin.isoformat()
+    if palabra_clave:
+        params["palabra_clave"] = palabra_clave
 
     response = api_request("GET", "/api/todos", params=params)
     if response is None:
@@ -163,6 +166,8 @@ def render_formulario_creacion():
         )
         fecha_publicacion = col6.date_input("Fecha de Publicación", value=None)
 
+        palabra_clave = st.text_input("Palabra Clave", placeholder="Ej: luminarias")
+
         enviado = st.form_submit_button("Crear proceso de contratación")
 
         if enviado:
@@ -176,6 +181,7 @@ def render_formulario_creacion():
                 "fecha_publicacion": (
                     fecha_publicacion.isoformat() if fecha_publicacion else None
                 ),
+                "palabra_clave": palabra_clave or None,
             }
             response = api_request("POST", "/api/todos", json=payload)
             if response is None:
@@ -210,6 +216,48 @@ def render_gestion_registro():
                 st.error(f"Error al eliminar: {response.status_code}")
 
 
+def render_vaciar_base_datos():
+    st.divider()
+    st.subheader("⚠️ Zona de peligro")
+
+    if "confirmar_vaciado" not in st.session_state:
+        st.session_state.confirmar_vaciado = False
+
+    if not st.session_state.confirmar_vaciado:
+        if st.button("⚠️ Vaciar Base de Datos", use_container_width=True):
+            st.session_state.confirmar_vaciado = True
+            st.rerun()
+        return
+
+    st.warning(
+        "Esto eliminará **todos** los procesos de contratación de la base "
+        "de datos de forma permanente. Esta acción no se puede deshacer."
+    )
+    confirmado = st.checkbox("Sí, entiendo y quiero vaciar la base de datos por completo")
+
+    col_confirmar, col_cancelar = st.columns(2)
+    if col_confirmar.button(
+        "Confirmar vaciado",
+        type="primary",
+        disabled=not confirmado,
+        use_container_width=True,
+    ):
+        response = api_request("DELETE", "/api/todos")
+        if response is None:
+            return
+        if response.status_code == 204:
+            st.session_state.confirmar_vaciado = False
+            st.session_state.resultados = None
+            st.session_state.mensaje_vaciado = "✅ Base de datos vaciada por completo."
+            st.rerun()
+        else:
+            st.error(f"Error al vaciar la base de datos: {response.status_code}")
+
+    if col_cancelar.button("Cancelar", use_container_width=True):
+        st.session_state.confirmar_vaciado = False
+        st.rerun()
+
+
 def main():
     st.set_page_config(page_title="Contratación Pública Ecuador", layout="wide")
     st.title("Procesos de Contratación Pública")
@@ -217,11 +265,16 @@ def main():
     if "resultados" not in st.session_state:
         st.session_state.resultados = None
 
+    if st.session_state.get("mensaje_vaciado"):
+        st.success(st.session_state.mensaje_vaciado)
+        st.session_state.mensaje_vaciado = None
+
     with st.sidebar:
         st.header("Búsqueda")
         estado_filtro = st.selectbox("Estado del Proceso", ["(Todos)"] + ESTADOS)
         fecha_inicio = st.date_input("Fecha inicio", value=None)
         fecha_fin = st.date_input("Fecha fin", value=None)
+        palabra_clave_filtro = st.text_input("Palabra clave", placeholder="Ej: luminarias")
 
         col_buscar, col_limpiar = st.columns(2)
         buscar = col_buscar.button("🔍 Buscar", use_container_width=True)
@@ -232,10 +285,13 @@ def main():
                 status=None if estado_filtro == "(Todos)" else estado_filtro,
                 fecha_inicio=fecha_inicio,
                 fecha_fin=fecha_fin,
+                palabra_clave=palabra_clave_filtro or None,
             )
         if limpiar:
             st.session_state.resultados = None
             st.rerun()
+
+        render_vaciar_base_datos()
 
     registros_totales = obtener_contrataciones()
     render_contadores(registros_totales)

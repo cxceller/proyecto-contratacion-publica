@@ -22,11 +22,13 @@ def listar_contrataciones(
     status: str | None = None,
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
+    palabra_clave: str | None = None,
 ):
     rows = database.get_all_contrataciones(
         status=status,
         fecha_inicio=fecha_inicio.isoformat() if fecha_inicio else None,
         fecha_fin=fecha_fin.isoformat() if fecha_fin else None,
+        palabra_clave=palabra_clave,
     )
     return [ContratacionOut(**row) for row in rows]
 
@@ -86,4 +88,10 @@ def eliminar_contratacion(contratacion_id: int):
             detail=f"Proceso de contratacion con id {contratacion_id} no encontrado",
         )
     database.delete_contratacion(contratacion_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.delete("/api/todos", status_code=status.HTTP_204_NO_CONTENT)
+def eliminar_todas_las_contrataciones():
+    database.delete_all_contrataciones()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

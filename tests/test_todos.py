@@ -46,7 +46,13 @@ class TestPost:
         creada = crear_contratacion(client, contratacion_payload)
         assert creada["codigo"] == contratacion_payload["codigo"]
         assert creada["estado"] == "Adjudicada"
+        assert creada["palabra_clave"] is None
         assert "id" in creada
+
+    def test_crear_contratacion_con_palabra_clave(self, client, contratacion_payload):
+        contratacion_payload["palabra_clave"] = "luminarias"
+        creada = crear_contratacion(client, contratacion_payload)
+        assert creada["palabra_clave"] == "luminarias"
 
     def test_crear_contratacion_invalida_devuelve_422(self, client):
         response = client.post(
@@ -91,6 +97,23 @@ class TestGetTodos:
         assert len(response.json()) == 1
 
         response_sin_match = client.get("/api/todos", params={"status": "Desierta"})
+        assert response_sin_match.status_code == 200
+        assert response_sin_match.json() == []
+
+    def test_filtrar_por_palabra_clave(self, client, contratacion_payload):
+        contratacion_payload["palabra_clave"] = "luminarias"
+        crear_contratacion(client, contratacion_payload)
+
+        otro_payload = {**contratacion_payload, "codigo": "SIE-002-2026", "palabra_clave": "camaras"}
+        crear_contratacion(client, otro_payload)
+
+        response = client.get("/api/todos", params={"palabra_clave": "lumin"})
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["palabra_clave"] == "luminarias"
+
+        response_sin_match = client.get("/api/todos", params={"palabra_clave": "inexistente"})
         assert response_sin_match.status_code == 200
         assert response_sin_match.json() == []
 
@@ -140,3 +163,19 @@ class TestDelete:
     def test_eliminar_contratacion_inexistente_devuelve_404(self, client):
         response = client.delete("/api/todos/9999")
         assert response.status_code == 404
+
+
+class TestDeleteTodas:
+    def test_vaciar_base_de_datos(self, client, contratacion_payload):
+        crear_contratacion(client, contratacion_payload)
+        crear_contratacion(client, {**contratacion_payload, "codigo": "SIE-002-2026"})
+
+        response = client.delete("/api/todos")
+        assert response.status_code == 204
+
+        response_lista = client.get("/api/todos")
+        assert response_lista.json() == []
+
+    def test_vaciar_base_de_datos_vacia_no_falla(self, client):
+        response = client.delete("/api/todos")
+        assert response.status_code == 204
