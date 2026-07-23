@@ -33,15 +33,19 @@ def init_db() -> None:
                 presupuesto_referencial REAL,
                 fecha_publicacion TEXT,
                 palabra_clave TEXT,
+                url TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
         )
-        # Migracion para bases de datos creadas antes de que existiera esta
-        # columna: CREATE TABLE IF NOT EXISTS no la agrega a tablas ya
-        # existentes, asi que se agrega aparte si hace falta.
-        if "palabra_clave" not in _columnas_existentes(conn):
+        # Migracion para bases de datos creadas antes de que existieran estas
+        # columnas: CREATE TABLE IF NOT EXISTS no las agrega a tablas ya
+        # existentes, asi que se agregan aparte si hace falta.
+        columnas = _columnas_existentes(conn)
+        if "palabra_clave" not in columnas:
             conn.execute("ALTER TABLE contrataciones ADD COLUMN palabra_clave TEXT")
+        if "url" not in columnas:
+            conn.execute("ALTER TABLE contrataciones ADD COLUMN url TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -55,8 +59,8 @@ def insert_contratacion(data: dict[str, Any]) -> int:
             INSERT INTO contrataciones
                 (codigo, entidad_contratante, objeto_proceso, estado,
                  provincia_canton, presupuesto_referencial, fecha_publicacion,
-                 palabra_clave)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 palabra_clave, url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["codigo"],
@@ -67,6 +71,7 @@ def insert_contratacion(data: dict[str, Any]) -> int:
                 data.get("presupuesto_referencial"),
                 data.get("fecha_publicacion"),
                 data.get("palabra_clave"),
+                data.get("url"),
             ),
         )
         conn.commit()

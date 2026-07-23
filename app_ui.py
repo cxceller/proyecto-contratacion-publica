@@ -5,6 +5,7 @@ Consume la API FastAPI (src/main.py) via requests. Arranque:
     uvicorn src.main:app --port 8000
     streamlit run app_ui.py --server.port 8501
 """
+import html
 import os
 from datetime import date
 
@@ -37,6 +38,7 @@ COLUMNAS_TABLA = {
     "presupuesto_referencial": "Presupuesto Referencial (sin IVA)",
     "fecha_publicacion": "Fecha de Publicación",
     "palabra_clave": "Palabra Clave",
+    "url": "URL",
 }
 
 
@@ -106,15 +108,49 @@ def render_tabla_con_color(registros: list[dict]):
     columnas_presentes = [c for c in COLUMNAS_TABLA if c in df.columns]
     df_mostrar = df[columnas_presentes].rename(columns=COLUMNAS_TABLA)
 
-    def estilo_fila(fila):
-        color = color_por_estado(fila["Estado del Proceso"])
-        return [f"background-color: {color}; color: white"] * len(fila)
+    # Se arma la tabla como HTML propio (en vez de st.dataframe) porque
+    # necesitamos que "Código" sea un hipervinculo clicable hacia una URL
+    # de otra columna con texto de display independiente (abrir en pestaña
+    # nueva); el componente nativo de Streamlit (column_config.LinkColumn)
+    # solo puede mostrar/derivar texto a partir de la propia URL de la celda.
+    columnas_visibles = [c for c in df_mostrar.columns if c != "URL"]
+    urls = df_mostrar["URL"] if "URL" in df_mostrar.columns else [None] * len(df_mostrar)
 
-    st.dataframe(
-        df_mostrar.style.apply(estilo_fila, axis=1),
-        use_container_width=True,
-        hide_index=True,
+    encabezado_html = "".join(
+        f'<th style="padding:6px 10px; text-align:left; position:sticky; top:0; '
+        f'background:#f0f2f6;">{html.escape(col)}</th>'
+        for col in columnas_visibles
     )
+
+    filas_html = []
+    for (_, fila), url in zip(df_mostrar.iterrows(), urls):
+        color = color_por_estado(fila.get("Estado del Proceso", ""))
+        celdas = []
+        for columna in columnas_visibles:
+            valor = fila[columna]
+            texto = "" if pd.isna(valor) else str(valor)
+            if columna == "Código" and url and pd.notna(url):
+                celda = (
+                    f'<td style="padding:6px 10px;">'
+                    f'<a href="{html.escape(str(url))}" target="_blank" '
+                    f'rel="noopener noreferrer" style="color:#ffffff; font-weight:600;">'
+                    f"{html.escape(texto)}</a></td>"
+                )
+            else:
+                celda = f'<td style="padding:6px 10px;">{html.escape(texto)}</td>'
+            celdas.append(celda)
+        filas_html.append(
+            f'<tr style="background-color:{color}; color:white;">' + "".join(celdas) + "</tr>"
+        )
+
+    tabla_html = (
+        '<div style="max-height:520px; overflow:auto; border:1px solid #e0e0e0;">'
+        '<table style="width:100%; border-collapse:collapse; font-size:0.9rem;">'
+        f"<thead><tr>{encabezado_html}</tr></thead>"
+        f"<tbody>{''.join(filas_html)}</tbody>"
+        "</table></div>"
+    )
+    st.markdown(tabla_html, unsafe_allow_html=True)
 
     csv_bytes = df_mostrar.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
@@ -166,7 +202,9 @@ def render_formulario_creacion():
         )
         fecha_publicacion = col6.date_input("Fecha de Publicación", value=None)
 
-        palabra_clave = st.text_input("Palabra Clave", placeholder="Ej: luminarias")
+        col7, col8 = st.columns(2)
+        palabra_clave = col7.text_input("Palabra Clave", placeholder="Ej: luminarias")
+        url = col8.text_input("URL", placeholder="Enlace al detalle en el portal")
 
         enviado = st.form_submit_button("Crear proceso de contratación")
 
@@ -182,6 +220,7 @@ def render_formulario_creacion():
                     fecha_publicacion.isoformat() if fecha_publicacion else None
                 ),
                 "palabra_clave": palabra_clave or None,
+                "url": url or None,
             }
             response = api_request("POST", "/api/todos", json=payload)
             if response is None:

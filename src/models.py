@@ -14,9 +14,17 @@ class ContratacionBase(BaseModel):
     palabra_clave: str | None = Field(
         None, max_length=200, description="Palabra clave usada en la busqueda del portal"
     )
+    url: str | None = Field(
+        None, max_length=500, description="Enlace directo al detalle del proceso en el portal"
+    )
 
     @field_validator(
-        "entidad_contratante", "objeto_proceso", "estado", "provincia_canton", "palabra_clave"
+        "entidad_contratante",
+        "objeto_proceso",
+        "estado",
+        "provincia_canton",
+        "palabra_clave",
+        "url",
     )
     @classmethod
     def strip_and_validate(cls, value: str | None) -> str | None:
@@ -49,6 +57,7 @@ class ContratacionUpdate(BaseModel):
     presupuesto_referencial: float | None = Field(None, ge=0)
     fecha_publicacion: date | None = None
     palabra_clave: str | None = Field(None, max_length=200)
+    url: str | None = Field(None, max_length=500)
 
     @field_validator(
         "codigo",
@@ -57,6 +66,7 @@ class ContratacionUpdate(BaseModel):
         "estado",
         "provincia_canton",
         "palabra_clave",
+        "url",
     )
     @classmethod
     def strip_and_validate(cls, value: str | None) -> str | None:

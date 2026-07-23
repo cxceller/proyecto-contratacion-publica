@@ -164,6 +164,11 @@ def importar_dataframe(df: pd.DataFrame, palabra_clave: str | None = None) -> tu
                 else None
             ),
             "palabra_clave": palabra_clave,
+            "url": (
+                str(fila["url"]).strip()
+                if "url" in df.columns and pd.notna(fila.get("url"))
+                else None
+            ),
         }
 
         try:

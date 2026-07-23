@@ -80,7 +80,10 @@ API_URL=http://localhost:8010 .venv/Scripts/python.exe -m streamlit run app_ui.p
 La interfaz permite buscar/filtrar por estado, rango de fechas y palabra clave,
 ver contadores por estado, crear un proceso nuevo, eliminar por id, descargar
 la tabla como CSV y vaciar la base de datos por completo (en la barra lateral,
-con doble confirmacion para evitar borrados accidentales).
+con doble confirmacion para evitar borrados accidentales). En la tabla de
+resultados, el "Código" de cada proceso es un enlace clicable que abre en una
+pestaña nueva el detalle del proceso en el portal de SERCOP (si se conoce su
+URL, ej. procesos traidos por `scrape_portal.py`).
 
 ## Tests
 
@@ -110,8 +113,9 @@ Si ya hiciste la busqueda en el portal y exportaste el resultado:
 
 Abre una ventana real de Chromium para que resuelvas el CAPTCHA y lances la
 busqueda tu mismo; el script espera, extrae todas las paginas de resultados
-(el portal pagina de a 20, ej. "Procesos del 1 al 20 de 169") y las guarda
-en la base de datos.
+(el portal pagina de a 20, ej. "Procesos del 1 al 20 de 169"), incluyendo el
+enlace directo de cada proceso (columna `url`, tomado del `href` del codigo
+en la tabla del portal), y las guarda en la base de datos.
 
 ```bash
 .venv/Scripts/python.exe scripts/scrape_portal.py [--espera SEGUNDOS] [--palabra-clave TEXTO]
@@ -121,11 +125,13 @@ en la base de datos.
   aparezcan resultados (continua antes si los detecta), para darte tiempo
   de leer el CAPTCHA, llenar los filtros y presionar "Buscar" en el propio
   sitio.
-- `--palabra-clave` (opcional): la palabra clave con la que vas a buscar en
-  el portal (la misma que escribes en el campo "Palabras claves" del
-  sitio). Se guarda en la columna `palabra_clave` de todos los procesos
-  importados en esa ejecucion, para poder filtrar despues por con que
-  busqueda se obtuvo cada registro.
+- El script lee automaticamente lo que escribiste en el campo "Palabras
+  claves" del formulario del portal y lo guarda en la columna
+  `palabra_clave` de todos los procesos importados en esa ejecucion (no
+  hace falta indicarlo por linea de comandos). `--palabra-clave TEXTO`
+  sigue disponible para forzar un valor especifico si la lectura
+  automatica no encuentra nada (p.ej. si no escribiste ninguna palabra
+  clave y buscaste solo por fecha/entidad).
 - Cada ejecucion hace **una sola busqueda**. El portal solo permite un rango
   de fechas de 6 meses antes y 15 dias despues de la fecha de publicacion,
   asi que para cubrir varios periodos o palabras clave hay que ejecutar el

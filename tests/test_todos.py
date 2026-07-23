@@ -47,12 +47,20 @@ class TestPost:
         assert creada["codigo"] == contratacion_payload["codigo"]
         assert creada["estado"] == "Adjudicada"
         assert creada["palabra_clave"] is None
+        assert creada["url"] is None
         assert "id" in creada
 
     def test_crear_contratacion_con_palabra_clave(self, client, contratacion_payload):
         contratacion_payload["palabra_clave"] = "luminarias"
         creada = crear_contratacion(client, contratacion_payload)
         assert creada["palabra_clave"] == "luminarias"
+
+    def test_crear_contratacion_con_url(self, client, contratacion_payload):
+        contratacion_payload["url"] = (
+            "https://www.compraspublicas.gob.ec/.../informacionProcesoContratacion2.cpe?idSoliCompra=ABC123,"
+        )
+        creada = crear_contratacion(client, contratacion_payload)
+        assert creada["url"] == contratacion_payload["url"]
 
     def test_crear_contratacion_invalida_devuelve_422(self, client):
         response = client.post(

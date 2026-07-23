@@ -15,11 +15,17 @@ Flujo:
        propio sitio.
     3. El script espera (hasta --espera segundos como maximo, pero continua
        en cuanto detecta resultados) a que aparezca contenido en la tabla
-       de resultados, y luego extrae TODAS las paginas disponibles (el
-       portal pagina los resultados, ej. "Procesos del 1 al 20 de 169":
-       el script hace clic en "Siguiente" hasta la ultima pagina) guardando
-       cada una en la base de datos.
-    4. Al terminar cierra el navegador e imprime cuantos procesos guardo.
+       de resultados. Antes de extraer, lee automaticamente lo que
+       escribiste en el campo "Palabras claves" del formulario (sin que
+       tengas que pasarlo por linea de comandos) y lo guarda en cada
+       proceso importado; `--palabra-clave` sigue disponible para forzar
+       un valor especifico si la lectura automatica no encuentra nada.
+    4. Extrae TODAS las paginas de resultados disponibles (el portal pagina
+       los resultados, ej. "Procesos del 1 al 20 de 169": el script hace
+       clic en "Siguiente" hasta la ultima pagina), incluyendo el enlace
+       directo de cada proceso (el `href` del codigo, que `pd.read_html`
+       no preserva), y guarda todo en la base de datos.
+    5. Al terminar cierra el navegador e imprime cuantos procesos guardo.
        Si no encontro ninguna tabla reconocible, guarda el HTML de la
        pagina en un archivo de depuracion para poder revisarlo.
 
@@ -39,8 +45,10 @@ import time
 import unicodedata
 from io import StringIO
 from pathlib import Path
+from urllib.parse import urljoin
 
 import pandas as pd
+from bs4 import BeautifulSoup
 from playwright.sync_api import Page, Route, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -165,6 +173,43 @@ def _extraer_tabla_resultados(html: str) -> pd.DataFrame | None:
     return None
 
 
+def _extraer_mapa_codigo_a_url(html: str, url_base: str) -> dict[str, str]:
+    """Arma un mapa {codigo: url} con el enlace directo de cada proceso en
+    el portal, leyendo el `href` del enlace de la columna Codigo.
+
+    `pd.read_html` (usado en `_extraer_tabla_resultados`) solo trae el
+    texto de las celdas, no atributos HTML como `href`, asi que este enlace
+    se extrae aparte con BeautifulSoup sobre el mismo HTML. Se identifica
+    la tabla de resultados por la fila de encabezado `tr.filaTitulo` (la
+    misma marca que usa el portal, vista en el HTML real). El emparejamiento
+    con el DataFrame se hace por el texto del codigo (no por posicion), asi
+    no depende de que ambos parsers procesen las filas en el mismo orden."""
+    soup = BeautifulSoup(html, "html.parser")
+    fila_titulo = soup.find("tr", class_="filaTitulo")
+    if fila_titulo is None:
+        return {}
+    tabla = fila_titulo.find_parent("table")
+    if tabla is None:
+        return {}
+
+    mapa: dict[str, str] = {}
+    for fila in tabla.find_all("tr"):
+        clases = fila.get("class") or []
+        if fila is fila_titulo or "filaTitulo" in clases:
+            continue
+        primera_celda = fila.find("td")
+        if primera_celda is None:
+            continue
+        enlace = primera_celda.find("a")
+        href = enlace.get("href") if enlace else None
+        if not href:
+            continue
+        codigo_texto = primera_celda.get_text(strip=True)
+        if codigo_texto:
+            mapa[codigo_texto] = urljoin(url_base, href)
+    return mapa
+
+
 def _esperar_resultados(page: Page, espera_s: int) -> None:
     """Espera activamente (a diferencia de un `time.sleep` fijo) a que el
     contenedor de resultados del portal (`div#divProcesos`) tenga contenido,
@@ -186,6 +231,46 @@ def _esperar_resultados(page: Page, espera_s: int) -> None:
             f"  No se detecto contenido en los resultados tras {espera_s} "
             "segundos; se intentara extraer de todos modos."
         )
+
+
+def _extraer_palabra_clave(page: Page) -> str | None:
+    """Lee automaticamente lo que el usuario escribio en el campo "Palabras
+    claves" del formulario de busqueda del portal, para no depender de que
+    se indique por linea de comandos. El campo real (visto en el HTML del
+    formulario) es `#txtPalabrasClaves`; por si el sitio lo cambia de id,
+    se intenta primero por selectores parciales y, como ultimo respaldo, se
+    busca el input ubicado junto al texto "Palabras claves" en la fila del
+    formulario."""
+    candidatos_selector = [
+        "#txtPalabrasClaves",
+        "input[name*='alabra' i]",
+        "input[id*='alabra' i]",
+    ]
+    for selector in candidatos_selector:
+        loc = page.locator(selector).first
+        if loc.count() == 0:
+            continue
+        try:
+            valor = loc.input_value(timeout=2000)
+        except Exception:
+            continue
+        if valor and valor.strip():
+            return valor.strip()
+
+    try:
+        etiqueta = page.locator("text=Palabras claves").first
+        if etiqueta.count() > 0:
+            input_cercano = etiqueta.locator(
+                "xpath=ancestor::tr[1]//input[@type='text' or not(@type)]"
+            ).first
+            if input_cercano.count() > 0:
+                valor = input_cercano.input_value(timeout=2000)
+                if valor and valor.strip():
+                    return valor.strip()
+    except Exception:
+        pass
+
+    return None
 
 
 def _intentar_siguiente_pagina(page: Page) -> bool:
@@ -235,6 +320,10 @@ def _procesar_busqueda(page: Page, palabra_clave: str | None = None) -> tuple[in
             # sobre paginas vacias hasta MAX_PAGINAS.
             break
 
+        mapa_urls = _extraer_mapa_codigo_a_url(html, page.url)
+        if mapa_urls:
+            df["url"] = df["codigo"].astype(str).str.strip().map(mapa_urls)
+
         importados, con_error = importar_dataframe(df, palabra_clave=palabra_clave)
         importados_total += importados
         con_error_total += con_error
@@ -265,9 +354,9 @@ def main() -> None:
         type=str,
         default=None,
         help=(
-            "Palabra clave con la que se va a buscar en el portal (la misma "
-            "que escribiras en el campo 'Palabras claves' del sitio). Se "
-            "guarda en todos los procesos importados en esta ejecucion."
+            "Fuerza la palabra clave a registrar en los procesos importados, "
+            "en vez de leerla automaticamente del campo 'Palabras claves' "
+            "del formulario (uso normal: no hace falta pasarla)."
         ),
     )
     args = parser.parse_args()
@@ -284,7 +373,7 @@ def main() -> None:
         "todas las paginas."
     )
     if args.palabra_clave:
-        print(f"Se registrara la palabra clave {args.palabra_clave!r} en cada proceso importado.")
+        print(f"Se forzara la palabra clave {args.palabra_clave!r} en cada proceso importado.")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -300,7 +389,13 @@ def main() -> None:
         print(f"\nEsperando hasta {args.espera} segundos a que completes la busqueda...")
         _esperar_resultados(page, args.espera)
 
-        importados, con_error, paginas = _procesar_busqueda(page, palabra_clave=args.palabra_clave)
+        palabra_clave = args.palabra_clave or _extraer_palabra_clave(page)
+        if palabra_clave:
+            print(f"Palabra clave detectada: {palabra_clave!r} (se guardara en cada proceso).")
+        else:
+            print("No se detecto ninguna palabra clave en el formulario; se guardara vacia.")
+
+        importados, con_error, paginas = _procesar_busqueda(page, palabra_clave=palabra_clave)
 
         print(
             f"\nBusqueda completa: {importados} registro(s) insertado(s) en "
