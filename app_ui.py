@@ -6,9 +6,12 @@ Consume la API FastAPI (src/main.py) via requests. Arranque:
     streamlit run app_ui.py --server.port 8501
 """
 import os
+import re
 from datetime import date
 
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 
@@ -40,30 +43,57 @@ COLUMNAS_TABLA = {
     "url": "URL",
 }
 
+MESES_ES = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+    5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+    9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
+}
 
-def color_por_estado(estado: str) -> str:
-    if not estado:
-        return "#616161"
-    e = estado.strip().lower()
-    if e.startswith("adjudicad"):
-        return "#2e7d32"  # verde
-    if e.startswith("suspendid"):
-        return "#ef6c00"  # naranja
-    if e.startswith("desiert"):
-        return "#c62828"  # rojo
-    if e.startswith("cancelad"):
-        return "#b71c1c"  # rojo oscuro
-    if e.startswith("terminado"):
-        return "#6a1b9a"  # morado (terminacion unilateral)
-    if e.startswith("finalizad"):
-        return "#1565c0"  # azul
-    if e.startswith("ejecuci"):
-        return "#f9a825"  # ambar (en curso)
-    if e.startswith("en recepci"):
-        return "#00838f"  # teal (en curso)
-    if e.startswith("por adjudicar"):
-        return "#3949ab"  # indigo (pendiente de decision)
-    return "#616161"  # gris (desconocido)
+# Paleta viva del dashboard: se reparte automaticamente entre barras/segmentos
+# (color_discrete_sequence) para dar contraste y dinamismo visual, sin atarse
+# al significado de ninguna variable especifica.
+PALETA_VIVA = [
+    "#E91E63", "#FF9800", "#FFEB3B", "#8BC34A",
+    "#00BCD4", "#9C27B0", "#F44336", "#2196F3",
+]
+COLOR_LIENZO = "#FFFFFF"  # plot_bgcolor / paper_bgcolor: fondo claro fijo,
+                          # independiente del tema (claro u oscuro) de Streamlit
+COLOR_GRID = "#E0E0E0"  # gridlines grises muy tenues
+COLOR_AXIS = "black"  # linea solida de eje ("trazo de tinta")
+COLOR_TEXTO_EJE = "black"  # texto de ejes/fuente general, alto contraste sobre el lienzo claro
+
+
+# Indicador de estado como emoji + texto (en vez de pintar el fondo de toda
+# la celda, que saturaba visualmente la tabla). Claves normalizadas
+# (minusculas, espacios colapsados) para el lookup; el texto mostrado usa la
+# grafia canonica de esta lista, no la del dato crudo.
+EMOJI_ESTADO = {
+    "desierta": ("🔴", "Desierta"),
+    "ejecución de contrato": ("🟢", "Ejecución de Contrato"),
+    "cancelado": ("⭕", "Cancelado"),
+    "suspendido": ("🟠", "Suspendido"),
+    "adjudicado - registro de contratos": ("🟩", "Adjudicado - Registro de Contratos"),
+    "por adjudicar": ("🍏", "Por Adjudicar"),
+    "preguntas, respuestas y aclaraciones": ("🟡", "Preguntas, Respuestas y Aclaraciones"),
+    "en recepción": ("✅", "En Recepción"),
+    "entrega de propuesta": ("🟨", "Entrega de Propuesta"),
+}
+
+
+def estado_con_emoji(estado: str) -> str:
+    """Antepone un emoji indicador al estado. La clave de busqueda se
+    normaliza (espacios extra colapsados, sin extremos, case-insensitive)
+    para tolerar variaciones del dato crudo del portal; un estado que no
+    esta en `EMOJI_ESTADO` se muestra tal cual, sin emoji."""
+    texto = str(estado or "").strip()
+    if not texto:
+        return texto
+    clave = re.sub(r"\s+", " ", texto).casefold()
+    coincidencia = EMOJI_ESTADO.get(clave)
+    if coincidencia is None:
+        return texto
+    emoji, texto_canonico = coincidencia
+    return f"{emoji} {texto_canonico}"
 
 
 def api_request(method: str, path: str, **kwargs):
@@ -98,12 +128,253 @@ def obtener_contrataciones(status=None, fecha_inicio=None, fecha_fin=None, palab
     return response.json()
 
 
+def extraer_tipo_compra(objeto_proceso: str) -> str:
+    """Infiere un 'tipo de compra' a partir de la primera palabra del Objeto
+    del Proceso (en el portal suele ser un verbo/sustantivo de accion, p.ej.
+    "Adquisición de...", "Contratación de...", "Construcción de..."). No hay
+    un campo explicito de tipo de compra en el esquema, asi que es una
+    aproximacion heuristica, no una categoria oficial del portal."""
+    texto = str(objeto_proceso or "").strip()
+    if not texto:
+        return "Otros"
+    primera_palabra = re.split(r"\s+", texto)[0]
+    primera_palabra = re.sub(r"[^A-Za-zÁÉÍÓÚÑáéíóúñ]", "", primera_palabra)
+    return primera_palabra.capitalize() if primera_palabra else "Otros"
+
+
+def preparar_dataframe(registros: list[dict]) -> pd.DataFrame:
+    """Construye el DataFrame base del dashboard analitico: parsea fecha de
+    publicacion en año/mes y deriva el 'tipo de compra' del objeto."""
+    df = pd.DataFrame(registros)
+    if df.empty:
+        return df
+
+    df["fecha_publicacion"] = pd.to_datetime(df.get("fecha_publicacion"), errors="coerce")
+    df["anio"] = df["fecha_publicacion"].dt.year
+    df["mes_num"] = df["fecha_publicacion"].dt.month
+    df["anio_mes"] = df["fecha_publicacion"].dt.strftime("%Y-%m")
+    df["provincia_canton"] = df["provincia_canton"].fillna("Sin especificar")
+    df["tipo_compra"] = df["objeto_proceso"].apply(extraer_tipo_compra)
+    return df
+
+
+def render_filtros_dashboard(df: pd.DataFrame) -> pd.DataFrame:
+    """Fila de filtros superiores (Año, Mes, Provincia/Cantón) que acota
+    todo lo que se muestra debajo: graficos, tablas y KPIs comparten el
+    mismo dataframe filtrado, para que las cifras siempre coincidan."""
+    col1, col2, col3 = st.columns(3)
+
+    if df.empty:
+        col1.selectbox("Año", ["(Todos)"], disabled=True)
+        col2.selectbox("Mes", ["(Todos)"], disabled=True)
+        col3.multiselect("Provincia/Cantón", [], disabled=True)
+        return df
+
+    anios_disponibles = sorted(df["anio"].dropna().unique().astype(int), reverse=True)
+    anio_sel = col1.selectbox("Año", ["(Todos)"] + [str(a) for a in anios_disponibles])
+
+    meses_disponibles = sorted(df["mes_num"].dropna().unique().astype(int))
+    opciones_mes = ["(Todos)"] + [MESES_ES[m] for m in meses_disponibles]
+    mes_sel = col2.selectbox("Mes", opciones_mes)
+
+    provincias_disponibles = sorted(df["provincia_canton"].dropna().unique())
+    provincias_sel = col3.multiselect("Provincia/Cantón", provincias_disponibles)
+
+    df_filtrado = df
+    if anio_sel != "(Todos)":
+        df_filtrado = df_filtrado[df_filtrado["anio"] == int(anio_sel)]
+    if mes_sel != "(Todos)":
+        mes_num = next(k for k, v in MESES_ES.items() if v == mes_sel)
+        df_filtrado = df_filtrado[df_filtrado["mes_num"] == mes_num]
+    if provincias_sel:
+        df_filtrado = df_filtrado[df_filtrado["provincia_canton"].isin(provincias_sel)]
+
+    return df_filtrado
+
+
+def _aplicar_estilo_base(fig: go.Figure, altura: int = 380) -> None:
+    """Fondo estructural tipo lienzo de papel: SIEMPRE blanco puro,
+    independientemente de si Streamlit esta en modo claro u oscuro (un fondo
+    transparente heredaria el fondo oscuro del tema y volveria illegible el
+    texto negro de los ejes). Es el lienzo neutro sobre el que resalta la
+    paleta viva de los datos."""
+    fig.update_layout(
+        plot_bgcolor=COLOR_LIENZO,
+        paper_bgcolor=COLOR_LIENZO,
+        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),
+        margin=dict(l=10, r=10, t=20, b=10),
+        height=altura,
+        showlegend=False,
+        hoverlabel=dict(bgcolor=COLOR_LIENZO, font_size=13, font_color=COLOR_TEXTO_EJE),
+        bargap=0.35,
+    )
+
+
+def _tarjeta_kpi_html(etiqueta: str, valor: str) -> str:
+    """Tarjeta KPI en HTML puro (no st.metric): el fondo se fuerza por
+    inline-style con COLOR_LIENZO, igual que plot_bgcolor/paper_bgcolor de
+    los graficos, para que ambos recuadros hagan juego sin depender del
+    tema claro/oscuro de Streamlit."""
+    return f"""
+    <div style="background-color:{COLOR_LIENZO}; border-radius:0;
+                border:none; box-shadow:none; padding:1.25rem 1.5rem;
+                margin-bottom:0.5rem;">
+        <div style="font-size:0.875rem; color:{COLOR_TEXTO_EJE}; opacity:0.7;">
+            {etiqueta}
+        </div>
+        <div style="font-size:2rem; font-weight:600; color:{COLOR_TEXTO_EJE}; line-height:1.3;">
+            {valor}
+        </div>
+    </div>
+    """
+
+
+def render_kpis_dashboard(df: pd.DataFrame):
+    col1, col2 = st.columns(2)
+    presupuesto_total = df["presupuesto_referencial"].fillna(0).sum() if not df.empty else 0
+    col1.markdown(_tarjeta_kpi_html("Procesos (filtro actual)", str(len(df))), unsafe_allow_html=True)
+    col2.markdown(
+        _tarjeta_kpi_html("Presupuesto Total (filtro actual)", f"$ {presupuesto_total:,.2f}"),
+        unsafe_allow_html=True,
+    )
+
+
+def render_grafico_mensual(df: pd.DataFrame):
+    st.markdown("**Presupuesto por mes**")
+    if df.empty:
+        st.info("No hay datos para graficar con los filtros actuales.")
+        return
+
+    resumen = (
+        df.dropna(subset=["anio_mes"])
+        .groupby("anio_mes", as_index=False)["presupuesto_referencial"]
+        .sum()
+        .sort_values("anio_mes")
+    )
+    if resumen.empty:
+        st.info("Los procesos filtrados no tienen fecha de publicación.")
+        return
+
+    fig = px.bar(
+        resumen,
+        x="anio_mes",
+        y="presupuesto_referencial",
+        color="anio_mes",
+        color_discrete_sequence=PALETA_VIVA,
+    )
+    fig.update_traces(
+        marker=dict(cornerradius=4, line=dict(width=0)),
+        hovertemplate="<b>$ %{y:,.2f}</b><br>%{x}<extra></extra>",
+    )
+    fig.update_xaxes(
+        showgrid=False, showline=True, linewidth=2, linecolor=COLOR_AXIS,
+        tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+    )
+    fig.update_yaxes(
+        showgrid=True, gridcolor=COLOR_GRID, zeroline=False,
+        showline=True, linewidth=2, linecolor=COLOR_AXIS,
+        tickprefix="$ ", tickformat=",.0f", tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+    )
+    _aplicar_estilo_base(fig)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
+    st.markdown("**Presupuesto por Provincia/Cantón**")
+    if df.empty:
+        st.info("No hay datos para graficar con los filtros actuales.")
+        return
+
+    resumen = (
+        df.groupby("provincia_canton", as_index=False)["presupuesto_referencial"]
+        .sum()
+        .sort_values("presupuesto_referencial", ascending=False)
+    )
+    if resumen.empty:
+        st.info("No hay datos de provincia/cantón con los filtros actuales.")
+        return
+
+    if len(resumen) > top_n:
+        principal = resumen.iloc[:top_n]
+        resto = resumen.iloc[top_n:]["presupuesto_referencial"].sum()
+        resumen = pd.concat(
+            [principal, pd.DataFrame([{"provincia_canton": "Otros", "presupuesto_referencial": resto}])],
+            ignore_index=True,
+        )
+
+    # Descendente: en este grafico horizontal, Plotly ubica el primer registro
+    # del dataframe arriba, asi que ordenar de mayor a menor deja la provincia
+    # con mas presupuesto en la primera fila (arriba) para lectura inmediata.
+    resumen = resumen.sort_values("presupuesto_referencial", ascending=False)
+
+    fig = px.bar(
+        resumen,
+        x="presupuesto_referencial",
+        y="provincia_canton",
+        orientation="h",
+        color="provincia_canton",
+        color_discrete_sequence=PALETA_VIVA,
+    )
+    fig.update_traces(
+        marker=dict(cornerradius=4, line=dict(width=0)),
+        hovertemplate="<b>$ %{x:,.2f}</b><br>%{y}<extra></extra>",
+    )
+    fig.update_xaxes(
+        showgrid=True, gridcolor=COLOR_GRID, zeroline=False,
+        showline=True, linewidth=2, linecolor=COLOR_AXIS,
+        tickprefix="$ ", tickformat=",.0f", tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+    )
+    fig.update_yaxes(
+        showgrid=False, showline=True, linewidth=2, linecolor=COLOR_AXIS,
+        tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+    )
+    _aplicar_estilo_base(fig, altura=max(320, 34 * len(resumen)))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_tablas_resumen(df: pd.DataFrame):
+    st.markdown("**Resumen por Estado y Tipo de Compra**")
+    if df.empty:
+        st.info("No hay datos para resumir con los filtros actuales.")
+        return
+
+    col1, col2 = st.columns(2)
+
+    resumen_estado = (
+        df.groupby("estado", as_index=False)
+        .agg(Procesos=("id", "count"), Presupuesto_Total=("presupuesto_referencial", "sum"))
+        .rename(columns={"estado": "Estado", "Presupuesto_Total": "Presupuesto Total"})
+        .sort_values("Presupuesto Total", ascending=False)
+    )
+    col1.caption("Por Estado del Proceso")
+    col1.dataframe(
+        resumen_estado,
+        column_config={"Presupuesto Total": st.column_config.NumberColumn(format="$ %.2f")},
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    resumen_tipo = (
+        df.groupby("tipo_compra", as_index=False)
+        .agg(Procesos=("id", "count"), Presupuesto_Total=("presupuesto_referencial", "sum"))
+        .rename(columns={"tipo_compra": "Tipo de Compra", "Presupuesto_Total": "Presupuesto Total"})
+        .sort_values("Presupuesto Total", ascending=False)
+    )
+    col2.caption("Por Tipo de Compra (inferido del Objeto del Proceso)")
+    col2.dataframe(
+        resumen_tipo,
+        column_config={"Presupuesto Total": st.column_config.NumberColumn(format="$ %.2f")},
+        hide_index=True,
+        use_container_width=True,
+    )
+
+
 def render_metricas_resumen(registros: list[dict]):
     """Tarjetas de resumen sobre los resultados actualmente filtrados. No
     existe en el esquema un campo separado de "valor final adjudicado"
     (solo `presupuesto_referencial`), asi que ese total se calcula como la
     suma del presupuesto referencial de los procesos cuyo estado empieza
-    por "Adjudicad..." (ver `color_por_estado`/`ESTADOS`)."""
+    por "Adjudicad..." (ver `ESTADOS`)."""
     presupuesto_total = sum(r.get("presupuesto_referencial") or 0 for r in registros)
     valor_adjudicado_total = sum(
         r.get("presupuesto_referencial") or 0
@@ -158,16 +429,12 @@ def render_tabla_con_color(registros: list[dict]):
         )
 
     columnas_visibles = [c for c in df_mostrar.columns if c != "URL"]
-    df_visible = df_mostrar[columnas_visibles]
+    df_visible = df_mostrar[columnas_visibles].copy()
 
-    estilo = df_visible.style.map(
-        lambda estado: (
-            f"background-color: {color_por_estado(estado)}; color: white; "
-            "border-radius: 999px; padding: 2px 10px; font-weight: 600; "
-            "text-align: center;"
-        ),
-        subset=["Estado del Proceso"],
-    )
+    # Indicador de estado como emoji + texto, sin pintar el fondo de la celda:
+    # se aplica aqui (despues de armar el CSV) para que la descarga conserve
+    # el texto de estado tal cual viene de la API.
+    df_visible["Estado del Proceso"] = df_visible["Estado del Proceso"].apply(estado_con_emoji)
 
     column_config = {
         "Código": st.column_config.LinkColumn(
@@ -185,7 +452,7 @@ def render_tabla_con_color(registros: list[dict]):
     }
 
     st.dataframe(
-        estilo,
+        df_visible,
         column_config=column_config,
         use_container_width=True,
         hide_index=True,
@@ -221,77 +488,6 @@ def render_contadores(registros_totales: list[dict]):
     cols[0].metric("Total", total)
     for i, estado_categoria in enumerate(etiquetas, start=1):
         cols[i % 4].metric(estado_categoria, conteos[estado_categoria])
-
-
-def render_formulario_creacion():
-    st.subheader("Nuevo proceso de contratación")
-    with st.form("form_nueva_contratacion", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        codigo = col1.text_input("Código *")
-        entidad_contratante = col2.text_input("Entidad Contratante *")
-        objeto_proceso = st.text_area("Objeto del Proceso *")
-
-        col3, col4 = st.columns(2)
-        estado = col3.text_input("Estado del Proceso *", placeholder="Ej: Adjudicada")
-        provincia_canton = col4.text_input("Provincia/Cantón")
-
-        col5, col6 = st.columns(2)
-        presupuesto = col5.number_input(
-            "Presupuesto Referencial (sin IVA)", min_value=0.0, step=100.0, format="%.2f"
-        )
-        fecha_publicacion = col6.date_input("Fecha de Publicación", value=None)
-
-        col7, col8 = st.columns(2)
-        palabra_clave = col7.text_input("Palabra Clave", placeholder="Ej: luminarias")
-        url = col8.text_input("URL", placeholder="Enlace al detalle en el portal")
-
-        enviado = st.form_submit_button("Crear proceso de contratación")
-
-        if enviado:
-            payload = {
-                "codigo": codigo,
-                "entidad_contratante": entidad_contratante,
-                "objeto_proceso": objeto_proceso,
-                "estado": estado,
-                "provincia_canton": provincia_canton or None,
-                "presupuesto_referencial": presupuesto if presupuesto else None,
-                "fecha_publicacion": (
-                    fecha_publicacion.isoformat() if fecha_publicacion else None
-                ),
-                "palabra_clave": palabra_clave or None,
-                "url": url or None,
-            }
-            response = api_request("POST", "/api/todos", json=payload)
-            if response is None:
-                return
-            if response.status_code == 201:
-                st.success(f"Proceso creado con id {response.json()['id']}")
-                st.rerun()
-            elif response.status_code == 422:
-                errores = response.json().get("detail", [])
-                mensaje = "; ".join(
-                    f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in errores
-                )
-                st.error(f"Datos inválidos: {mensaje}")
-            else:
-                st.error(f"Error al crear el proceso: {response.status_code}")
-
-
-def render_gestion_registro():
-    with st.expander("Eliminar un proceso de contratación por ID"):
-        col1, col2 = st.columns([3, 1])
-        contratacion_id = col1.number_input("ID a eliminar", min_value=1, step=1)
-        if col2.button("Eliminar", type="secondary"):
-            response = api_request("DELETE", f"/api/todos/{int(contratacion_id)}")
-            if response is None:
-                return
-            if response.status_code == 204:
-                st.success(f"Proceso {int(contratacion_id)} eliminado.")
-                st.rerun()
-            elif response.status_code == 404:
-                st.warning(f"No existe un proceso con id {int(contratacion_id)}.")
-            else:
-                st.error(f"Error al eliminar: {response.status_code}")
 
 
 def render_vaciar_base_datos():
@@ -375,8 +571,18 @@ def main():
     render_contadores(registros_totales)
 
     st.divider()
-    render_formulario_creacion()
-    render_gestion_registro()
+    st.header("📊 Dashboard Analítico")
+    df_totales = preparar_dataframe(registros_totales)
+    df_filtrado = render_filtros_dashboard(df_totales)
+    render_kpis_dashboard(df_filtrado)
+
+    col_mensual, col_provincia = st.columns(2)
+    with col_mensual:
+        render_grafico_mensual(df_filtrado)
+    with col_provincia:
+        render_grafico_provincia(df_filtrado)
+
+    render_tablas_resumen(df_filtrado)
 
     st.divider()
     st.subheader("Resultados")
