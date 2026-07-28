@@ -93,6 +93,31 @@ class TestGenerarReporte:
         texto_completo = "\n".join(p.text for p in documento.paragraphs)
         assert "EXISTEN 1 PROCESOS" in texto_completo
 
+    def test_busqueda_insensible_a_tildes_y_mayusculas(self, client, contratacion_payload):
+        """SQLite LIKE (sin extensiones ICU) solo pliega mayusculas/
+        minusculas en el rango ASCII: 'REPOTENCIACIÓN' con tilde no
+        coincidia con una busqueda de 'repotenciacion' sin tilde. Este test
+        reproduce exactamente ese caso (dato guardado con tilde y
+        mayusculas, busqueda en minusculas y sin tilde)."""
+        crear_contratacion(
+            client,
+            {**contratacion_payload, "codigo": "SIE-003-2026", "palabra_clave": "REPOTENCIACIÓN"},
+        )
+
+        response = client.post(
+            "/api/generar-reporte",
+            json={
+                "palabras_clave": ["repotenciacion"],
+                "fecha_inicio": "2026-01-01",
+                "fecha_fin": "2026-12-31",
+            },
+        )
+
+        assert response.status_code == 200
+        documento = Document(BytesIO(response.content))
+        texto_completo = "\n".join(p.text for p in documento.paragraphs)
+        assert "EXISTEN 1 PROCESOS" in texto_completo
+
     def test_sin_resultados_devuelve_404(self, client):
         response = client.post(
             "/api/generar-reporte",

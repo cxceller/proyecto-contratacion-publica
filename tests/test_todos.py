@@ -125,6 +125,18 @@ class TestGetTodos:
         assert response_sin_match.status_code == 200
         assert response_sin_match.json() == []
 
+    def test_filtrar_por_palabra_clave_insensible_a_tildes_y_mayusculas(
+        self, client, contratacion_payload
+    ):
+        contratacion_payload["palabra_clave"] = "REPOTENCIACIÓN"
+        crear_contratacion(client, contratacion_payload)
+
+        response = client.get("/api/todos", params={"palabra_clave": "repotenciacion"})
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["palabra_clave"] == "REPOTENCIACIÓN"
+
 
 class TestGetById:
     def test_obtener_contratacion_existente(self, client, contratacion_payload):

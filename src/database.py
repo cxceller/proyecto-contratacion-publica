@@ -1,15 +1,32 @@
 """Conexion a SQLite (sqlite3 estandar) e inicializacion de esquema."""
 import sqlite3
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / "contrataciones.db")
 
 
+def _normalizar_para_busqueda(texto: str | None) -> str:
+    """Minusculas + sin acentos/diacriticos. SQLite (sin extensiones ICU)
+    solo hace plegado de mayusculas/minusculas para el rango ASCII: `LIKE`
+    y `UPPER`/`LOWER` nativos NO igualan 'ó' con 'o', asi que una busqueda
+    de "repotenciacion" nunca encuentra "REPOTENCIACIÓN" sin este paso.
+    Se registra como funcion SQL (ver `get_connection`) para poder seguir
+    filtrando en SQL puro en vez de traer todas las filas y filtrar en
+    Python."""
+    if texto is None:
+        return ""
+    sin_acentos = unicodedata.normalize("NFKD", str(texto))
+    sin_acentos = "".join(c for c in sin_acentos if not unicodedata.combining(c))
+    return sin_acentos.lower()
+
+
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.create_function("normalizar", 1, _normalizar_para_busqueda)
     return conn
 
 
@@ -111,7 +128,10 @@ def get_all_contrataciones(
         query += " AND fecha_publicacion <= ?"
         params.append(fecha_fin)
     if palabra_clave:
-        query += " AND palabra_clave LIKE ?"
+        # normalizar(): insensible a mayusculas/minusculas Y a tildes (ver
+        # `_normalizar_para_busqueda`), no solo al rango ASCII que cubre el
+        # LIKE nativo de SQLite.
+        query += " AND normalizar(palabra_clave) LIKE normalizar(?)"
         params.append(f"%{palabra_clave}%")
 
     query += " ORDER BY id DESC"
@@ -131,18 +151,25 @@ def get_contrataciones_para_reporte(
     lote_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Trae los procesos que coinciden con alguna de `palabras_clave`
-    (comparacion por substring, insensible a mayusculas/minusculas igual
-    que `get_all_contrataciones`, para tolerar variaciones del dato crudo
-    del portal) dentro del rango `fecha_inicio`/`fecha_fin`, opcionalmente
-    acotado a un `lote_id` (una ejecucion de scraping/importacion puntual).
+    (comparacion por substring, insensible a mayusculas/minusculas Y A
+    TILDES -- ver `_normalizar_para_busqueda` -- para tolerar variaciones
+    del dato crudo del portal) dentro del rango `fecha_inicio`/`fecha_fin`,
+    opcionalmente acotado a un `lote_id` (una ejecucion de scraping/
+    importacion puntual). `fecha_inicio`/`fecha_fin` deben venir en
+    formato ISO `YYYY-MM-DD` (asi los serializa `date.isoformat()` en
+    `src/api_reportes.py`, y asi se guarda `fecha_publicacion` en la
+    tabla -- ver `scripts/import_csv.py::parsear_fecha`); se envuelven
+    igual en `date(...)` de SQLite para que la comparacion `BETWEEN` no
+    dependa de que ambos lados traigan exactamente el mismo formato de
+    texto (p.ej. si algun valor trajera una hora pegada).
     Pensada para alimentar `scripts/report_generator.py::generar_reporte`."""
     if not palabras_clave:
         return []
 
-    condiciones_palabra = " OR ".join("palabra_clave LIKE ?" for _ in palabras_clave)
+    condiciones_palabra = " OR ".join("normalizar(palabra_clave) LIKE normalizar(?)" for _ in palabras_clave)
     query = (
         f"SELECT * FROM contrataciones WHERE ({condiciones_palabra}) "
-        "AND fecha_publicacion BETWEEN ? AND ?"
+        "AND date(fecha_publicacion) BETWEEN date(?) AND date(?)"
     )
     params: list[Any] = [f"%{p}%" for p in palabras_clave]
     params.extend([fecha_inicio, fecha_fin])
