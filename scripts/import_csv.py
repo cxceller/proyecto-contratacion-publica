@@ -128,11 +128,16 @@ def mapear_columnas(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, [c for c in df.columns if c is not None]]
 
 
-def importar_dataframe(df: pd.DataFrame, palabra_clave: str | None = None) -> tuple[int, int]:
+def importar_dataframe(
+    df: pd.DataFrame, palabra_clave: str | None = None, lote_id: str | None = None
+) -> tuple[int, int]:
     """Valida e inserta en SQLite las filas de un DataFrame ya mapeado a
     los nombres de campo internos (codigo, entidad_contratante, ...).
     Si se indica `palabra_clave`, se asigna a todas las filas importadas
-    (para registrar con que busqueda del portal se obtuvieron).
+    (para registrar con que busqueda del portal se obtuvieron). Si se indica
+    `lote_id`, se asigna igual a todas las filas de esta llamada, para poder
+    reconstruir mas tarde que filas pertenecen a una misma ejecucion de
+    scraping/importacion (ver scripts/report_generator.py).
     Devuelve (registros_importados, registros_con_error)."""
     faltantes = {"codigo", "entidad_contratante", "objeto_proceso", "estado"} - set(df.columns)
     if faltantes:
@@ -169,6 +174,7 @@ def importar_dataframe(df: pd.DataFrame, palabra_clave: str | None = None) -> tu
                 if "url" in df.columns and pd.notna(fila.get("url"))
                 else None
             ),
+            "lote_id": lote_id,
         }
 
         try:

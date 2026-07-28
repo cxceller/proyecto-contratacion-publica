@@ -17,6 +17,16 @@ class ContratacionBase(BaseModel):
     url: str | None = Field(
         None, max_length=500, description="Enlace directo al detalle del proceso en el portal"
     )
+    lote_id: str | None = Field(
+        None,
+        max_length=64,
+        description=(
+            "Identificador de la ejecucion de scraping/importacion que genero "
+            "este registro (mismo valor para todas las filas de una misma "
+            "busqueda). Permite reconstruir bloques de busqueda de forma "
+            "confiable en los reportes."
+        ),
+    )
 
     @field_validator(
         "entidad_contratante",
@@ -58,6 +68,7 @@ class ContratacionUpdate(BaseModel):
     fecha_publicacion: date | None = None
     palabra_clave: str | None = Field(None, max_length=200)
     url: str | None = Field(None, max_length=500)
+    lote_id: str | None = Field(None, max_length=64)
 
     @field_validator(
         "codigo",

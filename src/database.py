@@ -34,6 +34,7 @@ def init_db() -> None:
                 fecha_publicacion TEXT,
                 palabra_clave TEXT,
                 url TEXT,
+                lote_id TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
@@ -46,6 +47,13 @@ def init_db() -> None:
             conn.execute("ALTER TABLE contrataciones ADD COLUMN palabra_clave TEXT")
         if "url" not in columnas:
             conn.execute("ALTER TABLE contrataciones ADD COLUMN url TEXT")
+        if "lote_id" not in columnas:
+            # Identifica todas las filas insertadas durante una misma
+            # ejecucion de scrape_portal.py/import_csv.py (un "lote" o
+            # busqueda), para poder reconstruir bloques de busqueda de forma
+            # confiable (ver scripts/report_generator.py) en vez de adivinar
+            # por saltos en el id.
+            conn.execute("ALTER TABLE contrataciones ADD COLUMN lote_id TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -59,8 +67,8 @@ def insert_contratacion(data: dict[str, Any]) -> int:
             INSERT INTO contrataciones
                 (codigo, entidad_contratante, objeto_proceso, estado,
                  provincia_canton, presupuesto_referencial, fecha_publicacion,
-                 palabra_clave, url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 palabra_clave, url, lote_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["codigo"],
@@ -72,6 +80,7 @@ def insert_contratacion(data: dict[str, Any]) -> int:
                 data.get("fecha_publicacion"),
                 data.get("palabra_clave"),
                 data.get("url"),
+                data.get("lote_id"),
             ),
         )
         conn.commit()

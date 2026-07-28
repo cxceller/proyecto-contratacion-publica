@@ -45,7 +45,7 @@ import re
 import sys
 import time
 import unicodedata
-from datetime import date
+from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
 from urllib.parse import urljoin
@@ -334,11 +334,17 @@ def _capturar_pantalla_pagina(page: Page, palabra_clave: str | None, numero_pagi
     return ruta
 
 
-def _procesar_busqueda(page: Page, palabra_clave: str | None = None) -> tuple[int, int, int]:
+def _procesar_busqueda(
+    page: Page, palabra_clave: str | None = None, lote_id: str | None = None
+) -> tuple[int, int, int]:
     """Extrae e importa todas las paginas de resultados disponibles tras la
     busqueda ya realizada por el usuario. Si se indica `palabra_clave`, se
-    asigna a todos los registros importados en esta ejecucion. Devuelve
-    (importados, con_error, paginas)."""
+    asigna a todos los registros importados en esta ejecucion. Si se indica
+    `lote_id`, se asigna igual a todos los registros importados en esta
+    ejecucion, para poder reconstruir mas tarde (ver
+    scripts/report_generator.py) que filas pertenecen a esta misma busqueda,
+    sin depender de adivinar por saltos en el id. Devuelve (importados,
+    con_error, paginas)."""
     importados_total, con_error_total, paginas = 0, 0, 0
     while paginas < MAX_PAGINAS:
         html = page.content()
@@ -364,7 +370,7 @@ def _procesar_busqueda(page: Page, palabra_clave: str | None = None) -> tuple[in
         if mapa_urls:
             df["url"] = df["codigo"].astype(str).str.strip().map(mapa_urls)
 
-        importados, con_error = importar_dataframe(df, palabra_clave=palabra_clave)
+        importados, con_error = importar_dataframe(df, palabra_clave=palabra_clave, lote_id=lote_id)
         importados_total += importados
         con_error_total += con_error
         paginas += 1
@@ -406,6 +412,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Un lote_id por ejecucion (no por pagina): identifica de forma
+    # confiable todas las filas insertadas por esta busqueda, para poder
+    # reconstruir despues los bloques de busqueda en los reportes (ver
+    # scripts/report_generator.py) sin depender de adivinar por saltos en
+    # el id.
+    lote_id = datetime.now().isoformat(timespec="seconds")
+
     print(f"Abriendo Chromium en: {URL_BUSQUEDA}")
     print(
         "Completa los filtros que quieras (recuerda: el portal solo permite "
@@ -440,7 +453,9 @@ def main() -> None:
         else:
             print("No se detecto ninguna palabra clave en el formulario; se guardara vacia.")
 
-        importados, con_error, paginas = _procesar_busqueda(page, palabra_clave=palabra_clave)
+        importados, con_error, paginas = _procesar_busqueda(
+            page, palabra_clave=palabra_clave, lote_id=lote_id
+        )
 
         print(
             f"\nBusqueda completa: {importados} registro(s) insertado(s) en "
