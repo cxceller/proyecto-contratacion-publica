@@ -1,22 +1,20 @@
 """Ensambla un informe .docx (Word) que documenta las busquedas realizadas
 en el portal de Compras Publicas (SERCOP) via `scripts/scrape_portal.py`.
 
-Por cada palabra clave, el informe reconstruye los "bloques de busqueda"
-(cada ejecucion del scraper para esa palabra clave) a partir de los
-archivos en `capturas/` -- que se nombran
-`[palabra_clave]_[lote_id]_pag_[numero].png` (formato nuevo, ver
-`scripts/scrape_portal.py::_nombre_captura`) o, para capturas de antes de
-esa migracion, `[palabra_clave]_[fecha_de_ejecucion]_pag_[numero].png`
-(formato legado, solo fecha del dia) -- e inserta, para cada bloque, un
-titulo con el rango de fechas de publicacion de esa tanda de resultados y
-las capturas de pantalla correspondientes. Al final de cada palabra clave
-agrega una tabla con todos los procesos encontrados para esa palabra
-clave.
+Por cada palabra clave, el informe agrega:
+1. Un encabezado consolidado en una sola linea: "RANGO DE BUSQUEDA:
+   [fecha_inicio_global] A [fecha_fin_global] / PALABRA CLAVE:
+   [PALABRA CLAVE EN MAYUSCULAS]" (el rango es el global de toda la
+   busqueda, no uno distinto por cada ejecucion de scraping).
+2. Todas las capturas de pantalla de esa palabra clave encontradas en
+   `capturas/` (ver `_imagenes_de_capturas`), como respaldo visual.
+3. La declaracion "EXISTEN [N] PROCESOS LOS MISMOS QUE SERÁN ANALIZADOS."
+4. Una unica tabla con todos los procesos de esa palabra clave.
 
 Uso tipico (df ya cargado con las columnas del esquema de la API/BD:
 id, codigo, entidad_contratante, objeto_proceso, estado,
 provincia_canton, presupuesto_referencial, fecha_publicacion,
-palabra_clave, url, lote_id):
+palabra_clave, url):
 
     from scripts.report_generator import generar_reporte
 
@@ -26,24 +24,9 @@ palabra_clave, url, lote_id):
         fecha_inicio_global="2025-07-01",
         fecha_fin_global="2026-06-30",
     )
-
-Como se reconstruyen los bloques de busqueda: cada captura del formato
-nuevo trae el `lote_id` (slugificado) en su propio nombre de archivo, asi
-que `_dividir_filas_por_bloque` empareja cada bloque con las filas que
-tienen ESE `lote_id` exacto -- coincidencia directa, sin adivinar nada, y
-funciona aunque haya datos de distintas ejecuciones mezclados con `id`
-consecutivos. Las capturas del formato legado (de antes de esta
-migracion, sin `lote_id` en el nombre) se emparejan con las filas que
-tienen `lote_id` nulo en la base, usando como respaldo un heuristico que
-particiona esas filas por saltos en la secuencia de `id` (el orden de
-insercion/scraping); si ese heuristico no logra igualar la cantidad de
-bloques legados detectados en `capturas/`, esos bloques muestran el rango
-de fechas global de esas filas sin `lote_id` en vez de un valor inventado
-(ver `_dividir_filas_por_bloque` / `_dividir_por_saltos_de_id`).
 """
 import re
 import unicodedata
-from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -93,20 +76,6 @@ def _slug_palabra_clave(palabra_clave: str) -> str:
     sin_acentos = "".join(c for c in sin_acentos if not unicodedata.combining(c))
     slug = re.sub(r"[^a-z0-9]+", "_", sin_acentos.lower()).strip("_")
     return slug or "sin_palabra_clave"
-
-
-def _slug_lote_id(lote_id) -> str | None:
-    """Debe coincidir EXACTAMENTE con la logica de
-    `scripts/scrape_portal.py::_slug_lote_id` (asi es como se nombran las
-    capturas del formato nuevo): reemplaza los caracteres invalidos en un
-    nombre de archivo (los ":" del timestamp ISO) por "-". Devuelve None
-    para valores vacios/nulos, en vez de la cadena "None"."""
-    if lote_id is None or (isinstance(lote_id, float) and pd.isna(lote_id)):
-        return None
-    texto = str(lote_id).strip()
-    if not texto:
-        return None
-    return re.sub(r"[^A-Za-z0-9_-]", "-", texto)
 
 
 def _formatear_fecha_larga(valor) -> str:
@@ -161,42 +130,27 @@ def _observacion(objeto_proceso, palabra_clave: str) -> str:
     return TEXTO_NO_APLICA + _primeras_palabras(objeto_proceso)
 
 
-@dataclass
-class BloqueCapturas:
-    orden: str  # clave de ordenamiento cronologico (string comparable, formato AAAA-MM-DDTHH-MM-SS)
-    lote_id_slug: str | None  # None para capturas del formato legado (solo fecha, sin lote_id)
-    imagenes: list[Path]  # ordenadas por numero de pagina
+def _imagenes_de_capturas(capturas_dir: Path, palabra_clave: str) -> list[Path]:
+    """Devuelve todas las capturas de pantalla de `capturas_dir` que
+    pertenecen a `palabra_clave`, ordenadas cronologicamente (y por numero
+    de pagina dentro de cada ejecucion). Reconoce los dos formatos de
+    nombre de archivo que usa `scripts/scrape_portal.py`:
 
-
-def _bloques_de_capturas(capturas_dir: Path, palabra_clave: str) -> list[BloqueCapturas]:
-    """Agrupa los archivos de capturas/ que pertenecen a `palabra_clave` en
-    bloques de busqueda, ordenados cronologicamente. Reconoce dos formatos
-    de nombre de archivo:
-
-    - Nuevo: `[slug]_[lote_id_slug]_pag_[N].png` -- un grupo por cada
-      `lote_id_slug` distinto (coincide exactamente con una ejecucion de
-      scrape_portal.py/import_csv.py).
-    - Legado (capturas de antes de la migracion a `lote_id`):
-      `[slug]_[dia-mes-anio]_pag_[N].png` -- un grupo por cada fecha
-      distinta; su `lote_id_slug` queda en None."""
+    - Nuevo: `[slug]_[lote_id]_pag_[N].png` (lote_id slugificado, unico
+      por ejecucion, con precision de segundos).
+    - Legado (capturas de antes de esa migracion): `[slug]_[fecha]_pag_[N].png`
+      (solo la fecha del dia)."""
     slug = _slug_palabra_clave(palabra_clave)
     if not capturas_dir.exists():
         return []
 
-    imagenes_por_clave: dict = {}
-    orden_por_clave: dict = {}
-    lote_slug_por_clave: dict = {}
+    encontradas: list[tuple[str, int, Path]] = []  # (orden, pagina, ruta)
 
     for archivo in capturas_dir.iterdir():
         coincidencia = PATRON_CAPTURA_NUEVO.match(archivo.name)
         if coincidencia and coincidencia.group("slug") == slug:
-            lote_slug = coincidencia.group("lote_slug")
-            clave = ("nuevo", lote_slug)
-            orden_por_clave[clave] = lote_slug
-            lote_slug_por_clave[clave] = lote_slug
-            imagenes_por_clave.setdefault(clave, []).append(
-                (int(coincidencia.group("pagina")), archivo)
-            )
+            orden = coincidencia.group("lote_slug")
+            encontradas.append((orden, int(coincidencia.group("pagina")), archivo))
             continue
 
         coincidencia = PATRON_CAPTURA_LEGADO.match(archivo.name)
@@ -207,102 +161,11 @@ def _bloques_de_capturas(capturas_dir: Path, palabra_clave: str) -> list[BloqueC
             fecha = pd.Timestamp(
                 year=int(coincidencia.group("anio")), month=mes_num, day=int(coincidencia.group("dia"))
             ).date()
-            clave = ("legado", fecha)
-            orden_por_clave[clave] = f"{fecha.isoformat()}T00-00-00"
-            lote_slug_por_clave[clave] = None
-            imagenes_por_clave.setdefault(clave, []).append(
-                (int(coincidencia.group("pagina")), archivo)
-            )
+            orden = f"{fecha.isoformat()}T00-00-00"
+            encontradas.append((orden, int(coincidencia.group("pagina")), archivo))
 
-    bloques = []
-    for clave in sorted(imagenes_por_clave, key=lambda c: orden_por_clave[c]):
-        paginas_ordenadas = sorted(imagenes_por_clave[clave], key=lambda t: t[0])
-        bloques.append(
-            BloqueCapturas(
-                orden=orden_por_clave[clave],
-                lote_id_slug=lote_slug_por_clave[clave],
-                imagenes=[ruta for _, ruta in paginas_ordenadas],
-            )
-        )
-    return bloques
-
-
-def _dividir_por_saltos_de_id(df_sin_lote: pd.DataFrame, n_bloques: int) -> list[pd.DataFrame]:
-    """Heuristico de respaldo, solo para filas sin `lote_id` (bases de datos
-    anteriores a esa migracion): reparte las filas (ya ordenadas por `id`)
-    en `n_bloques` tramos contiguos, usando los saltos en la secuencia de
-    `id` como frontera entre ejecuciones de scraping (cada ejecucion inserta
-    sus paginas de forma consecutiva). Si el numero de tramos contiguos
-    detectados no coincide con `n_bloques`, no hay forma confiable de
-    partir: se devuelve el dataframe completo (sin lote_id) para cada
-    bloque (el rango de fechas que se muestre sera entonces el global de
-    esas filas)."""
-    if n_bloques <= 0:
-        return []
-    if df_sin_lote.empty or "id" not in df_sin_lote.columns:
-        return [df_sin_lote] * n_bloques
-
-    filas = df_sin_lote.sort_values("id")
-    ids = filas["id"].tolist()
-
-    tramos, inicio = [], 0
-    for i in range(1, len(ids)):
-        if ids[i] != ids[i - 1] + 1:
-            tramos.append(filas.iloc[inicio:i])
-            inicio = i
-    tramos.append(filas.iloc[inicio:])
-
-    if len(tramos) == n_bloques:
-        return tramos
-    return [df_sin_lote] * n_bloques
-
-
-def _dividir_filas_por_bloque(
-    df_palabra: pd.DataFrame, bloques: list[BloqueCapturas]
-) -> list[pd.DataFrame]:
-    """Empareja cada bloque de capturas con las filas de `df_palabra` que le
-    corresponden, devolviendo una lista de tramos en el MISMO orden que
-    `bloques` (que ya viene cronologico).
-
-    - Bloques del formato nuevo (`lote_id_slug` presente): coincidencia
-      EXACTA contra las filas cuyo `lote_id` (slugificado igual que el
-      nombre de archivo) sea ese mismo valor. Esto funciona aunque haya
-      filas de otras ejecuciones con `id` consecutivos mezcladas, porque ya
-      no se adivina nada por saltos de id.
-    - Bloques del formato legado (`lote_id_slug` es None): se aislan primero
-      las filas de `df_palabra` con `lote_id` nulo (las unicas candidatas a
-      pertenecer a capturas legadas) y se reparten entre esos bloques con
-      `_dividir_por_saltos_de_id`, preservando el orden cronologico relativo
-      entre ellos."""
-    if not bloques:
-        return []
-    if df_palabra.empty:
-        return [df_palabra] * len(bloques)
-
-    if "lote_id" in df_palabra.columns:
-        lote_slug_por_fila = df_palabra["lote_id"].map(_slug_lote_id)
-    else:
-        lote_slug_por_fila = pd.Series(None, index=df_palabra.index)
-
-    df_sin_lote = df_palabra[lote_slug_por_fila.isna()]
-    bloques_legado = [b for b in bloques if b.lote_id_slug is None]
-    tramos_legado = iter(_dividir_por_saltos_de_id(df_sin_lote, len(bloques_legado)))
-    vacio = df_palabra.iloc[0:0]
-
-    tramos = []
-    for bloque in bloques:
-        if bloque.lote_id_slug is not None:
-            tramos.append(df_palabra[lote_slug_por_fila == bloque.lote_id_slug])
-        else:
-            tramos.append(next(tramos_legado, vacio))
-    return tramos
-
-
-def _rango_fechas(tramo: pd.DataFrame) -> tuple[str, str]:
-    fechas = pd.to_datetime(tramo.get("fecha_publicacion"), errors="coerce").dropna()
-    if fechas.empty:
-        return "N/D", "N/D"
-    return fechas.min().strftime("%d/%m/%Y"), fechas.max().strftime("%d/%m/%Y")
+    encontradas.sort(key=lambda t: (t[0], t[1]))
+    return [ruta for _, _, ruta in encontradas]
 
 
 def _agregar_hipervinculo(parrafo, texto: str, url: str) -> None:
@@ -400,6 +263,9 @@ def generar_reporte(
     )
 
     clave_normalizada_por_fila = df["palabra_clave"].map(_normalizar_texto)
+    rango_fechas_global = (
+        f"{_formatear_fecha_corta(fecha_inicio_global)} A {_formatear_fecha_corta(fecha_fin_global)}"
+    )
 
     for palabra_clave in palabras_clave:
         df_palabra = df[clave_normalizada_por_fila == _normalizar_texto(palabra_clave)]
@@ -408,18 +274,13 @@ def generar_reporte(
         if "id" in df_palabra.columns:
             df_palabra = df_palabra.sort_values("id")
 
-        bloques = _bloques_de_capturas(capturas_path, palabra_clave)
-        tramos = _dividir_filas_por_bloque(df_palabra, bloques)
+        encabezado = documento.add_paragraph()
+        encabezado.add_run(
+            f"RANGO DE BUSQUEDA: {rango_fechas_global} / PALABRA CLAVE: {palabra_clave.upper()}"
+        ).bold = True
 
-        for bloque, tramo in zip(bloques, tramos):
-            rango_inicio, rango_fin = _rango_fechas(tramo)
-
-            documento.add_heading("Proceso Régimen Común", level=2)
-            documento.add_paragraph(f"Palabra Clave: {palabra_clave}")
-            documento.add_paragraph(f"RANGO DE BUSQUEDA: {rango_inicio} A {rango_fin}")
-
-            for imagen in bloque.imagenes:
-                documento.add_picture(str(imagen), width=Inches(6))
+        for imagen in _imagenes_de_capturas(capturas_path, palabra_clave):
+            documento.add_picture(str(imagen), width=Inches(6))
 
         documento.add_paragraph(
             f"EXISTEN {len(df_palabra)} PROCESOS LOS MISMOS QUE SERÁN "
