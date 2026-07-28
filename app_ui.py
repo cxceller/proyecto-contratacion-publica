@@ -96,9 +96,9 @@ def estado_con_emoji(estado: str) -> str:
     return f"{emoji} {texto_canonico}"
 
 
-def api_request(method: str, path: str, **kwargs):
+def api_request(method: str, path: str, timeout: int = 10, **kwargs):
     try:
-        response = requests.request(method, f"{API_URL}{path}", timeout=10, **kwargs)
+        response = requests.request(method, f"{API_URL}{path}", timeout=timeout, **kwargs)
     except requests.exceptions.ConnectionError:
         st.error(
             f"No se pudo conectar a la API en {API_URL}. "
@@ -467,6 +467,89 @@ def render_tabla_con_color(registros: list[dict]):
     )
 
 
+def render_generador_reportes():
+    """Seccion 'Generación de Reportes Automáticos': arma el payload y
+    llama a POST /api/generar-reporte (src/api_reportes.py), que devuelve
+    el .docx generado por scripts/report_generator.py."""
+    st.subheader("📄 Generación de Reportes Automáticos")
+    st.caption(
+        "Genera un informe Word (.docx) con las capturas de pantalla y la "
+        "tabla de procesos de una o varias palabras clave."
+    )
+
+    if "reporte_docx_bytes" not in st.session_state:
+        st.session_state.reporte_docx_bytes = None
+
+    with st.form("form_generar_reporte"):
+        palabras_clave_texto = st.text_input(
+            "Palabras clave (separadas por comas)",
+            placeholder="Ej: luminarias, repotenciacion",
+        )
+        col_inicio, col_fin = st.columns(2)
+        fecha_inicio = col_inicio.date_input("Fecha inicio", value=None)
+        fecha_fin = col_fin.date_input("Fecha fin", value=None)
+        lote_id_texto = st.text_input(
+            "Lote ID (opcional)",
+            placeholder="Ej: 2026-07-28T11:07:02",
+            help=(
+                "Si se indica, acota el reporte a una unica ejecucion de "
+                "scraping/importacion en vez de todo el rango de fechas."
+            ),
+        )
+        enviado = st.form_submit_button("📝 Generar Reporte Word", use_container_width=True)
+
+    if enviado:
+        palabras_clave = [p.strip() for p in palabras_clave_texto.split(",") if p.strip()]
+        if not palabras_clave:
+            st.warning("Ingresa al menos una palabra clave.")
+        elif not fecha_inicio or not fecha_fin:
+            st.warning("Selecciona la fecha de inicio y la fecha de fin.")
+        else:
+            payload = {
+                "palabras_clave": palabras_clave,
+                "fecha_inicio": fecha_inicio.isoformat(),
+                "fecha_fin": fecha_fin.isoformat(),
+            }
+            if lote_id_texto.strip():
+                payload["lote_id"] = lote_id_texto.strip()
+
+            with st.spinner("Generando reporte..."):
+                response = api_request(
+                    "POST", "/api/generar-reporte", json=payload, timeout=60
+                )
+
+            if response is not None:
+                if response.status_code == 200:
+                    st.session_state.reporte_docx_bytes = response.content
+                    st.success("Reporte generado correctamente.")
+                elif response.status_code == 404:
+                    st.session_state.reporte_docx_bytes = None
+                    st.warning(
+                        response.json().get(
+                            "detail",
+                            "No se encontraron procesos para los filtros indicados.",
+                        )
+                    )
+                elif response.status_code == 422:
+                    st.session_state.reporte_docx_bytes = None
+                    errores = response.json().get("detail", [])
+                    mensaje = "; ".join(
+                        f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in errores
+                    )
+                    st.error(f"Datos inválidos: {mensaje}")
+                else:
+                    st.session_state.reporte_docx_bytes = None
+                    st.error(f"Error al generar el reporte: {response.status_code}")
+
+    if st.session_state.reporte_docx_bytes:
+        st.download_button(
+            label="⬇ Descargar Reporte_SERCOP.docx",
+            data=st.session_state.reporte_docx_bytes,
+            file_name="Reporte_SERCOP.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+
 def render_contadores(registros_totales: list[dict]):
     total = len(registros_totales)
     st.subheader("Contador de contrataciones")
@@ -593,6 +676,9 @@ def main():
     )
     render_metricas_resumen(registros_mostrar)
     render_tabla_con_color(registros_mostrar)
+
+    st.divider()
+    render_generador_reportes()
 
 
 if __name__ == "__main__":
