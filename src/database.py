@@ -124,6 +124,43 @@ def get_all_contrataciones(
         conn.close()
 
 
+def get_contrataciones_para_reporte(
+    palabras_clave: list[str],
+    fecha_inicio: str,
+    fecha_fin: str,
+    lote_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Trae los procesos que coinciden con alguna de `palabras_clave`
+    (comparacion por substring, insensible a mayusculas/minusculas igual
+    que `get_all_contrataciones`, para tolerar variaciones del dato crudo
+    del portal) dentro del rango `fecha_inicio`/`fecha_fin`, opcionalmente
+    acotado a un `lote_id` (una ejecucion de scraping/importacion puntual).
+    Pensada para alimentar `scripts/report_generator.py::generar_reporte`."""
+    if not palabras_clave:
+        return []
+
+    condiciones_palabra = " OR ".join("palabra_clave LIKE ?" for _ in palabras_clave)
+    query = (
+        f"SELECT * FROM contrataciones WHERE ({condiciones_palabra}) "
+        "AND fecha_publicacion BETWEEN ? AND ?"
+    )
+    params: list[Any] = [f"%{p}%" for p in palabras_clave]
+    params.extend([fecha_inicio, fecha_fin])
+
+    if lote_id:
+        query += " AND lote_id = ?"
+        params.append(lote_id)
+
+    query += " ORDER BY id"
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def get_contratacion_by_id(contratacion_id: int) -> dict[str, Any] | None:
     conn = get_connection()
     try:

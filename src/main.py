@@ -5,6 +5,7 @@ from datetime import date
 from fastapi import FastAPI, HTTPException, Response, status
 
 from src import database
+from src.api_reportes import router as reportes_router
 from src.models import ContratacionCreate, ContratacionOut, ContratacionUpdate
 
 
@@ -15,6 +16,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="API de Contratacion Publica", lifespan=lifespan)
+app.include_router(reportes_router)
 
 
 @app.get("/api/todos", response_model=list[ContratacionOut])
