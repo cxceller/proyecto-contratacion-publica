@@ -40,10 +40,11 @@ from pathlib import Path
 
 import pandas as pd
 from docx import Document
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Emu, Inches, Pt
+from docx.shared import Cm, Emu, Inches, Pt
 
 # Estilo del documento: tipografia general del cuerpo, de titulos/
 # subtitulos y de la tabla, mas el borde de las capturas de pantalla.
@@ -51,14 +52,22 @@ FUENTE = "Tahoma"
 TAMANO_CUERPO_PT = 10
 TAMANO_TITULO_PT = 12
 TAMANO_SUBTITULO_PT = 11
-TAMANO_TABLA_PT = 5
+TAMANO_TABLA_PT = 6  # 5 o 6 pt son legibles en celdas compactas; 6 por legibilidad
 COLOR_BORDE_IMAGEN = "000000"
 GROSOR_BORDE_IMAGEN_PT = 1.0
 
+# Propiedades de tabla pedidas explicitamente (vistas en el dialogo
+# "Propiedades de tabla" de Word): ancho preferido fijo, sangria negativa
+# (extiende la tabla mas alla del margen izquierdo normal) y alto minimo
+# de fila. Ver `_configurar_propiedades_tabla`/`_configurar_propiedades_fila`.
+ANCHO_TABLA_CM = 20.3
+INDENTACION_TABLA_CM = -2.51
+ALTO_MINIMO_FILA_CM = 0.04
+
 # Ancho relativo de cada columna de la tabla (mismo orden que
-# COLUMNAS_TABLA_REPORTE); se reparte proporcionalmente sobre el ancho
-# util real de la hoja (ver `_agregar_tabla_procesos`), para que la tabla
-# ocupe todo el ancho de la pagina sin depender del autofit de Word.
+# COLUMNAS_TABLA_REPORTE); se reparte proporcionalmente sobre
+# ANCHO_TABLA_CM, para que la tabla ocupe exactamente el ancho preferido
+# configurado, sin depender del autofit de Word.
 ANCHOS_RELATIVOS_TABLA = [3, 8, 14, 20, 8, 8, 10, 8, 21]
 
 PATRON_CAPTURA_NUEVO = re.compile(
@@ -127,6 +136,53 @@ def _agregar_borde_imagen(
     relleno.append(color)
     linea.append(relleno)
     propiedades_forma.append(linea)
+
+
+def _configurar_propiedades_tabla(tabla) -> None:
+    """Ancho preferido fijo, alineacion izquierda con sangria negativa y
+    "sin ajuste de texto" (una tabla normal/no flotante, sin <w:tblpPr>,
+    ya se comporta asi por defecto). python-docx no expone `tblW`/
+    `tblInd` via su API publica, asi que se arman a mano en <w:tblPr>."""
+    tabla.alignment = WD_TABLE_ALIGNMENT.LEFT
+
+    tbl_pr = tabla._tbl.tblPr
+    ancho_twips = str(Cm(ANCHO_TABLA_CM).twips)
+
+    tbl_w = tbl_pr.find(qn("w:tblW"))
+    if tbl_w is None:
+        tbl_w = OxmlElement("w:tblW")
+        tbl_pr.append(tbl_w)
+    tbl_w.set(qn("w:type"), "dxa")
+    tbl_w.set(qn("w:w"), ancho_twips)
+
+    tbl_ind = tbl_pr.find(qn("w:tblInd"))
+    if tbl_ind is None:
+        tbl_ind = OxmlElement("w:tblInd")
+        tbl_pr.append(tbl_ind)
+    tbl_ind.set(qn("w:type"), "dxa")
+    tbl_ind.set(qn("w:w"), str(Cm(INDENTACION_TABLA_CM).twips))
+
+
+def _configurar_propiedades_fila(fila, es_encabezado: bool = False) -> None:
+    """Alto minimo de fila, "permitir dividir entre paginas" y, solo para
+    la fila de encabezado, "repetir como fila de encabezado en cada
+    pagina". El orden de insercion en <w:trPr> importa para el esquema
+    OOXML (cantSplit, trHeight, tblHeader, en ese orden), por eso
+    `cantSplit` se agrega ANTES de fijar `height`/`height_rule` (que crea
+    <w:trHeight>) y `tblHeader` se agrega despues."""
+    tr_pr = fila._tr.get_or_add_trPr()
+
+    cant_split = OxmlElement("w:cantSplit")
+    cant_split.set(qn("w:val"), "0")  # 0 = permitir que la fila se divida entre paginas
+    tr_pr.append(cant_split)
+
+    fila.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+    fila.height = Cm(ALTO_MINIMO_FILA_CM)
+
+    if es_encabezado:
+        tbl_header = OxmlElement("w:tblHeader")
+        tbl_header.set(qn("w:val"), "1")
+        tr_pr.append(tbl_header)
 
 
 def _slug_palabra_clave(palabra_clave: str) -> str:
@@ -280,34 +336,34 @@ def _agregar_hipervinculo(parrafo, texto: str, url: str, tamano_pt: float = TAMA
     parrafo._p.append(hyperlink)
 
 
-def _anchos_columnas_tabla(documento: Document) -> list[Emu]:
-    """Reparte el ancho util real de la hoja (ancho de pagina menos
-    margenes izq/der de la primera seccion) entre las columnas de la
-    tabla, proporcional a `ANCHOS_RELATIVOS_TABLA`, para que la tabla
-    ocupe todo el ancho de la pagina con anchos fijos (no autofit)."""
-    seccion = documento.sections[0]
-    ancho_util = seccion.page_width - seccion.left_margin - seccion.right_margin
+def _anchos_columnas_tabla() -> list[Emu]:
+    """Reparte ANCHO_TABLA_CM (el ancho preferido fijo de la tabla) entre
+    las columnas, proporcional a `ANCHOS_RELATIVOS_TABLA`."""
+    ancho_total = Cm(ANCHO_TABLA_CM)
     total_relativo = sum(ANCHOS_RELATIVOS_TABLA)
-    return [Emu(int(ancho_util * peso / total_relativo)) for peso in ANCHOS_RELATIVOS_TABLA]
+    return [Emu(int(ancho_total * peso / total_relativo)) for peso in ANCHOS_RELATIVOS_TABLA]
 
 
-def _fijar_ancho_fila(celdas, anchos: list[Emu]) -> None:
-    # python-docx solo respeta `table.columns[i].width` de forma
-    # confiable si TAMBIEN se fija el ancho de cada celda individual de
-    # esa columna (gotcha conocido de la libreria/Word).
+def _fijar_ancho_y_alineacion_fila(celdas, anchos: list[Emu]) -> None:
     for celda, ancho in zip(celdas, anchos):
+        # python-docx solo respeta `table.columns[i].width` de forma
+        # confiable si TAMBIEN se fija el ancho de cada celda individual
+        # de esa columna (gotcha conocido de la libreria/Word).
         celda.width = ancho
+        celda.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
 
 
 def _agregar_tabla_procesos(documento: Document, filas: pd.DataFrame, palabra_clave: str) -> None:
     tabla = documento.add_table(rows=1, cols=len(COLUMNAS_TABLA_REPORTE))
     tabla.style = "Table Grid"
     tabla.autofit = False  # respeta los anchos fijos en vez de autoajustar al contenido
+    _configurar_propiedades_tabla(tabla)
 
-    anchos = _anchos_columnas_tabla(documento)
+    anchos = _anchos_columnas_tabla()
     for columna, ancho in zip(tabla.columns, anchos):
         columna.width = ancho
-    _fijar_ancho_fila(tabla.rows[0].cells, anchos)
+    _fijar_ancho_y_alineacion_fila(tabla.rows[0].cells, anchos)
+    _configurar_propiedades_fila(tabla.rows[0], es_encabezado=True)
 
     for celda, nombre in zip(tabla.rows[0].cells, COLUMNAS_TABLA_REPORTE):
         celda.text = nombre
@@ -316,8 +372,10 @@ def _agregar_tabla_procesos(documento: Document, filas: pd.DataFrame, palabra_cl
                 _aplicar_fuente(run, TAMANO_TABLA_PT, negrita=True)
 
     for numero, (_, fila) in enumerate(filas.iterrows(), start=1):
-        celdas = tabla.add_row().cells
-        _fijar_ancho_fila(celdas, anchos)
+        fila_tabla = tabla.add_row()
+        celdas = fila_tabla.cells
+        _fijar_ancho_y_alineacion_fila(celdas, anchos)
+        _configurar_propiedades_fila(fila_tabla)
 
         celdas[0].text = str(numero)
         celdas[2].text = str(fila.get("entidad_contratante") or "")
