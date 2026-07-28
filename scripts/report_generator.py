@@ -2,23 +2,28 @@
 en el portal de Compras Publicas (SERCOP) via `scripts/scrape_portal.py`.
 
 Por cada palabra clave, el informe agrega:
-1. Titulo (Tahoma 12 negrita centrado): "RANGO DE BUSQUEDA:
-   [FECHA INICIO GLOBAL] A [FECHA FIN GLOBAL]", con los meses en letras
-   mayusculas en español. Es el rango global de toda la busqueda (el
-   mismo para todas las palabras clave), no uno distinto por cada
-   ejecucion de scraping.
-2. Subtitulo (Tahoma 11 negrita izquierda): "PALABRA CLAVE:
-   [PALABRA CLAVE EN MAYUSCULAS]".
-3. Todas las capturas de pantalla de esa palabra clave encontradas en
-   `capturas/` (ver `_imagenes_de_capturas`), con borde negro solido,
-   como respaldo visual.
+1. Bloque de titulo (una vez), centrado y con sombreado gris: "Proceso
+   Régimen Común" y, debajo, "Palabra Clave: " + la palabra clave en
+   rojo.
+2. El rango de busqueda GLOBAL (una vez): "RANGO DE BUSQUEDA:
+   [FECHA INICIO GLOBAL] A [FECHA FIN GLOBAL]" / "PALABRA CLAVE:
+   [PALABRA CLAVE EN MAYUSCULAS]", con los meses en letras mayusculas en
+   español.
+3. El mismo par de lineas repetido por cada bloque de 6 meses
+   (semestre) dentro de ese rango global (ver `_rangos_semestrales`),
+   seguido de las capturas de pantalla de esa palabra clave que le
+   correspondan a ese semestre (ver `_lotes_de_capturas`), con borde
+   negro solido.
 4. La declaracion "EXISTEN [N] PROCESOS LOS MISMOS QUE SERÁN ANALIZADOS."
-5. Una unica tabla (fuente Tahoma 5, columnas de ancho fijo repartido
-   sobre el ancho util de la hoja) con todos los procesos de esa
-   palabra clave.
+5. Una unica tabla (fuente Tahoma, columnas de ancho fijo) con todos los
+   procesos de esa palabra clave.
 
-El resto del texto general (parrafo introductorio y la linea "EXISTEN...")
-va en Tahoma 10, justificado.
+Los pares "RANGO DE BUSQUEDA.../PALABRA CLAVE..." (global y por
+semestre) van ambos alineados a la izquierda, en Tahoma 12 negrita y
+Tahoma 11 negrita respectivamente, sin sombreado ni color especial (el
+rojo y el sombreado son exclusivos del bloque de titulo, que va
+centrado). El resto del texto general (parrafo introductorio y la
+linea "EXISTEN...") va en Tahoma 10, justificado.
 
 Uso tipico (df ya cargado con las columnas del esquema de la API/BD:
 id, codigo, entidad_contratante, objeto_proceso, estado,
@@ -44,7 +49,7 @@ from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE, WD_T
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Inches, Length, Pt
+from docx.shared import Cm, Inches, Length, Pt, RGBColor
 
 # Estilo del documento: tipografia general del cuerpo, de titulos/
 # subtitulos y de la tabla, mas el borde de las capturas de pantalla.
@@ -55,6 +60,18 @@ TAMANO_SUBTITULO_PT = 11
 TAMANO_TABLA_PT = 6  # 5 o 6 pt son legibles en celdas compactas; 6 por legibilidad
 COLOR_BORDE_IMAGEN = "000000"
 GROSOR_BORDE_IMAGEN_PT = 1.0
+
+# Bloque de titulo ("Proceso Régimen Común" / "Palabra Clave: X"): unico
+# lugar del documento con sombreado de parrafo y con la palabra clave en
+# rojo (en el resto del documento va en negro).
+COLOR_SOMBREADO_TITULO = "D9D9D9"
+COLOR_PALABRA_CLAVE_TITULO = RGBColor(0xFF, 0x00, 0x00)
+
+# Cada palabra clave se documenta ademas en bloques de 6 meses (semestres)
+# dentro del rango global, empezando en fecha_inicio_global -- asi es como
+# el portal SERCOP limita cada busqueda individual (hasta 6 meses antes y
+# 15 dias despues de la fecha de publicacion). Ver `_rangos_semestrales`.
+MESES_POR_SEMESTRE = 6
 
 # Propiedades de tabla pedidas explicitamente (vistas en el dialogo
 # "Propiedades de tabla" de Word): sangria negativa (extiende la tabla
@@ -118,6 +135,17 @@ def _aplicar_fuente(run, tamano_pt: float, negrita: bool | None = None, fuente: 
         r_fonts = OxmlElement("w:rFonts")
         r_pr.append(r_fonts)
     r_fonts.set(qn("w:eastAsia"), fuente)
+
+
+def _aplicar_sombreado(parrafo, color_hex: str) -> None:
+    """Sombreado de fondo para un parrafo completo (<w:shd> dentro de
+    <w:pPr>); python-docx no expone esto via su API publica."""
+    p_pr = parrafo._p.get_or_add_pPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), color_hex)
+    p_pr.append(shd)
 
 
 def _agregar_borde_imagen(
@@ -254,12 +282,17 @@ def _observacion(objeto_proceso, palabra_clave: str) -> str:
     return TEXTO_NO_APLICA + _primeras_palabras(objeto_proceso)
 
 
-def _imagenes_de_capturas(capturas_dir: Path, palabra_clave: str) -> list[Path]:
-    """Devuelve todas las capturas de pantalla de `capturas_dir` que
-    pertenecen a `palabra_clave`, ordenadas cronologicamente (y por numero
-    de pagina dentro de cada ejecucion). Reconoce los dos formatos de
-    nombre de archivo que usa `scripts/scrape_portal.py`:
+def _lotes_de_capturas(capturas_dir: Path, palabra_clave: str) -> list[list[Path]]:
+    """Agrupa las capturas de pantalla de `capturas_dir` que pertenecen a
+    `palabra_clave` por ejecucion de scraping (un grupo = las paginas de
+    una misma busqueda), en orden cronologico. Cada grupo se muestra bajo
+    el bloque semestral que le corresponda por posicion (ver
+    `_rangos_semestrales` y `generar_reporte`): en el uso normal, cada
+    ejecucion cubre un semestre (el portal SERCOP no permite buscar mas
+    de 6 meses de una vez), asi que un grupo = un semestre.
 
+    Reconoce los dos formatos de nombre de archivo que usa
+    `scripts/scrape_portal.py`:
     - Nuevo: `[slug]_[lote_id]_pag_[N].png` (lote_id slugificado, unico
       por ejecucion, con precision de segundos).
     - Legado (capturas de antes de esa migracion): `[slug]_[fecha]_pag_[N].png`
@@ -268,13 +301,17 @@ def _imagenes_de_capturas(capturas_dir: Path, palabra_clave: str) -> list[Path]:
     if not capturas_dir.exists():
         return []
 
-    encontradas: list[tuple[str, int, Path]] = []  # (orden, pagina, ruta)
+    imagenes_por_clave: dict = {}
+    orden_por_clave: dict = {}
 
     for archivo in capturas_dir.iterdir():
         coincidencia = PATRON_CAPTURA_NUEVO.match(archivo.name)
         if coincidencia and coincidencia.group("slug") == slug:
-            orden = coincidencia.group("lote_slug")
-            encontradas.append((orden, int(coincidencia.group("pagina")), archivo))
+            clave = coincidencia.group("lote_slug")
+            orden_por_clave[clave] = clave
+            imagenes_por_clave.setdefault(clave, []).append(
+                (int(coincidencia.group("pagina")), archivo)
+            )
             continue
 
         coincidencia = PATRON_CAPTURA_LEGADO.match(archivo.name)
@@ -285,11 +322,56 @@ def _imagenes_de_capturas(capturas_dir: Path, palabra_clave: str) -> list[Path]:
             fecha = pd.Timestamp(
                 year=int(coincidencia.group("anio")), month=mes_num, day=int(coincidencia.group("dia"))
             ).date()
-            orden = f"{fecha.isoformat()}T00-00-00"
-            encontradas.append((orden, int(coincidencia.group("pagina")), archivo))
+            clave = f"{fecha.isoformat()}T00-00-00"
+            orden_por_clave[clave] = clave
+            imagenes_por_clave.setdefault(clave, []).append(
+                (int(coincidencia.group("pagina")), archivo)
+            )
 
-    encontradas.sort(key=lambda t: (t[0], t[1]))
-    return [ruta for _, _, ruta in encontradas]
+    lotes = []
+    for clave in sorted(imagenes_por_clave, key=lambda c: orden_por_clave[c]):
+        paginas_ordenadas = sorted(imagenes_por_clave[clave], key=lambda t: t[0])
+        lotes.append([ruta for _, ruta in paginas_ordenadas])
+    return lotes
+
+
+def _rangos_semestrales(fecha_inicio_global, fecha_fin_global) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Divide [fecha_inicio_global, fecha_fin_global] en bloques
+    consecutivos de `MESES_POR_SEMESTRE` (6) meses calendario, empezando
+    en fecha_inicio_global. El ultimo bloque se recorta a
+    fecha_fin_global si el bloque calculado se pasa de esa fecha. Si el
+    rango es invalido o de un solo dia, devuelve un unico bloque con todo
+    el rango en vez de una lista vacia."""
+    inicio = pd.to_datetime(fecha_inicio_global)
+    fin = pd.to_datetime(fecha_fin_global)
+    if pd.isna(inicio) or pd.isna(fin) or inicio >= fin:
+        return [(inicio, fin)]
+
+    bloques = []
+    cursor = inicio
+    while cursor < fin:
+        fin_bloque = cursor + pd.DateOffset(months=MESES_POR_SEMESTRE)
+        if fin_bloque > fin:
+            fin_bloque = fin
+        bloques.append((cursor, fin_bloque))
+        cursor = fin_bloque
+    return bloques
+
+
+def _agregar_bloque_rango(documento: Document, rango_texto: str, palabra_clave: str) -> None:
+    """Par de lineas "RANGO DE BUSQUEDA: .../PALABRA CLAVE: ...", ambas
+    alineadas a la izquierda (Tahoma 12 negrita / Tahoma 11 negrita), sin
+    sombreado ni color especial. Se usa tanto para el rango global como
+    para cada bloque semestral."""
+    parrafo_titulo = documento.add_paragraph()
+    parrafo_titulo.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    run_titulo = parrafo_titulo.add_run(f"RANGO DE BUSQUEDA: {rango_texto}")
+    _aplicar_fuente(run_titulo, TAMANO_TITULO_PT, negrita=True)
+
+    parrafo_subtitulo = documento.add_paragraph()
+    parrafo_subtitulo.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    run_subtitulo = parrafo_subtitulo.add_run(f"PALABRA CLAVE: {palabra_clave.upper()}")
+    _aplicar_fuente(run_subtitulo, TAMANO_SUBTITULO_PT, negrita=True)
 
 
 def _agregar_hipervinculo(parrafo, texto: str, url: str, tamano_pt: float = TAMANO_TABLA_PT) -> None:
@@ -455,21 +537,44 @@ def generar_reporte(
         if "id" in df_palabra.columns:
             df_palabra = df_palabra.sort_values("id")
 
-        # Titulo (Tahoma 12, negrita, centrado): el rango de busqueda.
-        parrafo_titulo = documento.add_paragraph()
-        parrafo_titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run_titulo = parrafo_titulo.add_run(f"RANGO DE BUSQUEDA: {rango_fechas_global}")
-        _aplicar_fuente(run_titulo, TAMANO_TITULO_PT, negrita=True)
+        # Bloque de titulo (una vez por palabra clave): "Proceso Régimen
+        # Común" + "Palabra Clave: X" (X en rojo), centrado, con sombreado.
+        parrafo_proceso = documento.add_paragraph()
+        parrafo_proceso.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _aplicar_sombreado(parrafo_proceso, COLOR_SOMBREADO_TITULO)
+        run_proceso = parrafo_proceso.add_run("Proceso Régimen Común")
+        _aplicar_fuente(run_proceso, TAMANO_TITULO_PT, negrita=True)
 
-        # Subtitulo (Tahoma 11, negrita, izquierda): la palabra clave.
-        parrafo_subtitulo = documento.add_paragraph()
-        parrafo_subtitulo.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        run_subtitulo = parrafo_subtitulo.add_run(f"PALABRA CLAVE: {palabra_clave.upper()}")
-        _aplicar_fuente(run_subtitulo, TAMANO_SUBTITULO_PT, negrita=True)
+        parrafo_palabra_titulo = documento.add_paragraph()
+        parrafo_palabra_titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _aplicar_sombreado(parrafo_palabra_titulo, COLOR_SOMBREADO_TITULO)
+        run_etiqueta_titulo = parrafo_palabra_titulo.add_run("Palabra Clave: ")
+        _aplicar_fuente(run_etiqueta_titulo, TAMANO_TITULO_PT, negrita=True)
+        run_palabra_roja = parrafo_palabra_titulo.add_run(palabra_clave.upper())
+        _aplicar_fuente(run_palabra_roja, TAMANO_TITULO_PT, negrita=True)
+        run_palabra_roja.font.color.rgb = COLOR_PALABRA_CLAVE_TITULO
 
-        for imagen in _imagenes_de_capturas(capturas_path, palabra_clave):
-            forma = documento.add_picture(str(imagen), width=Inches(6))
-            _agregar_borde_imagen(forma)
+        # Rango global (una vez por palabra clave).
+        _agregar_bloque_rango(documento, rango_fechas_global, palabra_clave)
+
+        # Bloques semestrales: cada uno con su propio par RANGO/PALABRA
+        # CLAVE, seguido de las capturas que le correspondan por orden
+        # cronologico (ver `_lotes_de_capturas`). Si hay menos lotes de
+        # capturas que semestres (busquedas aun no hechas), esos
+        # semestres quedan sin capturas debajo, no sin encabezado.
+        lotes = _lotes_de_capturas(capturas_path, palabra_clave)
+        semestres = _rangos_semestrales(fecha_inicio_global, fecha_fin_global)
+        for indice, (inicio_semestre, fin_semestre) in enumerate(semestres):
+            rango_semestre = (
+                f"{_formatear_fecha_larga_mayusculas(inicio_semestre)} A "
+                f"{_formatear_fecha_larga_mayusculas(fin_semestre)}"
+            )
+            _agregar_bloque_rango(documento, rango_semestre, palabra_clave)
+
+            imagenes_semestre = lotes[indice] if indice < len(lotes) else []
+            for imagen in imagenes_semestre:
+                forma = documento.add_picture(str(imagen), width=Inches(6))
+                _agregar_borde_imagen(forma)
 
         parrafo_existen = documento.add_paragraph()
         parrafo_existen.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
