@@ -44,7 +44,7 @@ from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE, WD_T
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Emu, Inches, Pt
+from docx.shared import Cm, Inches, Length, Pt
 
 # Estilo del documento: tipografia general del cuerpo, de titulos/
 # subtitulos y de la tabla, mas el borde de las capturas de pantalla.
@@ -57,18 +57,18 @@ COLOR_BORDE_IMAGEN = "000000"
 GROSOR_BORDE_IMAGEN_PT = 1.0
 
 # Propiedades de tabla pedidas explicitamente (vistas en el dialogo
-# "Propiedades de tabla" de Word): ancho preferido fijo, sangria negativa
-# (extiende la tabla mas alla del margen izquierdo normal) y alto minimo
-# de fila. Ver `_configurar_propiedades_tabla`/`_configurar_propiedades_fila`.
-ANCHO_TABLA_CM = 20.3
+# "Propiedades de tabla" de Word): sangria negativa (extiende la tabla
+# mas alla del margen izquierdo normal) y alto minimo de fila. Ver
+# `_configurar_propiedades_tabla`/`_configurar_propiedades_fila`.
 INDENTACION_TABLA_CM = -2.51
 ALTO_MINIMO_FILA_CM = 0.04
 
-# Ancho relativo de cada columna de la tabla (mismo orden que
-# COLUMNAS_TABLA_REPORTE); se reparte proporcionalmente sobre
-# ANCHO_TABLA_CM, para que la tabla ocupe exactamente el ancho preferido
-# configurado, sin depender del autofit de Word.
-ANCHOS_RELATIVOS_TABLA = [3, 8, 14, 20, 8, 8, 10, 8, 21]
+# Ancho FIJO de cada columna de la tabla, en cm (mismo orden que
+# COLUMNAS_TABLA_REPORTE) -- medida exacta, no proporcional. El ancho
+# preferido de la tabla (tblW) es la suma de estos valores, para que
+# quede consistente con el ancho real de las columnas.
+ANCHOS_COLUMNAS_CM = [1, 2, 3, 4.06, 2, 2, 2, 2, 3]
+ANCHO_TABLA_CM = sum(ANCHOS_COLUMNAS_CM)
 
 PATRON_CAPTURA_NUEVO = re.compile(
     r"^(?P<slug>.+)_(?P<lote_slug>\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})_pag_(?P<pagina>\d+)\.png$"
@@ -336,15 +336,14 @@ def _agregar_hipervinculo(parrafo, texto: str, url: str, tamano_pt: float = TAMA
     parrafo._p.append(hyperlink)
 
 
-def _anchos_columnas_tabla() -> list[Emu]:
-    """Reparte ANCHO_TABLA_CM (el ancho preferido fijo de la tabla) entre
-    las columnas, proporcional a `ANCHOS_RELATIVOS_TABLA`."""
-    ancho_total = Cm(ANCHO_TABLA_CM)
-    total_relativo = sum(ANCHOS_RELATIVOS_TABLA)
-    return [Emu(int(ancho_total * peso / total_relativo)) for peso in ANCHOS_RELATIVOS_TABLA]
+def _anchos_columnas_tabla() -> list[Cm]:
+    """Ancho fijo de cada columna, tal como se pide explicitamente (en
+    cm) en `ANCHOS_COLUMNAS_CM`: medida exacta por columna, no una
+    proporcion calculada."""
+    return [Cm(valor_cm) for valor_cm in ANCHOS_COLUMNAS_CM]
 
 
-def _fijar_ancho_y_alineacion_fila(celdas, anchos: list[Emu]) -> None:
+def _fijar_ancho_y_alineacion_fila(celdas, anchos: list[Length]) -> None:
     for celda, ancho in zip(celdas, anchos):
         # python-docx solo respeta `table.columns[i].width` de forma
         # confiable si TAMBIEN se fija el ancho de cada celda individual
