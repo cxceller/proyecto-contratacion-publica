@@ -145,8 +145,12 @@ en la tabla del portal), y las guarda en la base de datos.
   diagnosticar el problema.
 - Por cada pagina de resultados con datos, guarda una captura de pantalla
   completa (`full_page=True`, sin cortes) en `capturas/`, con nombre
-  `[palabra_clave]_[fecha]_pag_[numero].png`
-  (ej. `repotenciacion_23-julio-2026_pag_1.png`).
+  `[palabra_clave]_[lote_id]_pag_[numero].png`
+  (ej. `repotenciacion_2026-07-28T11-07-02_pag_1.png`). El `lote_id`
+  identifica de forma unica esta ejecucion (misma columna `lote_id` que se
+  guarda en la base de datos para cada proceso importado), asi que dos
+  busquedas de la misma palabra clave el mismo dia no se sobrescriben las
+  capturas entre si.
 
 **Importante:** este script abre una ventana visible del navegador, por lo
 que debe ejecutarse desde tu propia terminal (no desde un proceso en segundo
