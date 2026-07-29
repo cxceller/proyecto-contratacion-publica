@@ -442,8 +442,8 @@ def render_mapa_provincias(df: pd.DataFrame):
         color="provincia",
         color_discrete_sequence=PALETA_VIVA,
         size_max=45,
-        zoom=5,
-        center={"lat": -1.8312, "lon": -78.1834},
+        zoom=5.7,
+        center={"lat": -1.83, "lon": -78.18},
         custom_data=["provincia", "capital", "procesos", "presupuesto", "detalle_estados"],
     )
     fig.update_traces(
