@@ -387,9 +387,12 @@ def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
 
 
 def render_mapa_provincias(df: pd.DataFrame):
-    """Mapa de burbujas de Ecuador: un punto en la capital de cada
-    provincia con datos, tamaño y color segun la cantidad de procesos, y
-    el desglose por Estado del Proceso visible al pasar el cursor."""
+    """Mapa geografico real de Ecuador (teselas via Mapbox/Plotly, sin
+    necesidad de token: estilo "carto-positron"), con un punto en la
+    capital de cada provincia con datos. Tamaño de burbuja = volumen
+    total de procesos; color = categorico y distintivo por provincia
+    (PALETA_VIVA). El desglose completo por Estado del Proceso, junto
+    con el total y el presupuesto, se ve al pasar el cursor."""
     st.markdown("**Contrataciones por Provincia (mapa)**")
     if df.empty:
         st.info("No hay datos para el mapa con los filtros actuales.")
@@ -412,7 +415,6 @@ def render_mapa_provincias(df: pd.DataFrame):
             df.loc[df["provincia_clave"] == fila["provincia_clave"], "estado"]
             .fillna("Sin estado")
             .value_counts()
-            .head(6)
         )
         detalle_estados = "<br>".join(f"{estado}: {cantidad}" for estado, cantidad in conteo_estados.items())
 
@@ -431,58 +433,36 @@ def render_mapa_provincias(df: pd.DataFrame):
         return
 
     df_mapa = pd.DataFrame(filas_mapa)
-    maximo_procesos = df_mapa["procesos"].max()
 
-    fig = go.Figure(
-        go.Scattergeo(
-            lat=df_mapa["lat"],
-            lon=df_mapa["lon"],
-            mode="markers+text",
-            text=df_mapa["provincia"],
-            textposition="top center",
-            textfont=dict(
-                size=10, color=COLOR_TEXTO_EJE,
-                family="system-ui, -apple-system, 'Segoe UI', sans-serif",
-            ),
-            marker=dict(
-                size=df_mapa["procesos"],
-                sizemode="area",
-                sizeref=2.0 * maximo_procesos / (40.0**2) if maximo_procesos else 1,
-                sizemin=8,
-                color=df_mapa["procesos"],
-                colorscale=[[0, "#cde2fb"], [0.5, "#3987e5"], [1, "#0d366b"]],
-                colorbar=dict(title="Procesos", tickfont=dict(color=COLOR_TEXTO_EJE)),
-                line=dict(width=1, color="#FFFFFF"),
-            ),
-            customdata=df_mapa[["provincia", "capital", "procesos", "presupuesto", "detalle_estados"]].values,
-            hovertemplate=(
-                "<b>%{customdata[0]}</b> (%{customdata[1]})<br>"
-                "Total procesos: %{customdata[2]}<br>"
-                "Presupuesto total: $ %{customdata[3]:,.2f}<br>"
-                "%{customdata[4]}<extra></extra>"
-            ),
-        )
+    fig = px.scatter_mapbox(
+        df_mapa,
+        lat="lat",
+        lon="lon",
+        size="procesos",
+        color="provincia",
+        color_discrete_sequence=PALETA_VIVA,
+        size_max=45,
+        zoom=5,
+        center={"lat": -1.8312, "lon": -78.1834},
+        custom_data=["provincia", "capital", "procesos", "presupuesto", "detalle_estados"],
     )
-    fig.update_geos(
-        scope="south america",
-        lataxis_range=[-6, 2],
-        lonaxis_range=[-92, -74],
-        showcountries=True,
-        countrycolor=COLOR_GRID,
-        showland=True,
-        landcolor="#F5F5F4",
-        showocean=True,
-        oceancolor="#FFFFFF",
-        showlakes=False,
-        showframe=False,
-        bgcolor=COLOR_LIENZO,
+    fig.update_traces(
+        marker=dict(opacity=0.85),
+        hovertemplate=(
+            "<b>%{customdata[0]}</b> (%{customdata[1]})<br>"
+            "Total procesos: %{customdata[2]}<br>"
+            "Presupuesto total: $ %{customdata[3]:,.2f}<br>"
+            "%{customdata[4]}<extra></extra>"
+        ),
     )
     fig.update_layout(
-        plot_bgcolor=COLOR_LIENZO,
+        mapbox_style="carto-positron",
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=560,
         paper_bgcolor=COLOR_LIENZO,
         font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),
-        margin=dict(l=10, r=10, t=10, b=10),
-        height=420,
+        legend=dict(title="Provincia", font=dict(color=COLOR_TEXTO_EJE)),
+        hoverlabel=dict(bgcolor=COLOR_LIENZO, font_size=13, font_color=COLOR_TEXTO_EJE),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
