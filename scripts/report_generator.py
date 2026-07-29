@@ -669,7 +669,15 @@ def generar_reporte(
             _agregar_bloque_rango(documento, rango_semestre, palabra_clave)
 
             for imagen in imagenes_por_semestre[indice]:
-                forma = documento.add_picture(str(imagen), width=Inches(6))
+                # La imagen se inserta en un parrafo propio con un
+                # pequeño espacio antes: sin ese espacio, Word puede
+                # recortar el trazo superior del borde (se dibuja
+                # centrado en el borde, mitad hacia afuera de la imagen)
+                # contra la caja de linea del parrafo anterior, dejando
+                # los otros 3 lados visibles pero no el de arriba.
+                parrafo_imagen = documento.add_paragraph()
+                parrafo_imagen.paragraph_format.space_before = Pt(6)
+                forma = parrafo_imagen.add_run().add_picture(str(imagen), width=Inches(6))
                 _agregar_borde_imagen(forma)
 
         parrafo_existen = documento.add_paragraph()
