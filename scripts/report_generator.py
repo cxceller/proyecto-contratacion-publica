@@ -2,13 +2,14 @@
 en el portal de Compras Publicas (SERCOP) via `scripts/scrape_portal.py`.
 
 Por cada palabra clave, el informe agrega:
-1. Bloque de titulo (una vez), centrado y con sombreado gris: "Proceso
-   Régimen Común" y, debajo, "Palabra Clave: " + la palabra clave en
-   rojo.
+1. Bloque de titulo (una vez), centrado, Tahoma 12 negrita, sin
+   sombreado: "Proceso Régimen Común" y, debajo, "Palabra Clave: " + la
+   palabra clave en rojo.
 2. El rango de busqueda GLOBAL (una vez): "RANGO DE BUSQUEDA:
    [FECHA INICIO GLOBAL] A [FECHA FIN GLOBAL]" / "PALABRA CLAVE:
    [PALABRA CLAVE EN MAYUSCULAS]", con los meses en letras mayusculas en
-   español.
+   español, Tahoma 10, alineado a la izquierda, con negrita solo en la
+   etiqueta ("RANGO DE BUSQUEDA:" / "PALABRA CLAVE") y no en el valor.
 3. El mismo par de lineas repetido por cada bloque de 6 meses
    (semestre) dentro de ese rango global (ver `_rangos_semestrales`),
    seguido de las capturas de pantalla que le correspondan a ese
@@ -21,12 +22,11 @@ Por cada palabra clave, el informe agrega:
 5. Una unica tabla (fuente Tahoma, columnas de ancho fijo) con todos los
    procesos de esa palabra clave.
 
-Los pares "RANGO DE BUSQUEDA.../PALABRA CLAVE..." (global y por
-semestre) van ambos alineados a la izquierda, en Tahoma 12 negrita y
-Tahoma 11 negrita respectivamente, sin sombreado ni color especial (el
-rojo y el sombreado son exclusivos del bloque de titulo, que va
-centrado). El resto del texto general (parrafo introductorio y la
-linea "EXISTEN...") va en Tahoma 10, justificado.
+El parrafo introductorio ("1.- Se procede...") va en Tahoma 10,
+justificado, con negrita selectiva en "1.- ", "PORTAL DE COMPRAS
+PÚBLICAS" y la lista de palabras clave entrecomilladas (“asi”), igual
+que el modelo de referencia; el resto del texto general (incluida la
+linea "EXISTEN...") no lleva negrita.
 
 Uso tipico (df ya cargado con las columnas del esquema de la API/BD:
 id, codigo, entidad_contratante, objeto_proceso, estado,
@@ -54,21 +54,29 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Length, Pt, RGBColor
 
-# Estilo del documento: tipografia general del cuerpo, de titulos/
-# subtitulos y de la tabla, mas el borde de las capturas de pantalla.
+# Estilo del documento: tipografia general del cuerpo, de titulos y de
+# la tabla, mas el borde de las capturas de pantalla.
 FUENTE = "Tahoma"
 TAMANO_CUERPO_PT = 10
 TAMANO_TITULO_PT = 12
-TAMANO_SUBTITULO_PT = 11
 TAMANO_TABLA_PT = 6  # 5 o 6 pt son legibles en celdas compactas; 6 por legibilidad
 COLOR_BORDE_IMAGEN = "000000"
 GROSOR_BORDE_IMAGEN_PT = 1.0
 
 # Bloque de titulo ("Proceso Régimen Común" / "Palabra Clave: X"): unico
-# lugar del documento con sombreado de parrafo y con la palabra clave en
-# rojo (en el resto del documento va en negro).
-COLOR_SOMBREADO_TITULO = "D9D9D9"
+# lugar del documento con la palabra clave en rojo (en el resto del
+# documento va en negro). Sin sombreado de parrafo.
 COLOR_PALABRA_CLAVE_TITULO = RGBColor(0xFF, 0x00, 0x00)
+
+# Numeros pequeños en letras, para "N (num_en_letras) años" en el parrafo
+# introductorio; si el numero no esta en el diccionario, se muestra solo
+# el numeral.
+NUMEROS_EN_LETRAS = {
+    1: "uno", 2: "dos", 3: "tres", 4: "cuatro", 5: "cinco",
+    6: "seis", 7: "siete", 8: "ocho", 9: "nueve", 10: "diez",
+    11: "once", 12: "doce", 13: "trece", 14: "catorce", 15: "quince",
+    16: "dieciséis", 17: "diecisiete", 18: "dieciocho", 19: "diecinueve", 20: "veinte",
+}
 
 # Cada palabra clave se documenta ademas en bloques de 6 meses (semestres)
 # dentro del rango global, empezando en fecha_inicio_global -- asi es como
@@ -138,17 +146,6 @@ def _aplicar_fuente(run, tamano_pt: float, negrita: bool | None = None, fuente: 
         r_fonts = OxmlElement("w:rFonts")
         r_pr.append(r_fonts)
     r_fonts.set(qn("w:eastAsia"), fuente)
-
-
-def _aplicar_sombreado(parrafo, color_hex: str) -> None:
-    """Sombreado de fondo para un parrafo completo (<w:shd> dentro de
-    <w:pPr>); python-docx no expone esto via su API publica."""
-    p_pr = parrafo._p.get_or_add_pPr()
-    shd = OxmlElement("w:shd")
-    shd.set(qn("w:val"), "clear")
-    shd.set(qn("w:color"), "auto")
-    shd.set(qn("w:fill"), color_hex)
-    p_pr.append(shd)
 
 
 def _agregar_borde_imagen(
@@ -227,19 +224,37 @@ def _slug_palabra_clave(palabra_clave: str) -> str:
     return slug or "sin_palabra_clave"
 
 
-def _formatear_fecha_larga(valor) -> str:
-    """'2026-07-23' -> '23 de julio de 2026' (para el parrafo introductorio)."""
+def _formatear_fecha_larga(valor, conector_anio: str = "de") -> str:
+    """'2026-07-23' -> '23 de julio de 2026' (conector_anio='de', para
+    los encabezados de RANGO DE BUSQUEDA en mayusculas) o '23 de julio
+    del 2026' (conector_anio='del', para el parrafo introductorio, que
+    asi lo redacta el modelo de referencia)."""
     fecha = pd.to_datetime(valor, errors="coerce")
     if pd.isna(fecha):
         return str(valor)
     meses_por_numero = {v: k for k, v in MESES_ES.items()}
-    return f"{fecha.day} de {meses_por_numero[fecha.month]} de {fecha.year}"
+    return f"{fecha.day} de {meses_por_numero[fecha.month]} {conector_anio} {fecha.year}"
 
 
 def _formatear_fecha_larga_mayusculas(valor) -> str:
     """'2026-07-23' -> '23 DE JULIO DE 2026' (para los encabezados de
     RANGO DE BUSQUEDA)."""
-    return _formatear_fecha_larga(valor).upper()
+    return _formatear_fecha_larga(valor, conector_anio="de").upper()
+
+
+def _numero_en_letras(numero: int) -> str:
+    return NUMEROS_EN_LETRAS.get(numero, str(numero))
+
+
+def _anios_entre(fecha_inicio, fecha_fin) -> int:
+    """Cantidad de años (redondeada, minimo 1) entre dos fechas, para la
+    frase 'dentro de los N (n_en_letras) años' del parrafo introductorio."""
+    inicio = pd.to_datetime(fecha_inicio, errors="coerce")
+    fin = pd.to_datetime(fecha_fin, errors="coerce")
+    if pd.isna(inicio) or pd.isna(fin):
+        return 1
+    dias = (fin - inicio).days
+    return max(1, round(dias / 365.25))
 
 
 def _formatear_fecha_corta(valor) -> str:
@@ -261,14 +276,17 @@ def _formatear_moneda(valor) -> str:
         return str(valor)
 
 
-def _formatear_lista_con_y(elementos: list[str]) -> str:
-    """['a'] -> 'a'; ['a','b'] -> 'a y b'; ['a','b','c'] -> 'a, b y c'."""
+def _formatear_lista_con_comillas_y(elementos: list[str]) -> str:
+    """['a'] -> '“a”'; ['a','b'] -> '“a” y “b”'; ['a','b','c'] ->
+    '“a”, “b” y “c”' (comillas tipograficas, como en el parrafo
+    introductorio del modelo de referencia)."""
     elementos = [str(e).strip() for e in elementos if str(e).strip()]
     if not elementos:
         return ""
-    if len(elementos) == 1:
-        return elementos[0]
-    return ", ".join(elementos[:-1]) + " y " + elementos[-1]
+    entrecomilladas = [f"“{e}”" for e in elementos]
+    if len(entrecomilladas) == 1:
+        return entrecomilladas[0]
+    return ", ".join(entrecomilladas[:-1]) + " y " + entrecomilladas[-1]
 
 
 def _primeras_palabras(texto, n: int = 8) -> str:
@@ -423,19 +441,23 @@ def _rangos_semestrales(fecha_inicio_global, fecha_fin_global) -> list[tuple[pd.
 
 
 def _agregar_bloque_rango(documento: Document, rango_texto: str, palabra_clave: str) -> None:
-    """Par de lineas "RANGO DE BUSQUEDA: .../PALABRA CLAVE: ...", ambas
-    alineadas a la izquierda (Tahoma 12 negrita / Tahoma 11 negrita), sin
-    sombreado ni color especial. Se usa tanto para el rango global como
-    para cada bloque semestral."""
-    parrafo_titulo = documento.add_paragraph()
-    parrafo_titulo.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    run_titulo = parrafo_titulo.add_run(f"RANGO DE BUSQUEDA: {rango_texto}")
-    _aplicar_fuente(run_titulo, TAMANO_TITULO_PT, negrita=True)
+    """Par de lineas "RANGO DE BUSQUEDA: .../PALABRA CLAVE: ...", Tahoma
+    10 (tamaño de cuerpo), alineadas a la izquierda, con negrita SOLO en
+    la etiqueta ("RANGO DE BUSQUEDA:" / "PALABRA CLAVE"), no en el valor.
+    Se usa tanto para el rango global como para cada bloque semestral."""
+    parrafo_rango = documento.add_paragraph()
+    parrafo_rango.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    run_etiqueta = parrafo_rango.add_run("RANGO DE BUSQUEDA:")
+    _aplicar_fuente(run_etiqueta, TAMANO_CUERPO_PT, negrita=True)
+    run_valor = parrafo_rango.add_run(f" {rango_texto}")
+    _aplicar_fuente(run_valor, TAMANO_CUERPO_PT, negrita=False)
 
-    parrafo_subtitulo = documento.add_paragraph()
-    parrafo_subtitulo.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    run_subtitulo = parrafo_subtitulo.add_run(f"PALABRA CLAVE: {palabra_clave.upper()}")
-    _aplicar_fuente(run_subtitulo, TAMANO_SUBTITULO_PT, negrita=True)
+    parrafo_palabra = documento.add_paragraph()
+    parrafo_palabra.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    run_etiqueta_palabra = parrafo_palabra.add_run("PALABRA CLAVE")
+    _aplicar_fuente(run_etiqueta_palabra, TAMANO_CUERPO_PT, negrita=True)
+    run_valor_palabra = parrafo_palabra.add_run(f": {palabra_clave.upper()}")
+    _aplicar_fuente(run_valor_palabra, TAMANO_CUERPO_PT, negrita=False)
 
 
 def _agregar_hipervinculo(parrafo, texto: str, url: str, tamano_pt: float = TAMANO_TABLA_PT) -> None:
@@ -573,20 +595,30 @@ def generar_reporte(
     estilo_normal.font.name = FUENTE
     estilo_normal.font.size = Pt(TAMANO_CUERPO_PT)
 
-    lista_formateada = _formatear_lista_con_y(palabras_clave)
+    lista_comillas = _formatear_lista_con_comillas_y(palabras_clave)
+    anios = _anios_entre(fecha_inicio_global, fecha_fin_global)
+
     parrafo_intro = documento.add_paragraph()
     parrafo_intro.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    run_intro = parrafo_intro.add_run(
-        "1.- Se procede a realizar la búsqueda en el PORTAL DE COMPRAS "
-        f"PÚBLICAS, con las palabras clave {lista_formateada} en un periodo "
-        f"desde el {_formatear_fecha_larga(fecha_inicio_global)} hasta el "
-        f"{_formatear_fecha_larga(fecha_fin_global)}, estas búsquedas pueden "
-        "verificarse en la presente documentación, se detallan observaciones "
-        "del análisis realizado y los respaldos gráficos (capturas de "
-        "pantalla) de las contrataciones anteriores realizadas a nivel "
-        "nacional."
+
+    def _run_intro(texto: str, negrita: bool = False):
+        run = parrafo_intro.add_run(texto)
+        _aplicar_fuente(run, TAMANO_CUERPO_PT, negrita=negrita)
+        return run
+
+    _run_intro("1.- ", negrita=True)
+    _run_intro("Se procede a realizar la búsqueda en el ")
+    _run_intro("PORTAL DE COMPRAS PÚBLICAS", negrita=True)
+    _run_intro(", con la primera palabra clave ")
+    _run_intro(lista_comillas, negrita=True)
+    _run_intro(
+        f" en un periodo dentro de los {anios} ({_numero_en_letras(anios)}) años, "
+        f"desde el {_formatear_fecha_larga(fecha_inicio_global, 'del')} hasta el "
+        f"{_formatear_fecha_larga(fecha_fin_global, 'del')}, estas búsquedas pueden "
+        "verificarse en la presente documentación, se detallan observaciones del "
+        "análisis realizado y los respaldos gráficos (capturas de pantalla) de las "
+        "contrataciones anteriores realizadas a nivel nacional."
     )
-    _aplicar_fuente(run_intro, TAMANO_CUERPO_PT)
 
     clave_normalizada_por_fila = df["palabra_clave"].map(_normalizar_texto)
     rango_fechas_global = (
@@ -602,16 +634,14 @@ def generar_reporte(
             df_palabra = df_palabra.sort_values("id")
 
         # Bloque de titulo (una vez por palabra clave): "Proceso Régimen
-        # Común" + "Palabra Clave: X" (X en rojo), centrado, con sombreado.
+        # Común" + "Palabra Clave: X" (X en rojo), centrado, sin sombreado.
         parrafo_proceso = documento.add_paragraph()
         parrafo_proceso.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _aplicar_sombreado(parrafo_proceso, COLOR_SOMBREADO_TITULO)
         run_proceso = parrafo_proceso.add_run("Proceso Régimen Común")
         _aplicar_fuente(run_proceso, TAMANO_TITULO_PT, negrita=True)
 
         parrafo_palabra_titulo = documento.add_paragraph()
         parrafo_palabra_titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _aplicar_sombreado(parrafo_palabra_titulo, COLOR_SOMBREADO_TITULO)
         run_etiqueta_titulo = parrafo_palabra_titulo.add_run("Palabra Clave: ")
         _aplicar_fuente(run_etiqueta_titulo, TAMANO_TITULO_PT, negrita=True)
         run_palabra_roja = parrafo_palabra_titulo.add_run(palabra_clave.upper())
