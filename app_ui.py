@@ -7,6 +7,7 @@ Consume la API FastAPI (src/main.py) via requests. Arranque:
 """
 import os
 import re
+import unicodedata
 from datetime import date
 
 import pandas as pd
@@ -61,6 +62,58 @@ COLOR_LIENZO = "#FFFFFF"  # plot_bgcolor / paper_bgcolor: fondo claro fijo,
 COLOR_GRID = "#E0E0E0"  # gridlines grises muy tenues
 COLOR_AXIS = "black"  # linea solida de eje ("trazo de tinta")
 COLOR_TEXTO_EJE = "black"  # texto de ejes/fuente general, alto contraste sobre el lienzo claro
+
+# Capital y coordenadas (lat, lon) de cada una de las 24 provincias del
+# Ecuador, para ubicar el mapa de burbujas del Dashboard Analitico. Clave
+# normalizada (mayusculas, sin tildes) para no depender de como venga
+# escrito "provincia_canton" en el dato crudo del portal (ver
+# `extraer_provincia`).
+CAPITALES_PROVINCIA = {
+    "AZUAY": {"nombre": "Azuay", "capital": "Cuenca", "lat": -2.9001, "lon": -79.0059},
+    "BOLIVAR": {"nombre": "Bolívar", "capital": "Guaranda", "lat": -1.5905, "lon": -79.0011},
+    "CANAR": {"nombre": "Cañar", "capital": "Azogues", "lat": -2.7397, "lon": -78.8483},
+    "CARCHI": {"nombre": "Carchi", "capital": "Tulcán", "lat": 0.8117, "lon": -77.7172},
+    "CHIMBORAZO": {"nombre": "Chimborazo", "capital": "Riobamba", "lat": -1.6636, "lon": -78.6546},
+    "COTOPAXI": {"nombre": "Cotopaxi", "capital": "Latacunga", "lat": -0.9345, "lon": -78.6157},
+    "EL ORO": {"nombre": "El Oro", "capital": "Machala", "lat": -3.2581, "lon": -79.9553},
+    "ESMERALDAS": {"nombre": "Esmeraldas", "capital": "Esmeraldas", "lat": 0.9592, "lon": -79.6564},
+    "GALAPAGOS": {
+        "nombre": "Galápagos", "capital": "Pto. Baquerizo Moreno", "lat": -0.9014, "lon": -89.6089,
+    },
+    "GUAYAS": {"nombre": "Guayas", "capital": "Guayaquil", "lat": -2.1962, "lon": -79.8862},
+    "IMBABURA": {"nombre": "Imbabura", "capital": "Ibarra", "lat": 0.3517, "lon": -78.1223},
+    "LOJA": {"nombre": "Loja", "capital": "Loja", "lat": -3.9931, "lon": -79.2042},
+    "LOS RIOS": {"nombre": "Los Ríos", "capital": "Babahoyo", "lat": -1.8021, "lon": -79.5346},
+    "MANABI": {"nombre": "Manabí", "capital": "Portoviejo", "lat": -1.0546, "lon": -80.4545},
+    "MORONA SANTIAGO": {"nombre": "Morona Santiago", "capital": "Macas", "lat": -2.3072, "lon": -78.1136},
+    "NAPO": {"nombre": "Napo", "capital": "Tena", "lat": -0.9948, "lon": -77.8134},
+    "ORELLANA": {
+        "nombre": "Orellana", "capital": "Pto. Fco. de Orellana", "lat": -0.4653, "lon": -76.9836,
+    },
+    "PASTAZA": {"nombre": "Pastaza", "capital": "Puyo", "lat": -1.4924, "lon": -78.0022},
+    "PICHINCHA": {"nombre": "Pichincha", "capital": "Quito", "lat": -0.1807, "lon": -78.4678},
+    "SANTA ELENA": {"nombre": "Santa Elena", "capital": "Santa Elena", "lat": -2.2270, "lon": -80.8592},
+    "SANTO DOMINGO DE LOS TSACHILAS": {
+        "nombre": "Sto. Domingo de los Tsáchilas", "capital": "Santo Domingo",
+        "lat": -0.2542, "lon": -79.1719,
+    },
+    "SUCUMBIOS": {"nombre": "Sucumbíos", "capital": "Nueva Loja", "lat": 0.0842, "lon": -76.8897},
+    "TUNGURAHUA": {"nombre": "Tungurahua", "capital": "Ambato", "lat": -1.2543, "lon": -78.6229},
+    "ZAMORA CHINCHIPE": {"nombre": "Zamora Chinchipe", "capital": "Zamora", "lat": -4.0669, "lon": -78.9558},
+}
+
+
+def _normalizar_texto_provincia(texto: str) -> str:
+    sin_acentos = unicodedata.normalize("NFKD", str(texto or ""))
+    sin_acentos = "".join(c for c in sin_acentos if not unicodedata.combining(c))
+    return sin_acentos.strip().upper()
+
+
+def extraer_provincia(provincia_canton: str) -> str:
+    """'GUAYAS / GUAYAQUIL' -> 'GUAYAS' (clave normalizada, sin tildes,
+    para buscar en CAPITALES_PROVINCIA)."""
+    texto = str(provincia_canton or "").split("/")[0]
+    return _normalizar_texto_provincia(texto)
 
 
 # Indicador de estado como emoji + texto (en vez de pintar el fondo de toda
@@ -155,6 +208,7 @@ def preparar_dataframe(registros: list[dict]) -> pd.DataFrame:
     df["anio_mes"] = df["fecha_publicacion"].dt.strftime("%Y-%m")
     df["provincia_canton"] = df["provincia_canton"].fillna("Sin especificar")
     df["tipo_compra"] = df["objeto_proceso"].apply(extraer_tipo_compra)
+    df["provincia_clave"] = df["provincia_canton"].apply(extraer_provincia)
     return df
 
 
@@ -330,6 +384,113 @@ def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
     )
     _aplicar_estilo_base(fig, altura=max(320, 34 * len(resumen)))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_mapa_provincias(df: pd.DataFrame):
+    """Mapa de burbujas de Ecuador: un punto en la capital de cada
+    provincia con datos, tamaño y color segun la cantidad de procesos, y
+    el desglose por Estado del Proceso visible al pasar el cursor."""
+    st.markdown("**Contrataciones por Provincia (mapa)**")
+    if df.empty:
+        st.info("No hay datos para el mapa con los filtros actuales.")
+        return
+
+    resumen = df.groupby("provincia_clave", as_index=False).agg(
+        procesos=("id", "count"), presupuesto_total=("presupuesto_referencial", "sum")
+    )
+
+    filas_mapa = []
+    provincias_sin_ubicar = []
+    for _, fila in resumen.iterrows():
+        info = CAPITALES_PROVINCIA.get(fila["provincia_clave"])
+        if info is None:
+            if fila["provincia_clave"]:
+                provincias_sin_ubicar.append(fila["provincia_clave"])
+            continue
+
+        conteo_estados = (
+            df.loc[df["provincia_clave"] == fila["provincia_clave"], "estado"]
+            .fillna("Sin estado")
+            .value_counts()
+            .head(6)
+        )
+        detalle_estados = "<br>".join(f"{estado}: {cantidad}" for estado, cantidad in conteo_estados.items())
+
+        filas_mapa.append({
+            "provincia": info["nombre"],
+            "capital": info["capital"],
+            "lat": info["lat"],
+            "lon": info["lon"],
+            "procesos": fila["procesos"],
+            "presupuesto": fila["presupuesto_total"] or 0,
+            "detalle_estados": detalle_estados,
+        })
+
+    if not filas_mapa:
+        st.info("No se pudo ubicar ninguna provincia de los datos filtrados en el mapa.")
+        return
+
+    df_mapa = pd.DataFrame(filas_mapa)
+    maximo_procesos = df_mapa["procesos"].max()
+
+    fig = go.Figure(
+        go.Scattergeo(
+            lat=df_mapa["lat"],
+            lon=df_mapa["lon"],
+            mode="markers+text",
+            text=df_mapa["provincia"],
+            textposition="top center",
+            textfont=dict(
+                size=10, color=COLOR_TEXTO_EJE,
+                family="system-ui, -apple-system, 'Segoe UI', sans-serif",
+            ),
+            marker=dict(
+                size=df_mapa["procesos"],
+                sizemode="area",
+                sizeref=2.0 * maximo_procesos / (40.0**2) if maximo_procesos else 1,
+                sizemin=8,
+                color=df_mapa["procesos"],
+                colorscale=[[0, "#cde2fb"], [0.5, "#3987e5"], [1, "#0d366b"]],
+                colorbar=dict(title="Procesos", tickfont=dict(color=COLOR_TEXTO_EJE)),
+                line=dict(width=1, color="#FFFFFF"),
+            ),
+            customdata=df_mapa[["provincia", "capital", "procesos", "presupuesto", "detalle_estados"]].values,
+            hovertemplate=(
+                "<b>%{customdata[0]}</b> (%{customdata[1]})<br>"
+                "Total procesos: %{customdata[2]}<br>"
+                "Presupuesto total: $ %{customdata[3]:,.2f}<br>"
+                "%{customdata[4]}<extra></extra>"
+            ),
+        )
+    )
+    fig.update_geos(
+        scope="south america",
+        lataxis_range=[-6, 2],
+        lonaxis_range=[-92, -74],
+        showcountries=True,
+        countrycolor=COLOR_GRID,
+        showland=True,
+        landcolor="#F5F5F4",
+        showocean=True,
+        oceancolor="#FFFFFF",
+        showlakes=False,
+        showframe=False,
+        bgcolor=COLOR_LIENZO,
+    )
+    fig.update_layout(
+        plot_bgcolor=COLOR_LIENZO,
+        paper_bgcolor=COLOR_LIENZO,
+        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),
+        margin=dict(l=10, r=10, t=10, b=10),
+        height=420,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    if provincias_sin_ubicar:
+        st.caption(
+            "No se pudo ubicar en el mapa (provincia no reconocida): "
+            + ", ".join(sorted(set(provincias_sin_ubicar)))
+        )
 
 
 def render_tablas_resumen(df: pd.DataFrame):
@@ -665,6 +826,7 @@ def main():
     with col_provincia:
         render_grafico_provincia(df_filtrado)
 
+    render_mapa_provincias(df_filtrado)
     render_tablas_resumen(df_filtrado)
 
     st.divider()
