@@ -18,6 +18,20 @@ import streamlit as st
 
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 
+# Panel lateral de navegacion (estilo ERP: fondo oscuro, etiqueta de
+# seccion con acento de color, items con icono + texto claro).
+COLOR_SIDEBAR_FONDO = "#1E293B"
+COLOR_SIDEBAR_TEXTO = "#CBD5E1"
+COLOR_SIDEBAR_TEXTO_ACTIVO = "#FFFFFF"
+COLOR_SIDEBAR_ACENTO = "#FF9800"  # mismo naranja de PALETA_VIVA, como acento de marca
+
+NAV_ITEMS = [
+    ("Dashboard", "📊"),
+    ("Procesos", "📋"),
+    ("Reportes", "📄"),
+    ("Configuración", "⚙️"),
+]
+
 # Estados tal como los expone el portal de Compras Publicas (algunos truncados).
 ESTADOS = [
     "Cancelado",
@@ -796,44 +810,105 @@ def render_vaciar_base_datos():
         st.rerun()
 
 
-def main():
-    st.set_page_config(page_title="Contratación Pública Ecuador", layout="wide")
-    st.title("Procesos de Contratación Pública")
+def _inyectar_estilos_sidebar() -> None:
+    """CSS del panel lateral de navegacion: fondo oscuro, texto claro y
+    el item activo resaltado (boton `type="primary"`, con acento de color
+    a la izquierda) -- el sidebar ahora es navegacion pura (Dashboard/
+    Procesos/Reportes/Configuración), sin filtros ni widgets sueltos, por
+    eso se puede forzar el color de texto para TODO su contenido."""
+    st.markdown(
+        f"""
+        <style>
+        [data-testid="stSidebar"] {{
+            background-color: {COLOR_SIDEBAR_FONDO};
+        }}
+        [data-testid="stSidebar"] * {{
+            color: {COLOR_SIDEBAR_TEXTO};
+        }}
+        .sercop-brand {{
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.25rem 0 1.5rem 0;
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: {COLOR_SIDEBAR_TEXTO_ACTIVO} !important;
+            letter-spacing: 0.02em;
+        }}
+        .sercop-brand-icon {{
+            font-size: 1.3rem;
+        }}
+        .sercop-nav-label {{
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.09em;
+            color: {COLOR_SIDEBAR_TEXTO} !important;
+            text-transform: uppercase;
+            border-bottom: 2px solid {COLOR_SIDEBAR_ACENTO};
+            padding-bottom: 0.6rem;
+            margin-bottom: 0.85rem;
+        }}
+        [data-testid="stSidebar"] .stButton > button {{
+            background-color: transparent;
+            border: none;
+            border-left: 3px solid transparent;
+            border-radius: 4px;
+            text-align: left;
+            justify-content: flex-start;
+            color: {COLOR_SIDEBAR_TEXTO} !important;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            padding: 0.55rem 0.8rem;
+            margin-bottom: 0.15rem;
+            box-shadow: none;
+            width: 100%;
+        }}
+        [data-testid="stSidebar"] .stButton > button:hover {{
+            background-color: rgba(255, 255, 255, 0.08);
+            color: {COLOR_SIDEBAR_TEXTO_ACTIVO} !important;
+        }}
+        [data-testid="stSidebar"] .stButton > button:focus:not(:active) {{
+            box-shadow: none;
+        }}
+        [data-testid="stSidebar"] .stButton > button[kind="primary"] {{
+            background-color: rgba(255, 255, 255, 0.10);
+            border-left: 3px solid {COLOR_SIDEBAR_ACENTO};
+            color: {COLOR_SIDEBAR_TEXTO_ACTIVO} !important;
+        }}
+        [data-testid="stSidebar"] hr {{
+            border-color: rgba(255, 255, 255, 0.12);
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    if "resultados" not in st.session_state:
-        st.session_state.resultados = None
 
-    if st.session_state.get("mensaje_vaciado"):
-        st.success(st.session_state.mensaje_vaciado)
-        st.session_state.mensaje_vaciado = None
-
+def render_navegacion_sidebar() -> None:
     with st.sidebar:
-        st.header("Búsqueda")
-        estado_filtro = st.selectbox("Estado del Proceso", ["(Todos)"] + ESTADOS)
-        fecha_inicio = st.date_input("Fecha inicio", value=None)
-        fecha_fin = st.date_input("Fecha fin", value=None)
-        palabra_clave_filtro = st.text_input("Palabra clave", placeholder="Ej: luminarias")
+        st.markdown(
+            '<div class="sercop-brand">'
+            '<span class="sercop-brand-icon">🏛️</span>'
+            '<span>SERCOP ANALYTICS</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown('<div class="sercop-nav-label">MÓDULO DE GESTIÓN</div>', unsafe_allow_html=True)
 
-        col_buscar, col_limpiar = st.columns(2)
-        buscar = col_buscar.button("🔍 Buscar", use_container_width=True)
-        limpiar = col_limpiar.button("🧹 Limpiar", use_container_width=True)
+        for nombre, icono in NAV_ITEMS:
+            activo = st.session_state.pagina_activa == nombre
+            if st.button(
+                f"{icono}  {nombre.upper()}",
+                key=f"nav_{nombre}",
+                use_container_width=True,
+                type="primary" if activo else "secondary",
+            ):
+                st.session_state.pagina_activa = nombre
+                st.rerun()
 
-        if buscar:
-            st.session_state.resultados = obtener_contrataciones(
-                status=None if estado_filtro == "(Todos)" else estado_filtro,
-                fecha_inicio=fecha_inicio,
-                fecha_fin=fecha_fin,
-                palabra_clave=palabra_clave_filtro or None,
-            )
-        if limpiar:
-            st.session_state.resultados = None
-            st.rerun()
 
-        render_vaciar_base_datos()
-
-    registros_totales = obtener_contrataciones()
+def render_pagina_dashboard(registros_totales: list[dict]) -> None:
     render_contadores(registros_totales)
-
     st.divider()
     st.header("📊 Dashboard Analítico")
     df_totales = preparar_dataframe(registros_totales)
@@ -850,8 +925,36 @@ def main():
     render_treemap_provincia_estado(df_filtrado)
     render_tablas_resumen(df_filtrado)
 
+
+def render_pagina_procesos(registros_totales: list[dict]) -> None:
+    st.header("📋 Procesos de Contratación")
+
+    col_estado, col_inicio, col_fin, col_palabra = st.columns([1, 1, 1, 1.4])
+    with col_estado:
+        estado_filtro = st.selectbox("Estado del Proceso", ["(Todos)"] + ESTADOS)
+    with col_inicio:
+        fecha_inicio = st.date_input("Fecha inicio", value=None)
+    with col_fin:
+        fecha_fin = st.date_input("Fecha fin", value=None)
+    with col_palabra:
+        palabra_clave_filtro = st.text_input("Palabra clave", placeholder="Ej: luminarias")
+
+    col_buscar, col_limpiar, _ = st.columns([1, 1, 4])
+    buscar = col_buscar.button("🔍 Buscar", use_container_width=True)
+    limpiar = col_limpiar.button("🧹 Limpiar", use_container_width=True)
+
+    if buscar:
+        st.session_state.resultados = obtener_contrataciones(
+            status=None if estado_filtro == "(Todos)" else estado_filtro,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            palabra_clave=palabra_clave_filtro or None,
+        )
+    if limpiar:
+        st.session_state.resultados = None
+        st.rerun()
+
     st.divider()
-    st.subheader("Resultados")
     registros_mostrar = (
         st.session_state.resultados
         if st.session_state.resultados is not None
@@ -860,8 +963,43 @@ def main():
     render_metricas_resumen(registros_mostrar)
     render_tabla_con_color(registros_mostrar)
 
-    st.divider()
+
+def render_pagina_reportes() -> None:
+    st.header("📄 Reportes")
     render_generador_reportes()
+
+
+def render_pagina_configuracion() -> None:
+    st.header("⚙️ Configuración")
+    render_vaciar_base_datos()
+
+
+def main():
+    st.set_page_config(page_title="SERCOP Analytics", layout="wide")
+    _inyectar_estilos_sidebar()
+
+    if "resultados" not in st.session_state:
+        st.session_state.resultados = None
+    if "pagina_activa" not in st.session_state:
+        st.session_state.pagina_activa = "Dashboard"
+
+    if st.session_state.get("mensaje_vaciado"):
+        st.success(st.session_state.mensaje_vaciado)
+        st.session_state.mensaje_vaciado = None
+
+    render_navegacion_sidebar()
+
+    registros_totales = obtener_contrataciones()
+
+    pagina = st.session_state.pagina_activa
+    if pagina == "Dashboard":
+        render_pagina_dashboard(registros_totales)
+    elif pagina == "Procesos":
+        render_pagina_procesos(registros_totales)
+    elif pagina == "Reportes":
+        render_pagina_reportes()
+    elif pagina == "Configuración":
+        render_pagina_configuracion()
 
 
 if __name__ == "__main__":
