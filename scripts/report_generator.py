@@ -148,22 +148,58 @@ def _aplicar_fuente(run, tamano_pt: float, negrita: bool | None = None, fuente: 
     r_fonts.set(qn("w:eastAsia"), fuente)
 
 
-def _agregar_borde_imagen(
-    forma, color_hex: str = COLOR_BORDE_IMAGEN, grosor_pt: float = GROSOR_BORDE_IMAGEN_PT
-) -> None:
-    """Agrega un borde solido visible a una imagen insertada con
-    `document.add_picture` (python-docx no expone esto de forma nativa):
-    se arma a mano el elemento <a:ln> dentro de las propiedades de forma
-    de la imagen (<pic:spPr>)."""
-    propiedades_forma = forma._inline.graphic.graphicData.pic.spPr
-    linea = OxmlElement("a:ln")
-    linea.set("w", str(int(grosor_pt * 12700)))  # EMUs: 1pt = 12700 EMU
-    relleno = OxmlElement("a:solidFill")
-    color = OxmlElement("a:srgbClr")
-    color.set("val", color_hex)
-    relleno.append(color)
-    linea.append(relleno)
-    propiedades_forma.append(linea)
+def _agregar_imagen_con_borde(
+    documento: Document,
+    ruta_imagen,
+    ancho: Length,
+    color_hex: str = COLOR_BORDE_IMAGEN,
+    grosor_pt: float = GROSOR_BORDE_IMAGEN_PT,
+):
+    """Inserta una imagen envuelta en una tabla de 1x1, con borde de
+    celda solido en los 4 lados (<w:tcBorders>) y sin margen interno
+    (pegado a la imagen).
+
+    No se usa el contorno DrawingML de la imagen (<a:ln> en <pic:spPr>):
+    ese trazo se dibuja centrado en el borde de la imagen, mitad hacia
+    afuera, y varios renderizadores (Word incluido, segun el caso) lo
+    recortan contra la caja de linea del parrafo anterior cuando la
+    imagen queda inmediatamente despues de una linea de texto -- el lado
+    superior desaparece aunque los otros 3 se vean bien. Un borde de
+    celda de tabla no tiene ese problema: se dibuja DENTRO del area de
+    la celda, no a caballo de un limite externo."""
+    tabla = documento.add_table(rows=1, cols=1)
+    tabla.autofit = False
+    tabla.alignment = WD_TABLE_ALIGNMENT.LEFT
+
+    celda = tabla.cell(0, 0)
+    celda.width = ancho
+    tabla.columns[0].width = ancho
+
+    tc_pr = celda._tc.get_or_add_tcPr()
+
+    tc_borders = OxmlElement("w:tcBorders")
+    for lado in ("top", "left", "bottom", "right"):
+        borde = OxmlElement(f"w:{lado}")
+        borde.set(qn("w:val"), "single")
+        borde.set(qn("w:sz"), str(int(grosor_pt * 8)))  # w:sz: octavos de punto
+        borde.set(qn("w:space"), "0")
+        borde.set(qn("w:color"), color_hex)
+        tc_borders.append(borde)
+    tc_pr.append(tc_borders)
+
+    tc_mar = OxmlElement("w:tcMar")
+    for lado in ("top", "left", "bottom", "right"):
+        margen = OxmlElement(f"w:{lado}")
+        margen.set(qn("w:w"), "0")
+        margen.set(qn("w:type"), "dxa")
+        tc_mar.append(margen)
+    tc_pr.append(tc_mar)
+
+    parrafo = celda.paragraphs[0]
+    parrafo.paragraph_format.space_before = Pt(0)
+    parrafo.paragraph_format.space_after = Pt(0)
+    parrafo.add_run().add_picture(str(ruta_imagen), width=ancho)
+    return tabla
 
 
 def _configurar_propiedades_tabla(tabla) -> None:
@@ -669,16 +705,7 @@ def generar_reporte(
             _agregar_bloque_rango(documento, rango_semestre, palabra_clave)
 
             for imagen in imagenes_por_semestre[indice]:
-                # La imagen se inserta en un parrafo propio con un
-                # pequeño espacio antes: sin ese espacio, Word puede
-                # recortar el trazo superior del borde (se dibuja
-                # centrado en el borde, mitad hacia afuera de la imagen)
-                # contra la caja de linea del parrafo anterior, dejando
-                # los otros 3 lados visibles pero no el de arriba.
-                parrafo_imagen = documento.add_paragraph()
-                parrafo_imagen.paragraph_format.space_before = Pt(6)
-                forma = parrafo_imagen.add_run().add_picture(str(imagen), width=Inches(6))
-                _agregar_borde_imagen(forma)
+                _agregar_imagen_con_borde(documento, imagen, Inches(6))
 
         parrafo_existen = documento.add_paragraph()
         parrafo_existen.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
