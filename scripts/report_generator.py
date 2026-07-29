@@ -11,9 +11,12 @@ Por cada palabra clave, el informe agrega:
    español.
 3. El mismo par de lineas repetido por cada bloque de 6 meses
    (semestre) dentro de ese rango global (ver `_rangos_semestrales`),
-   seguido de las capturas de pantalla de esa palabra clave que le
-   correspondan a ese semestre (ver `_lotes_de_capturas`), con borde
-   negro solido.
+   seguido de las capturas de pantalla que le correspondan a ese
+   semestre por la fecha real de sus datos (ver `_lotes_de_capturas` /
+   `_asignar_lotes_a_semestres`), con borde negro solido. Si una misma
+   palabra clave se busco varias veces dentro del mismo semestre, todos
+   esos lotes de capturas se agrupan bajo ese semestre (no se pierde
+   ninguno).
 4. La declaracion "EXISTEN [N] PROCESOS LOS MISMOS QUE SERÁN ANALIZADOS."
 5. Una unica tabla (fuente Tahoma, columnas de ancho fijo) con todos los
    procesos de esa palabra clave.
@@ -282,14 +285,27 @@ def _observacion(objeto_proceso, palabra_clave: str) -> str:
     return TEXTO_NO_APLICA + _primeras_palabras(objeto_proceso)
 
 
-def _lotes_de_capturas(capturas_dir: Path, palabra_clave: str) -> list[list[Path]]:
+def _slug_lote_id(lote_id) -> str | None:
+    """Debe coincidir EXACTAMENTE con la logica de
+    `scripts/scrape_portal.py::_slug_lote_id` (asi es como se nombran las
+    capturas del formato nuevo): reemplaza los caracteres invalidos en un
+    nombre de archivo (los ":" del timestamp ISO) por "-". Devuelve None
+    para valores vacios/nulos."""
+    if lote_id is None or (isinstance(lote_id, float) and pd.isna(lote_id)):
+        return None
+    texto = str(lote_id).strip()
+    if not texto:
+        return None
+    return re.sub(r"[^A-Za-z0-9_-]", "-", texto)
+
+
+def _lotes_de_capturas(capturas_dir: Path, palabra_clave: str) -> list[tuple[str, list[Path]]]:
     """Agrupa las capturas de pantalla de `capturas_dir` que pertenecen a
     `palabra_clave` por ejecucion de scraping (un grupo = las paginas de
-    una misma busqueda), en orden cronologico. Cada grupo se muestra bajo
-    el bloque semestral que le corresponda por posicion (ver
-    `_rangos_semestrales` y `generar_reporte`): en el uso normal, cada
-    ejecucion cubre un semestre (el portal SERCOP no permite buscar mas
-    de 6 meses de una vez), asi que un grupo = un semestre.
+    una misma busqueda), en orden cronologico. Devuelve pares
+    (clave_de_orden, imagenes); `_asignar_lotes_a_semestres` usa esa
+    clave para emparejar cada lote con el bloque semestral que le
+    corresponda por FECHA REAL, no por posicion.
 
     Reconoce los dos formatos de nombre de archivo que usa
     `scripts/scrape_portal.py`:
@@ -331,8 +347,56 @@ def _lotes_de_capturas(capturas_dir: Path, palabra_clave: str) -> list[list[Path
     lotes = []
     for clave in sorted(imagenes_por_clave, key=lambda c: orden_por_clave[c]):
         paginas_ordenadas = sorted(imagenes_por_clave[clave], key=lambda t: t[0])
-        lotes.append([ruta for _, ruta in paginas_ordenadas])
+        lotes.append((clave, [ruta for _, ruta in paginas_ordenadas]))
     return lotes
+
+
+def _asignar_lotes_a_semestres(
+    df_palabra: pd.DataFrame,
+    lotes: list[tuple[str, list[Path]]],
+    semestres: list[tuple[pd.Timestamp, pd.Timestamp]],
+) -> list[list[Path]]:
+    """Asigna cada lote de capturas al semestre que le corresponde por
+    FECHA REAL (no por posicion, para no perder lotes cuando hay mas
+    ejecuciones de scraping que semestres calculados -- p.ej. la misma
+    palabra clave buscada varias veces dentro del mismo semestre).
+
+    Para lotes del formato nuevo, la fecha ancla es la mediana de
+    `fecha_publicacion` de las filas de `df_palabra` con ese `lote_id`
+    (join por `lote_id` slugificado). Si no hay filas con ese lote_id
+    (formato legado, o el lote no dejo filas en esta palabra clave), se
+    usa la fecha embebida en la propia clave de orden del lote como
+    respaldo. El lote se coloca en el semestre cuyo rango contiene esa
+    fecha ancla (o el ultimo semestre si la fecha cae despues de todos)."""
+    resultado: list[list[Path]] = [[] for _ in semestres]
+    if not semestres:
+        return resultado
+
+    lote_slug_por_fila = (
+        df_palabra["lote_id"].map(_slug_lote_id)
+        if "lote_id" in df_palabra.columns
+        else pd.Series(dtype=object)
+    )
+
+    for clave_orden, imagenes in lotes:
+        ancla = None
+        if not lote_slug_por_fila.empty:
+            filas_lote = df_palabra[lote_slug_por_fila == clave_orden]
+            fechas_lote = pd.to_datetime(filas_lote.get("fecha_publicacion"), errors="coerce").dropna()
+            if not fechas_lote.empty:
+                ancla = fechas_lote.median()
+        if ancla is None:
+            ancla = pd.to_datetime(clave_orden.split("T")[0], errors="coerce")
+
+        indice = len(semestres) - 1
+        if not pd.isna(ancla):
+            for i, (inicio, fin) in enumerate(semestres):
+                if inicio <= ancla <= fin:
+                    indice = i
+                    break
+        resultado[indice].extend(imagenes)
+
+    return resultado
 
 
 def _rangos_semestrales(fecha_inicio_global, fecha_fin_global) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
@@ -558,12 +622,15 @@ def generar_reporte(
         _agregar_bloque_rango(documento, rango_fechas_global, palabra_clave)
 
         # Bloques semestrales: cada uno con su propio par RANGO/PALABRA
-        # CLAVE, seguido de las capturas que le correspondan por orden
-        # cronologico (ver `_lotes_de_capturas`). Si hay menos lotes de
-        # capturas que semestres (busquedas aun no hechas), esos
-        # semestres quedan sin capturas debajo, no sin encabezado.
+        # CLAVE, seguido de las capturas que le correspondan (ver
+        # `_asignar_lotes_a_semestres`: se emparejan por la fecha real de
+        # los datos de cada lote, no por posicion, para no perder lotes
+        # cuando hay mas ejecuciones de scraping que semestres). Si un
+        # semestre no tiene ningun lote asignado, queda con el
+        # encabezado pero sin capturas debajo.
         lotes = _lotes_de_capturas(capturas_path, palabra_clave)
         semestres = _rangos_semestrales(fecha_inicio_global, fecha_fin_global)
+        imagenes_por_semestre = _asignar_lotes_a_semestres(df_palabra, lotes, semestres)
         for indice, (inicio_semestre, fin_semestre) in enumerate(semestres):
             rango_semestre = (
                 f"{_formatear_fecha_larga_mayusculas(inicio_semestre)} A "
@@ -571,8 +638,7 @@ def generar_reporte(
             )
             _agregar_bloque_rango(documento, rango_semestre, palabra_clave)
 
-            imagenes_semestre = lotes[indice] if indice < len(lotes) else []
-            for imagen in imagenes_semestre:
+            for imagen in imagenes_por_semestre[indice]:
                 forma = documento.add_picture(str(imagen), width=Inches(6))
                 _agregar_borde_imagen(forma)
 
