@@ -493,6 +493,46 @@ def render_mapa_provincias(df: pd.DataFrame):
         )
 
 
+def render_treemap_provincia_estado(df: pd.DataFrame):
+    """Treemap jerarquico Provincia/Canton -> Estado del Proceso, con el
+    conteo de procesos como area de cada rectangulo. El color se asigna
+    por Provincia/Canton (PALETA_VIVA, la misma paleta viva y ciclica que
+    ya usa `render_grafico_provincia`): cada provincia tiene un color
+    solido y distintivo, y sus estados hijos heredan ese mismo tono."""
+    st.markdown("**Provincia/Cantón → Estado del Proceso (treemap)**")
+    if df.empty:
+        st.info("No hay datos para graficar con los filtros actuales.")
+        return
+
+    resumen = (
+        df.groupby(["provincia_canton", "estado"], as_index=False)
+        .agg(procesos=("id", "count"))
+    )
+    if resumen.empty:
+        st.info("No hay datos para graficar con los filtros actuales.")
+        return
+
+    fig = px.treemap(
+        resumen,
+        path=["provincia_canton", "estado"],
+        values="procesos",
+        color="provincia_canton",
+        color_discrete_sequence=PALETA_VIVA,
+    )
+    fig.update_traces(
+        texttemplate="<b>%{label}</b><br>%{value} procesos",
+        textfont=dict(size=13, color="#FFFFFF"),
+        marker=dict(line=dict(width=2, color=COLOR_LIENZO)),
+        hovertemplate=(
+            "<b>%{label}</b><br>Procesos: %{value}<br>"
+            "%{percentParent:.0%} de %{parent}<extra></extra>"
+        ),
+        root_color=COLOR_LIENZO,
+    )
+    _aplicar_estilo_base(fig, altura=560)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
 def render_tablas_resumen(df: pd.DataFrame):
     st.markdown("**Resumen por Estado y Tipo de Compra**")
     if df.empty:
@@ -827,6 +867,7 @@ def main():
         render_grafico_provincia(df_filtrado)
 
     render_mapa_provincias(df_filtrado)
+    render_treemap_provincia_estado(df_filtrado)
     render_tablas_resumen(df_filtrado)
 
     st.divider()
