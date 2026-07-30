@@ -15,6 +15,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
 
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 
@@ -199,7 +202,7 @@ def api_request(method: str, path: str, timeout: int = 10, **kwargs):
     return response
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=60)
 def obtener_contrataciones(status=None, fecha_inicio=None, fecha_fin=None, palabra_clave=None):
     params = {}
     if status:

@@ -21,3 +21,6 @@ capturas/
 
 # Configuracion local de Claude Code (permisos especificos de esta maquina)
 .claude/settings.local.json
+
+# Variables de entorno locales (API_KEY, etc.) -- nunca al repo
+.env

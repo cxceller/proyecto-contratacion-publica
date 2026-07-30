@@ -1,27 +1,12 @@
-"""Tests del endpoint de generacion de reportes (pytest + httpx TestClient)."""
-import sys
+"""Tests del endpoint de generacion de reportes (pytest + httpx TestClient).
+
+El fixture `client` (con base de datos temporal y API_KEY de prueba ya
+configurada) vive en tests/conftest.py y se comparte con toda la suite."""
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 from docx import Document
-from fastapi.testclient import TestClient
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from src import database  # noqa: E402
-
-
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    """App con una base de datos SQLite temporal y aislada por test."""
-    db_file = tmp_path / "test_contrataciones.db"
-    monkeypatch.setattr(database, "DB_PATH", str(db_file))
-
-    from src.main import app
-
-    with TestClient(app) as test_client:
-        yield test_client
 
 
 @pytest.fixture()
