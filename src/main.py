@@ -2,10 +2,11 @@
 from contextlib import asynccontextmanager
 from datetime import date
 
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Response, status
 
 from src import database
 from src.api_reportes import router as reportes_router
+from src.auth import verificar_api_key
 from src.models import ContratacionCreate, ContratacionOut, ContratacionUpdate
 
 
@@ -21,13 +22,13 @@ app.include_router(reportes_router)
 
 @app.get("/api/todos", response_model=list[ContratacionOut])
 def listar_contrataciones(
-    status: str | None = None,
+    estado: str | None = None,
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
     palabra_clave: str | None = None,
 ):
     rows = database.get_all_contrataciones(
-        status=status,
+        status=estado,
         fecha_inicio=fecha_inicio.isoformat() if fecha_inicio else None,
         fecha_fin=fecha_fin.isoformat() if fecha_fin else None,
         palabra_clave=palabra_clave,
@@ -46,7 +47,12 @@ def obtener_contratacion(contratacion_id: int):
     return ContratacionOut(**row)
 
 
-@app.post("/api/todos", response_model=ContratacionOut, status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/api/todos",
+    response_model=ContratacionOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(verificar_api_key)],
+)
 def crear_contratacion(payload: ContratacionCreate):
     data = payload.model_dump()
     if data.get("fecha_publicacion") is not None:
@@ -57,7 +63,11 @@ def crear_contratacion(payload: ContratacionCreate):
     return ContratacionOut(**row)
 
 
-@app.patch("/api/todos/{contratacion_id}", response_model=ContratacionOut)
+@app.patch(
+    "/api/todos/{contratacion_id}",
+    response_model=ContratacionOut,
+    dependencies=[Depends(verificar_api_key)],
+)
 def actualizar_contratacion(contratacion_id: int, payload: ContratacionUpdate):
     existing = database.get_contratacion_by_id(contratacion_id)
     if existing is None:
@@ -81,7 +91,11 @@ def actualizar_contratacion(contratacion_id: int, payload: ContratacionUpdate):
     return ContratacionOut(**row)
 
 
-@app.delete("/api/todos/{contratacion_id}", status_code=status.HTTP_204_NO_CONTENT)
+@app.delete(
+    "/api/todos/{contratacion_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(verificar_api_key)],
+)
 def eliminar_contratacion(contratacion_id: int):
     existing = database.get_contratacion_by_id(contratacion_id)
     if existing is None:
@@ -93,7 +107,11 @@ def eliminar_contratacion(contratacion_id: int):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@app.delete("/api/todos", status_code=status.HTTP_204_NO_CONTENT)
+@app.delete(
+    "/api/todos",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(verificar_api_key)],
+)
 def eliminar_todas_las_contrataciones():
     database.delete_all_contrataciones()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

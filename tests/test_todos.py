@@ -100,11 +100,11 @@ class TestGetTodos:
         contratacion_payload["estado"] = "Adjudicado - Contratado"
         crear_contratacion(client, contratacion_payload)
 
-        response = client.get("/api/todos", params={"status": "Adjudicado -"})
+        response = client.get("/api/todos", params={"estado": "Adjudicado -"})
         assert response.status_code == 200
         assert len(response.json()) == 1
 
-        response_sin_match = client.get("/api/todos", params={"status": "Desierta"})
+        response_sin_match = client.get("/api/todos", params={"estado": "Desierta"})
         assert response_sin_match.status_code == 200
         assert response_sin_match.json() == []
 

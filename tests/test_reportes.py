@@ -139,3 +139,50 @@ class TestGenerarReporte:
             },
         )
         assert response.status_code == 422
+
+    def test_error_al_generar_reporte_devuelve_500_y_limpia_archivo(
+        self, client, contratacion_payload, monkeypatch
+    ):
+        """Si generar_reporte() falla (docx corrupto, error de imagen,
+        etc.) el endpoint debe responder 500 controlado, sin dejar un
+        .docx a medio escribir en el temp dir."""
+        crear_contratacion(client, contratacion_payload)
+
+        from src import api_reportes
+
+        rutas_generadas = []
+
+        def _generar_reporte_falla(*args, ruta_salida=None, **kwargs):
+            rutas_generadas.append(ruta_salida)
+            Path(ruta_salida).write_bytes(b"contenido a medio escribir")
+            raise RuntimeError("fallo simulado de python-docx")
+
+        monkeypatch.setattr(api_reportes, "generar_reporte", _generar_reporte_falla)
+
+        response = client.post(
+            "/api/generar-reporte",
+            json={
+                "palabras_clave": ["clave-de-prueba-inexistente"],
+                "fecha_inicio": "2026-01-01",
+                "fecha_fin": "2026-12-31",
+            },
+        )
+
+        assert response.status_code == 500
+        assert rutas_generadas, "se esperaba que generar_reporte fuera invocado"
+        assert not Path(rutas_generadas[0]).exists()
+
+    def test_fecha_inicio_posterior_a_fecha_fin_devuelve_422(self, client):
+        """Antes de este validador, un rango invertido llegaba intacto a
+        la consulta SQL (BETWEEN con limites cruzados no encuentra nada)
+        y el endpoint respondia 404 generico, ocultando la causa real."""
+        response = client.post(
+            "/api/generar-reporte",
+            json={
+                "palabras_clave": ["algo"],
+                "fecha_inicio": "2026-12-31",
+                "fecha_fin": "2026-01-01",
+            },
+        )
+        assert response.status_code == 422
+        assert "anterior a la fecha de fin" in response.text

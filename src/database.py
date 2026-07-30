@@ -23,9 +23,16 @@ def _normalizar_para_busqueda(texto: str | None) -> str:
 
 
 def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # timeout=10: si otra conexion (API, Streamlit, scripts de scraping/
+    # importacion) tiene una escritura en curso, espera hasta 10s por el
+    # lock en vez de fallar de inmediato con "database is locked".
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL permite que lecturas y escrituras concurrentes no se bloqueen
+    # entre si (varias conexiones leyendo mientras otra escribe), a
+    # diferencia del modo por defecto ("rollback journal").
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.create_function("normalizar", 1, _normalizar_para_busqueda)
     return conn
 
@@ -71,6 +78,18 @@ def init_db() -> None:
             # confiable (ver scripts/report_generator.py) en vez de adivinar
             # por saltos en el id.
             conn.execute("ALTER TABLE contrataciones ADD COLUMN lote_id TEXT")
+
+        # estado, fecha_publicacion y palabra_clave son las columnas que
+        # mas se usan para filtrar (dashboard, endpoint de reportes,
+        # busqueda en la UI) y no tenian ningun indice.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_contrataciones_estado ON contrataciones(estado)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contrataciones_fecha_publicacion "
+            "ON contrataciones(fecha_publicacion)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contrataciones_palabra_clave ON contrataciones(palabra_clave)"
+        )
         conn.commit()
     finally:
         conn.close()

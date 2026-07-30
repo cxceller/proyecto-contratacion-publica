@@ -46,6 +46,23 @@ ESTADOS = [
     "Por Adjudicar",
 ]
 
+# Nombre completo (no truncado) de cada categoria de ESTADOS, para mostrar
+# en las tarjetas de render_contadores en vez del prefijo truncado
+# ("Ejecución de", "Terminado U", "Adjudicado -"). Confirmado contra los
+# valores reales de la columna `estado` en la base de datos.
+NOMBRES_ESTADO_COMPLETOS = {
+    "Cancelado": "Cancelado",
+    "Finalizada": "Finalizada",
+    "Ejecución de": "Ejecución de Contrato",
+    "Desierta": "Desierta",
+    "En Recepción": "En Recepción",
+    "Terminado U": "Terminado Unilateralmente",
+    "Adjudicado -": "Adjudicado - Registro de Contratos",
+    "Adjudicada": "Adjudicada",
+    "Suspendido": "Suspendido",
+    "Por Adjudicar": "Por Adjudicar",
+}
+
 COLUMNAS_TABLA = {
     "codigo": "Código",
     "entidad_contratante": "Entidad Contratante",
@@ -164,6 +181,13 @@ def estado_con_emoji(estado: str) -> str:
 
 
 def api_request(method: str, path: str, timeout: int = 10, **kwargs):
+    # Si la API exige X-API-Key (variable API_KEY configurada del lado del
+    # servidor -- ver src/auth.py), Streamlit debe mandar la misma clave via
+    # esta misma variable de entorno en su propio proceso.
+    api_key = os.environ.get("API_KEY")
+    if api_key:
+        headers = {"X-API-Key": api_key, **kwargs.pop("headers", {})}
+        kwargs["headers"] = headers
     try:
         response = requests.request(method, f"{API_URL}{path}", timeout=timeout, **kwargs)
     except requests.exceptions.ConnectionError:
@@ -175,10 +199,14 @@ def api_request(method: str, path: str, timeout: int = 10, **kwargs):
     return response
 
 
+@st.cache_data(ttl=30)
 def obtener_contrataciones(status=None, fecha_inicio=None, fecha_fin=None, palabra_clave=None):
     params = {}
     if status:
-        params["status"] = status
+        # El query param se llama "estado" en la API (ver
+        # src/main.py::listar_contrataciones) -- se renombro para no
+        # colisionar con el modulo `status` de FastAPI importado ahi mismo.
+        params["estado"] = status
     if fecha_inicio:
         params["fecha_inicio"] = fecha_inicio.isoformat()
     if fecha_fin:
@@ -206,7 +234,13 @@ def extraer_tipo_compra(objeto_proceso: str) -> str:
         return "Otros"
     primera_palabra = re.split(r"\s+", texto)[0]
     primera_palabra = re.sub(r"[^A-Za-zÁÉÍÓÚÑáéíóúñ]", "", primera_palabra)
-    return primera_palabra.capitalize() if primera_palabra else "Otros"
+    if not primera_palabra:
+        return "Otros"
+    # Normaliza tildes/mayusculas ANTES de capitalizar (misma logica que
+    # _normalizar_texto_provincia): sin esto, "Repotenciacion" y
+    # "Repotenciación" quedaban como dos categorias distintas en el
+    # resumen "Por Tipo de Compra" del dashboard.
+    return _normalizar_texto_provincia(primera_palabra).capitalize()
 
 
 def preparar_dataframe(registros: list[dict]) -> pd.DataFrame:
@@ -527,6 +561,14 @@ def render_treemap_provincia_estado(df: pd.DataFrame):
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+def _tabla_estatica(df_mostrar: pd.DataFrame) -> pd.DataFrame:
+    """Prepara un DataFrame para `st.table`: sin indice visible (imita el
+    `hide_index=True` que tenian estas tablas con `st.dataframe`)."""
+    tabla = df_mostrar.reset_index(drop=True).copy()
+    tabla.index = [""] * len(tabla)
+    return tabla
+
+
 def render_tablas_resumen(df: pd.DataFrame):
     st.markdown("**Resumen por Estado y Tipo de Compra**")
     if df.empty:
@@ -541,13 +583,15 @@ def render_tablas_resumen(df: pd.DataFrame):
         .rename(columns={"estado": "Estado", "Presupuesto_Total": "Presupuesto Total"})
         .sort_values("Presupuesto Total", ascending=False)
     )
+    resumen_estado["Presupuesto Total"] = resumen_estado["Presupuesto Total"].map("$ {:,.2f}".format)
     col1.caption("Por Estado del Proceso")
-    col1.dataframe(
-        resumen_estado,
-        column_config={"Presupuesto Total": st.column_config.NumberColumn(format="$ %.2f")},
-        hide_index=True,
-        use_container_width=True,
-    )
+    # st.table (HTML estatico) en vez de st.dataframe: el componente
+    # interactivo (glide-data-grid) a veces queda en negro/vacio hasta que
+    # el usuario hace clic dentro (bug conocido de ese componente con
+    # grids canvas fuera de la vista inicial). Estas tablas son chicas y
+    # no necesitan ordenar/redimensionar columnas, asi que el renderizado
+    # estatico es un intercambio razonable -- ver tambien _tabla_estatica.
+    col1.table(_tabla_estatica(resumen_estado))
 
     resumen_tipo = (
         df.groupby("tipo_compra", as_index=False)
@@ -555,13 +599,9 @@ def render_tablas_resumen(df: pd.DataFrame):
         .rename(columns={"tipo_compra": "Tipo de Compra", "Presupuesto_Total": "Presupuesto Total"})
         .sort_values("Presupuesto Total", ascending=False)
     )
+    resumen_tipo["Presupuesto Total"] = resumen_tipo["Presupuesto Total"].map("$ {:,.2f}".format)
     col2.caption("Por Tipo de Compra (inferido del Objeto del Proceso)")
-    col2.dataframe(
-        resumen_tipo,
-        column_config={"Presupuesto Total": st.column_config.NumberColumn(format="$ %.2f")},
-        hide_index=True,
-        use_container_width=True,
-    )
+    col2.table(_tabla_estatica(resumen_tipo))
 
 
 def render_metricas_resumen(registros: list[dict]):
@@ -765,7 +805,8 @@ def render_contadores(registros_totales: list[dict]):
     cols = st.columns(4)
     cols[0].metric("Total", total)
     for i, estado_categoria in enumerate(etiquetas, start=1):
-        cols[i % 4].metric(estado_categoria, conteos[estado_categoria])
+        etiqueta_mostrar = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
+        cols[i % 4].metric(etiqueta_mostrar, conteos[estado_categoria])
 
 
 def render_vaciar_base_datos():
@@ -989,13 +1030,14 @@ def main():
 
     render_navegacion_sidebar()
 
-    registros_totales = obtener_contrataciones()
-
+    # obtener_contrataciones() esta cacheada (ttl=30s), pero igual evitamos
+    # llamarla del todo en paginas que no la necesitan (Reportes solo pega a
+    # /api/generar-reporte, Configuración solo a /api/todos DELETE).
     pagina = st.session_state.pagina_activa
     if pagina == "Dashboard":
-        render_pagina_dashboard(registros_totales)
+        render_pagina_dashboard(obtener_contrataciones())
     elif pagina == "Procesos":
-        render_pagina_procesos(registros_totales)
+        render_pagina_procesos(obtener_contrataciones())
     elif pagina == "Reportes":
         render_pagina_reportes()
     elif pagina == "Configuración":
