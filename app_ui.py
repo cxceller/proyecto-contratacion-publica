@@ -5,6 +5,9 @@ Consume la API FastAPI (src/main.py) via requests. Arranque:
     uvicorn src.main:app --port 8000
     streamlit run app_ui.py --server.port 8501
 """
+import base64
+import html
+import io
 import json
 import os
 import re
@@ -20,7 +23,34 @@ import requests
 import streamlit as st
 from dotenv import load_dotenv
 
-from scripts.anexo1_generator import generar_anexo1
+from scripts.anexo1_generator import (
+    COORDINACION_FIJA,
+    FIRMA_APROBADO_POR_DEFECTO_CARGO,
+    FIRMA_APROBADO_POR_DEFECTO_NOMBRE,
+    IMAGEN_ENCABEZADO,
+    IMAGEN_PIE_PAGINA,
+    TABLA_CHECKLIST_CRITERIOS_FIJOS,
+    TABLA_CHECKLIST_ENCABEZADO,
+    TABLA_PATRIMONIO_BIENES_SERVICIOS,
+    TABLA_PATRIMONIO_ENCABEZADO,
+    TABLA_PATRIMONIO_OBRAS,
+    TABLA_PUNTAJE_ENCABEZADO,
+    TABLA_PUNTAJE_FIJA,
+    TEXTO_ATRIBUCIONES_ADMINISTRADOR,
+    TEXTO_CERTIFICADO_PROVEEDOR_EXCLUSIVO_INTRO,
+    TEXTO_EXPERIENCIA_PERSONAL_TECNICO,
+    TEXTO_GARANTIA_BUEN_USO_ANTICIPO,
+    TEXTO_GARANTIA_FIEL_CUMPLIMIENTO,
+    TEXTO_MULTAS,
+    TEXTO_PARAMETROS_EVALUACION_INTRO,
+    TEXTO_PATRIMONIO_INTRO,
+    TEXTO_PUNTAJE_INTRO,
+    TEXTO_REAJUSTE_PRECIOS,
+    TEXTO_TIEMPO_EXISTENCIA_LEGAL,
+    TITULO_ANEXO_FIJO,
+    TITULO_PROCESO_FIJO,
+    generar_anexo1,
+)
 
 load_dotenv()
 
@@ -1161,155 +1191,850 @@ def _slug_nombre_archivo(texto: str) -> str:
     return slug[:80] or "SinTitulo"
 
 
-def _nuevo_item_anexo1() -> dict:
-    st.session_state.anexo1_siguiente_id += 1
+COLUMNAS_ITEMS_ANEXO1 = [
+    "Ítem",
+    "Tipo",
+    "Descripción",
+    "Unidad de Medida",
+    "Cantidad Solicitada",
+    "Valor Unitario",
+    "Valor Total",
+    "Descripción CPC",
+    "Número CPC",
+]
+
+
+def _dataframe_items_anexo1_vacio() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "Ítem": pd.Series(dtype="int"),
+            "Tipo": pd.Series(dtype="str"),
+            "Descripción": pd.Series(dtype="str"),
+            "Unidad de Medida": pd.Series(dtype="str"),
+            "Cantidad Solicitada": pd.Series(dtype="float"),
+            "Valor Unitario": pd.Series(dtype="float"),
+            "Valor Total": pd.Series(dtype="float"),
+            "Descripción CPC": pd.Series(dtype="str"),
+            "Número CPC": pd.Series(dtype="str"),
+        }
+    )
+
+
+def _dataframe_cpc_anexo1_vacio() -> pd.DataFrame:
+    return pd.DataFrame({"Código CPC": pd.Series(dtype="str"), "Descripción del CPC": pd.Series(dtype="str")})
+
+
+def _recalcular_items_anexo1(df: pd.DataFrame) -> pd.DataFrame:
+    """Recalcula Item # (posicion) y Valor Total = Cantidad Solicitada *
+    Valor Unitario tras cada edicion -- ninguna de las dos columnas es
+    editable directamente por el usuario (ver column_config en
+    render_formularios_y_registro). "Tipo" tambien se rellena con "Bien"
+    por defecto para filas nuevas (el selector Bien/Servicio es POR
+    ITEM, via SelectboxColumn, no un unico selector global)."""
+    df = df.reset_index(drop=True).copy()
+    df["Ítem"] = df.index + 1
+    if "Tipo" not in df.columns:
+        df["Tipo"] = "Bien"
+    df["Tipo"] = df["Tipo"].fillna("Bien")
+    cantidad = pd.to_numeric(df["Cantidad Solicitada"], errors="coerce").fillna(0)
+    valor_unitario = pd.to_numeric(df["Valor Unitario"], errors="coerce").fillna(0)
+    df["Valor Total"] = (cantidad * valor_unitario).round(2)
+    return df
+
+
+def _formatear_numero_anexo1(valor) -> str:
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
+        return ""
+    numero = float(valor)
+    return str(int(numero)) if numero == int(numero) else str(numero)
+
+
+def _formatear_moneda_anexo1(valor) -> str:
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
+        return ""
+    return f"{float(valor):,.2f}"
+
+
+def _specs_vacias_anexo1(tipo: str) -> dict:
+    if tipo == "Servicio":
+        return {
+            "procedimiento": "",
+            "herramientas_equipo": "",
+            "normas_aplicables": "",
+            "medicion": "",
+            "forma_pago": "",
+            "obligaciones": "",
+        }
+    return {"subtitulo_specs": "MODELO DE EJEMPLO", "descripcion_material": "", "parametros": []}
+
+
+def _recolectar_datos_anexo1() -> dict:
+    """Arma el mismo diccionario `datos` que consume generar_anexo1(), a
+    partir de TODO lo que el usuario ya cargo en session_state. Se usa
+    tanto para el boton de descarga en Word como para la Vista Previa,
+    para garantizar que ambos muestren exactamente lo mismo."""
+    df_items = _recalcular_items_anexo1(st.session_state.anexo1_items_df)
+    specs = st.session_state.anexo1_specs
+    items_datos = []
+    for indice, fila in df_items.reset_index(drop=True).iterrows():
+        tipo_fila = fila.get("Tipo") or "Bien"
+        item = {
+            "tipo": tipo_fila,
+            "descripcion": str(fila.get("Descripción") or ""),
+            "unidad_medida": str(fila.get("Unidad de Medida") or ""),
+            "cantidad_solicitada": _formatear_numero_anexo1(fila.get("Cantidad Solicitada")),
+            "valor_unitario": _formatear_moneda_anexo1(fila.get("Valor Unitario")),
+            "valor_total": _formatear_moneda_anexo1(fila.get("Valor Total")),
+            "descripcion_cpc": str(fila.get("Descripción CPC") or ""),
+            "numero_cpc": str(fila.get("Número CPC") or ""),
+        }
+        spec = specs[indice] if indice < len(specs) else _specs_vacias_anexo1(tipo_fila)
+        item.update(spec)
+        items_datos.append(item)
+
+    df_cpc = st.session_state.anexo1_cpc_df
+    requerimientos_cpc = [
+        {"cpc": str(fila.get("Código CPC") or ""), "descripcion": str(fila.get("Descripción del CPC") or "")}
+        for _, fila in df_cpc.iterrows()
+    ]
+
     return {
-        "id": st.session_state.anexo1_siguiente_id,
-        "descripcion": "",
-        "unidad_medida": "",
-        "cantidad_solicitada": "",
-        "valor_unitario": "",
-        "valor_total": "",
-        "descripcion_cpc": "",
-        "numero_cpc": "",
-        "subtitulo_specs": "MODELO DE EJEMPLO",
-        "parametros": [],
+        "objeto_contratacion": st.session_state.get("anexo1_objeto_contratacion", ""),
+        "items": items_datos,
+        "presupuesto_referencial": st.session_state.get("anexo1_presupuesto", ""),
+        "requerimientos_cpc": requerimientos_cpc,
+        "alcance": st.session_state.get("anexo1_alcance", ""),
+        "plazo_ejecucion": st.session_state.get("anexo1_plazo", ""),
+        "personal_tecnico_recursos": st.session_state.get("anexo1_personal_tecnico", ""),
+        "forma_condiciones_pago": st.session_state.get("anexo1_forma_pago", ""),
+        "lugar_direccion": st.session_state.get("anexo1_lugar", ""),
+        "obligaciones_entidad": st.session_state.get("anexo1_obligaciones_entidad", ""),
+        "obligaciones_contratista": st.session_state.get("anexo1_obligaciones_contratista", ""),
+        "garantias_tecnicas": st.session_state.get("anexo1_garantias_tecnicas", ""),
+        "monto_garantia_responsabilidad_civil": _formatear_moneda_anexo1(
+            st.session_state.get("anexo1_monto_garantia_rc")
+        ),
+        "vigencia_oferta_dias": _formatear_numero_anexo1(st.session_state.get("anexo1_vigencia_oferta")),
+        "tipo_adjudicacion": st.session_state.get("anexo1_tipo_adjudicacion", ""),
+        "analisis_estrategia": st.session_state.get("anexo1_analisis_estrategia", ""),
+        "administrador_nombre": st.session_state.get("anexo1_admin_nombre", ""),
+        "administrador_cargo": st.session_state.get("anexo1_admin_cargo", ""),
+        "administrador_cedula": st.session_state.get("anexo1_admin_cedula", ""),
+        "tecnico_no_interviene_nombre": st.session_state.get("anexo1_tecnico_nombre", ""),
+        "tecnico_no_interviene_cargo": st.session_state.get("anexo1_tecnico_cargo", ""),
+        "tecnico_no_interviene_correo": st.session_state.get("anexo1_tecnico_correo", ""),
+        "direccion_contacto": st.session_state.get("anexo1_direccion_contacto", ""),
+        "telefono_contacto": st.session_state.get("anexo1_telefono_contacto", ""),
+        "proceso_contratacion_aplicar": st.session_state.get("anexo1_proceso_aplicar", ""),
+        "pct_experiencia_general": _formatear_numero_anexo1(st.session_state.get("anexo1_pct_general")),
+        "pct_experiencia_especifica": _formatear_numero_anexo1(st.session_state.get("anexo1_pct_especifica")),
+        "titulo_profesional_personal_tecnico": st.session_state.get("anexo1_titulo_profesional", ""),
+        "equipo_trabajo_recursos_evaluar": st.session_state.get("anexo1_equipo_evaluar", ""),
+        "certificado_proveedor_exclusivo": st.session_state.get("anexo1_certificado_proveedor", "No"),
+        "patrimonio_aplica": st.session_state.get("anexo1_patrimonio_aplica", "No"),
+        "evaluacion_estrategia_adquisicion": st.session_state.get("anexo1_evaluacion_estrategia", ""),
+        "otros_parametros_evaluacion": st.session_state.get("anexo1_otros_parametros", ""),
+        "fecha_documento": st.session_state.get("anexo1_fecha", ""),
+        "firmas": {
+            "elaborado": {
+                "nombre": st.session_state.get("anexo1_firma_elaborado_nombre", ""),
+                "cargo": st.session_state.get("anexo1_firma_elaborado_cargo", ""),
+                "firmado_por": st.session_state.get("anexo1_firma_elaborado_firmado", ""),
+            },
+            "revisado": {
+                "nombre": st.session_state.get("anexo1_firma_revisado_nombre", ""),
+                "cargo": st.session_state.get("anexo1_firma_revisado_cargo", ""),
+                "firmado_por": st.session_state.get("anexo1_firma_revisado_firmado", ""),
+            },
+            "aprobado": {
+                "nombre": st.session_state.get("anexo1_firma_aprobado_nombre") or FIRMA_APROBADO_POR_DEFECTO_NOMBRE,
+                "cargo": st.session_state.get("anexo1_firma_aprobado_cargo") or FIRMA_APROBADO_POR_DEFECTO_CARGO,
+                "firmado_por": st.session_state.get("anexo1_firma_aprobado_firmado", ""),
+            },
+        },
     }
 
 
+# --- Vista previa HTML (pestaña 5): reutiliza los mismos textos fijos
+# que scripts/anexo1_generator.py (importados arriba) para que la
+# previsualizacion y el .docx final coincidan siempre. No pretende ser
+# pixel-perfect con el Word (eso ya lo garantiza generar_anexo1 en si);
+# el objetivo es que el usuario vea la estructura, el contenido y los
+# resaltados de color completos sin tener que descargar el archivo. ---
+_LLENAR = '<span style="background:#fff59d; padding:0 2px;">LLENAR</span>'
+
+
+def _html_valor_o_llenar(valor: str) -> str:
+    return html.escape(valor) if valor else _LLENAR
+
+
+def _html_campo(etiqueta: str, valor: str) -> str:
+    return (
+        f'<p style="margin:3px 0;"><b>{html.escape(etiqueta)}:</b> '
+        f'<span style="background:#fff59d; padding:0 2px;">{_html_valor_o_llenar(valor)}</span></p>'
+    )
+
+
+def _html_parrafo_fijo(texto: str) -> str:
+    return "".join(
+        f'<p style="margin:3px 0; text-align:justify;">{html.escape(linea)}</p>' for linea in texto.split("\n")
+    )
+
+
+def _html_titulo(texto: str) -> str:
+    return f'<p style="margin:12px 0 3px 0; font-weight:bold;">{html.escape(texto)}</p>'
+
+
+def _html_tabla(encabezados: list[str], filas: list[list[str]]) -> str:
+    ths = "".join(
+        f'<th style="border:1px solid #000; padding:3px; background:#f2f2f2; font-size:11px;">{html.escape(h)}</th>'
+        for h in encabezados
+    )
+    trs = "".join(
+        "<tr>" + "".join(f'<td style="border:1px solid #000; padding:3px; font-size:11px;">{html.escape(str(v))}</td>' for v in fila) + "</tr>"
+        for fila in filas
+    )
+    return f'<table style="width:100%; border-collapse:collapse; margin-bottom:8px;"><tr>{ths}</tr>{trs}</table>'
+
+
+def _html_bloque_item(numero: int, item: dict) -> str:
+    encabezados = [
+        "ÍTEM", "DESCRIPCIÓN", "Unidad de Medida", "CANTIDAD SOLICITADA",
+        "VALOR UNITARIO", "VALOR TOTAL", "Descripción del CPC", "NÚMERO CPC",
+    ]
+    valores = [
+        str(numero), item.get("descripcion", ""), item.get("unidad_medida", ""),
+        item.get("cantidad_solicitada", ""), item.get("valor_unitario", ""),
+        item.get("valor_total", ""), item.get("descripcion_cpc", ""), item.get("numero_cpc", ""),
+    ]
+    fila_encabezado = "".join(
+        f'<th style="border:1px solid #000; padding:2px; background:#f2f2f2; font-size:10px;">{html.escape(h)}</th>'
+        for h in encabezados
+    )
+    fila_datos = "".join(
+        f'<td style="border:1px solid #000; padding:2px; font-size:10px;">{_html_valor_o_llenar(str(v)) if not v else html.escape(str(v))}</td>'
+        for v in valores
+    )
+
+    if item.get("tipo") == "Servicio":
+        etiqueta_label = "DESCRIPCIÓN<br>SERVICIO"
+        bloques = []
+        for etiqueta, clave in (
+            ("PROCEDIMIENTO (Desmontaje/Montaje)", "procedimiento"),
+            ("HERRAMIENTAS/EQUIPO", "herramientas_equipo"),
+            ("NORMAS", "normas_aplicables"),
+            ("MEDICIÓN", "medicion"),
+            ("FORMA DE PAGO", "forma_pago"),
+            ("OBLIGACIONES", "obligaciones"),
+        ):
+            bloques.append(
+                f'<p style="margin:2px 0; font-size:11px;"><b>{etiqueta}:</b> '
+                f'{_html_valor_o_llenar(item.get(clave, ""))}</p>'
+            )
+        contenido_specs = "".join(bloques)
+    else:
+        etiqueta_label = "DESCRIPCIÓN<br>MATERIAL"
+        subtitulo = item.get("subtitulo_specs") or "MODELO DE EJEMPLO"
+        contenido_specs = (
+            f'<p style="margin:2px 0;"><span style="background:#8BC34A; padding:0 2px;">'
+            f'{html.escape(subtitulo)}</span></p>'
+        )
+        if item.get("descripcion_material"):
+            contenido_specs += f'<p style="margin:2px 0; font-size:11px;">{html.escape(item["descripcion_material"])}</p>'
+        parametros = item.get("parametros") or []
+        if parametros:
+            filas_parametros = "".join(
+                f'<tr><td style="border:1px solid #000; padding:2px; font-weight:bold; font-size:10px;">'
+                f'{html.escape(p.get("nombre",""))}</td>'
+                f'<td style="border:1px solid #000; padding:2px; font-size:10px;">{html.escape(p.get("valor",""))}</td></tr>'
+                for p in parametros
+            )
+            contenido_specs += f'<table style="width:100%; border-collapse:collapse;">{filas_parametros}</table>'
+
+    return (
+        '<table style="width:100%; border-collapse:collapse; margin-bottom:2px;">'
+        f"<tr>{fila_encabezado}</tr>"
+        f"<tr>{fila_datos}</tr>"
+        '<tr>'
+        '<td style="border:1px solid #000; padding:3px; font-weight:bold; text-align:center; font-size:11px;">PARÁMETROS</td>'
+        '<td colspan="7" style="border:1px solid #000; padding:3px; font-weight:bold; text-align:center; font-size:11px;">ESPECIFICACIONES TÉCNICAS</td>'
+        "</tr>"
+        "<tr>"
+        f'<td style="border:1px solid #000; padding:3px; font-weight:bold; text-align:center; font-size:11px;">{etiqueta_label}</td>'
+        f'<td colspan="7" style="border:1px solid #000; padding:5px;">{contenido_specs}</td>'
+        "</tr>"
+        "</table>"
+    )
+
+
+@st.cache_data
+def _imagenes_anexo1_base64() -> tuple[str, str]:
+    return (
+        base64.b64encode(IMAGEN_ENCABEZADO.read_bytes()).decode(),
+        base64.b64encode(IMAGEN_PIE_PAGINA.read_bytes()).decode(),
+    )
+
+
+def _render_vista_previa_anexo1(datos: dict) -> None:
+    encabezado_b64, pie_b64 = _imagenes_anexo1_base64()
+
+    partes = [
+        '<div style="background:white; color:#111; padding:20px; border:1px solid #ccc; '
+        'font-family: Arial, sans-serif; max-height:75vh; overflow-y:auto;">',
+        f'<img src="data:image/jpeg;base64,{encabezado_b64}" style="width:100%; margin-bottom:10px;">',
+        '<table style="width:100%; border-collapse:collapse; text-align:center; font-weight:bold; margin-bottom:14px;">',
+        f'<tr><td style="border:1px solid #000; padding:6px;">{html.escape(TITULO_ANEXO_FIJO)}</td></tr>',
+        f'<tr><td style="border:1px solid #000; padding:6px;">{html.escape(TITULO_PROCESO_FIJO)}</td></tr>',
+        f'<tr><td style="border:1px solid #000; padding:6px;">{html.escape(COORDINACION_FIJA)}</td></tr>',
+        f'<tr><td style="border:1px solid #000; padding:8px; background:#fff59d;">'
+        f'{_html_valor_o_llenar(datos.get("objeto_contratacion", ""))}</td></tr>',
+        "</table>",
+    ]
+
+    items = datos.get("items", [])
+    if not items:
+        partes.append('<p style="color:#999;">(sin ítems agregados todavía en la pestaña "2. Ítems y Valores")</p>')
+    for numero, item in enumerate(items, start=1):
+        partes.append(_html_bloque_item(numero, item))
+
+    partes.append(_html_titulo("CONDICIONES LEGALES Y ADMINISTRATIVAS"))
+    partes.append(_html_campo("PRESUPUESTO REFERENCIAL", datos.get("presupuesto_referencial", "")))
+
+    partes.append(_html_titulo("REQUERIMIENTOS ADICIONALES OBLIGATORIOS"))
+    requerimientos = datos.get("requerimientos_cpc") or [{"cpc": "", "descripcion": ""}]
+    partes.append(
+        _html_tabla(
+            ["CPC", "DESCRIPCIÓN DEL CPC"],
+            [[r.get("cpc") or "LLENAR", r.get("descripcion") or "LLENAR"] for r in requerimientos],
+        )
+    )
+
+    partes.append(_html_campo("ALCANCE", datos.get("alcance", "")))
+    partes.append(_html_campo("PLAZO DE EJECUCIÓN (DÍAS)", datos.get("plazo_ejecucion", "")))
+    partes.append(_html_campo("PERSONAL TÉCNICO/EQUIPO/RECURSOS", datos.get("personal_tecnico_recursos", "")))
+    partes.append(_html_campo("FORMA Y CONDICIONES DE PAGO", datos.get("forma_condiciones_pago", "")))
+    partes.append(_html_campo("LUGAR Y DIRECCIÓN DE ENTREGA/EJECUCIÓN", datos.get("lugar_direccion", "")))
+
+    partes.append(_html_titulo("MULTAS"))
+    partes.append(_html_parrafo_fijo(TEXTO_MULTAS))
+
+    partes.append(_html_titulo("OBLIGACIONES DE LAS PARTES"))
+    partes.append(_html_campo("OBLIGACIONES DE LA ENTIDAD CONTRATANTE", datos.get("obligaciones_entidad", "")))
+    partes.append(_html_campo("OBLIGACIONES DE LA CONTRATISTA", datos.get("obligaciones_contratista", "")))
+
+    partes.append(_html_titulo("GARANTÍAS TÉCNICAS, EN EL CASO DE QUE APLIQUE"))
+    partes.append(_html_campo("Garantías técnicas", datos.get("garantias_tecnicas", "")))
+
+    partes.append(_html_titulo("GARANTÍAS ADICIONALES, EN EL CASO DE QUE APLIQUE"))
+    partes.append(_html_parrafo_fijo(TEXTO_GARANTIA_FIEL_CUMPLIMIENTO))
+    partes.append(_html_parrafo_fijo(TEXTO_GARANTIA_BUEN_USO_ANTICIPO))
+    partes.append(
+        '<p style="margin:3px 0; font-weight:bold;">GARANTÍA DE RESPONSABILIDAD CIVIL</p>'
+        f'<p style="margin:3px 0; text-align:justify;">Al momento de suscribir el contrato de '
+        f'"{_html_valor_o_llenar(datos.get("objeto_contratacion", ""))}", la contratista deberá '
+        f'justificar que cuenta con una póliza de responsabilidad civil con un valor asegurado '
+        f'mínimo de USD {_html_valor_o_llenar(datos.get("monto_garantia_responsabilidad_civil", ""))} '
+        f"por evento (texto completo en el documento final).</p>"
+    )
+
+    partes.append(_html_titulo("VIGENCIA DE LA OFERTA"))
+    partes.append(_html_campo("Días de vigencia", datos.get("vigencia_oferta_dias", "")))
+
+    partes.append(_html_titulo("REAJUSTE DE PRECIOS"))
+    partes.append(_html_parrafo_fijo(TEXTO_REAJUSTE_PRECIOS))
+
+    partes.append(_html_campo("TIPO DE ADJUDICACIÓN", datos.get("tipo_adjudicacion", "")))
+
+    partes.append(_html_titulo("ADMINISTRADOR DEL CONTRATO"))
+    partes.append(_html_campo("Nombre", datos.get("administrador_nombre", "")))
+    partes.append(_html_campo("Cargo", datos.get("administrador_cargo", "")))
+    partes.append(_html_campo("Cédula", datos.get("administrador_cedula", "")))
+    partes.append(
+        f'<p style="margin:3px 0; font-size:11px; color:#555;">'
+        f"(+ lista fija de {len(TEXTO_ATRIBUCIONES_ADMINISTRADOR)} atribuciones del administrador, en el documento final)</p>"
+    )
+
+    partes.append(_html_titulo("TÉCNICO QUE NO INTERVIENE EN LA CONTRATACIÓN"))
+    partes.append(_html_campo("Nombre", datos.get("tecnico_no_interviene_nombre", "")))
+    partes.append(_html_campo("Cargo", datos.get("tecnico_no_interviene_cargo", "")))
+    partes.append(_html_campo("Correo", datos.get("tecnico_no_interviene_correo", "")))
+    partes.append(_html_campo("Dirección de contacto", datos.get("direccion_contacto", "")))
+    partes.append(_html_campo("Teléfono de contacto", datos.get("telefono_contacto", "")))
+
+    partes.append(_html_campo("ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN", datos.get("analisis_estrategia", "")))
+    partes.append(_html_campo("PROCESO DE CONTRATACIÓN A APLICAR", datos.get("proceso_contratacion_aplicar", "")))
+
+    partes.append(_html_titulo("PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN"))
+    partes.append(_html_parrafo_fijo(TEXTO_PARAMETROS_EVALUACION_INTRO))
+    partes.append(_html_campo("% experiencia general mínima", datos.get("pct_experiencia_general", "")))
+    partes.append(_html_campo("% experiencia específica mínima", datos.get("pct_experiencia_especifica", "")))
+    partes.append(_html_campo("Título profesional del personal técnico", datos.get("titulo_profesional_personal_tecnico", "")))
+    partes.append(
+        f'<p style="margin:3px 0; font-size:11px; color:#555;">'
+        f"(+ texto fijo de Experiencia del Personal Técnico en el documento final)</p>"
+    )
+    partes.append(_html_campo("EQUIPO DE TRABAJO/RECURSOS A EVALUAR", datos.get("equipo_trabajo_recursos_evaluar", "")))
+    partes.append(
+        _html_campo(
+            "CERTIFICADO DE PROVEEDOR EXCLUSIVO O AUTORIZADO",
+            datos.get("certificado_proveedor_exclusivo", "No"),
+        )
+    )
+
+    partes.append(_html_titulo("PATRIMONIO"))
+    patrimonio_aplica = datos.get("patrimonio_aplica", "No")
+    partes.append(_html_campo("¿Aplica?", patrimonio_aplica))
+    if patrimonio_aplica == "Sí":
+        partes.append(_html_parrafo_fijo(TEXTO_PATRIMONIO_INTRO))
+        partes.append(_html_titulo("Bienes y/o Servicios"))
+        partes.append(_html_tabla(TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_BIENES_SERVICIOS))
+        partes.append(_html_titulo("Obras"))
+        partes.append(_html_tabla(TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_OBRAS))
+
+    partes.append(_html_titulo("TIEMPO DE EXISTENCIA LEGAL DE PERSONAS JURÍDICAS"))
+    partes.append(_html_parrafo_fijo(TEXTO_TIEMPO_EXISTENCIA_LEGAL))
+
+    partes.append(_html_titulo("METODOLOGÍA DE EVALUACIÓN DE OFERTA (CUMPLE/NO CUMPLE)"))
+    partes.append(
+        _html_tabla(TABLA_CHECKLIST_ENCABEZADO, [[c, "", "", ""] for c in TABLA_CHECKLIST_CRITERIOS_FIJOS])
+    )
+
+    partes.append(_html_campo("EVALUACIÓN DEL ANÁLISIS DE ESTRATEGIA DE ADQUISICIÓN", datos.get("evaluacion_estrategia_adquisicion", "")))
+    partes.append(_html_campo("OTROS PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN", datos.get("otros_parametros_evaluacion", "")))
+
+    partes.append(_html_titulo("METODOLOGÍA DE EVALUACIÓN DE OFERTA POR PUNTAJE"))
+    partes.append(_html_parrafo_fijo(TEXTO_PUNTAJE_INTRO))
+    partes.append(_html_tabla(TABLA_PUNTAJE_ENCABEZADO, TABLA_PUNTAJE_FIJA))
+
+    partes.append(_html_campo("FECHA", datos.get("fecha_documento", "")))
+
+    firmas = datos.get("firmas", {})
+    partes.append(_html_titulo("FIRMAS DE RESPONSABILIDAD"))
+    filas_firmas = []
+    for clave, etiqueta in (("elaborado", "Elaborado por"), ("revisado", "Revisado por"), ("aprobado", "Aprobado por")):
+        d = firmas.get(clave, {})
+        filas_firmas.append(
+            [etiqueta, d.get("nombre") or "LLENAR", d.get("cargo") or "LLENAR", d.get("firmado_por") or "LLENAR"]
+        )
+    partes.append(_html_tabla(["", "Nombre", "Cargo", "Firmado por"], filas_firmas))
+
+    partes.append(f'<img src="data:image/jpeg;base64,{pie_b64}" style="width:100%; margin-top:14px;">')
+    partes.append("</div>")
+
+    st.markdown("".join(partes), unsafe_allow_html=True)
+
+
 def render_formularios_y_registro() -> None:
-    """Subseccion "Formularios y Registro": genera el .docx del Anexo 1 -
-    Especificaciones Tecnicas para los Procesos de Bienes, replicando el
-    formato exacto de un modelo Word de referencia (ver
-    scripts/anexo1_generator.py). El encabezado/pie de pagina
-    institucionales son fijos (no editables); el resto -- caja de
-    titulo, items y sus especificaciones tecnicas -- se arma aqui con
-    los datos que ingrese el usuario."""
+    """Subseccion "Formularios y Registro": genera el .docx (y la tabla
+    de items en Excel) del Anexo 1 - Especificaciones Tecnicas para los
+    Procesos de Bienes, replicando el formato exacto de un modelo Word
+    de referencia (ver scripts/anexo1_generator.py). El encabezado fijo,
+    la tabla de items con calculo automatico y su tipo Bien/Servicio POR
+    ITEM, las especificaciones tecnicas condicionales, ~30 campos de
+    condiciones legales (organizados en expanders) y una vista previa en
+    vivo se organizan en pestañas para no ser un formulario gigante."""
     st.subheader("📝 Formularios y Registro")
     st.caption(
         "Genera el Anexo 1 - Especificaciones Técnicas para los Procesos de Bienes, "
         "con el mismo formato del modelo institucional."
     )
 
-    if "anexo1_items" not in st.session_state:
-        st.session_state.anexo1_items = []
-    if "anexo1_siguiente_id" not in st.session_state:
-        st.session_state.anexo1_siguiente_id = 0
+    if "anexo1_items_df" not in st.session_state:
+        st.session_state.anexo1_items_df = _dataframe_items_anexo1_vacio()
+    if "anexo1_cpc_df" not in st.session_state:
+        st.session_state.anexo1_cpc_df = _dataframe_cpc_anexo1_vacio()
+    if "anexo1_specs" not in st.session_state:
+        st.session_state.anexo1_specs = []
+    if "anexo1_siguiente_param_id" not in st.session_state:
+        st.session_state.anexo1_siguiente_param_id = 0
 
-    nombre_anexo = st.text_input("Nombre del Anexo", value="ANEXO 1", key="anexo1_nombre_anexo")
-    titulo_proceso = st.text_input(
-        "Título del proceso",
-        value="ESPECIFICACIONES TÉCNICAS PARA LOS PROCESOS DE BIENES",
-        key="anexo1_titulo_proceso",
+    # st.tabs() nativo no acepta key/session_state: su pestaña activa se
+    # rastrea solo en el frontend, y se sabe que se resetea a la primera
+    # pestaña cuando el script hace st.rerun() manual (como los botones
+    # "Añadir/Quitar item"/"Añadir/Quitar parametro" mas abajo) en vez de
+    # un rerun nativo disparado por el propio widget editado. Un selector
+    # respaldado en session_state (mismo patron ya probado en
+    # render_navegacion_sidebar) elimina ese reseteo de forma
+    # deterministica, sin depender de como Streamlit maneje cada rerun.
+    NOMBRES_TABS_ANEXO1 = [
+        "1. Datos Generales",
+        "2. Ítems y Valores",
+        "3. Especificaciones Técnicas",
+        "4. Condiciones Legales y Descarga",
+        "5. Vista Previa",
+    ]
+    if "anexo1_tab_activa" not in st.session_state:
+        st.session_state.anexo1_tab_activa = NOMBRES_TABS_ANEXO1[0]
+    tab_activa = st.radio(
+        "Sección",
+        NOMBRES_TABS_ANEXO1,
+        key="anexo1_tab_activa",
+        horizontal=True,
+        label_visibility="collapsed",
     )
-    coordinacion = st.text_input("Coordinación / Área responsable", key="anexo1_coordinacion")
-    texto_libre = st.text_area(
-        "Línea final de texto libre (se resalta en amarillo en el documento generado)",
-        key="anexo1_texto_libre",
-    )
 
-    st.markdown("**Ítems**")
-    if st.button("➕ Añadir ítem", key="anexo1_agregar_item"):
-        st.session_state.anexo1_items.append(_nuevo_item_anexo1())
-        st.rerun()
-
-    for indice_item, item in enumerate(st.session_state.anexo1_items):
-        item_id = item["id"]
-        with st.container(border=True):
-            col_titulo, col_quitar = st.columns([5, 1])
-            col_titulo.markdown(f"**Ítem {indice_item + 1}**")
-            if col_quitar.button("🗑️ Quitar ítem", key=f"anexo1_quitar_item_{item_id}"):
-                st.session_state.anexo1_items.pop(indice_item)
-                st.rerun()
-
-            col1, col2 = st.columns(2)
-            item["descripcion"] = col1.text_area(
-                "Descripción", value=item["descripcion"], key=f"anexo1_desc_{item_id}"
-            )
-            item["unidad_medida"] = col2.text_input(
-                "Unidad de Medida", value=item["unidad_medida"], key=f"anexo1_unidad_{item_id}"
-            )
-
-            col3, col4, col5 = st.columns(3)
-            item["cantidad_solicitada"] = col3.text_input(
-                "Cantidad Solicitada", value=item["cantidad_solicitada"], key=f"anexo1_cant_{item_id}"
-            )
-            item["valor_unitario"] = col4.text_input(
-                "Valor Unitario", value=item["valor_unitario"], key=f"anexo1_vu_{item_id}"
-            )
-            item["valor_total"] = col5.text_input(
-                "Valor Total", value=item["valor_total"], key=f"anexo1_vt_{item_id}"
-            )
-
-            col6, col7 = st.columns(2)
-            item["descripcion_cpc"] = col6.text_input(
-                "Descripción del CPC", value=item["descripcion_cpc"], key=f"anexo1_cpcdesc_{item_id}"
-            )
-            item["numero_cpc"] = col7.text_input(
-                "Número CPC", value=item["numero_cpc"], key=f"anexo1_cpcnum_{item_id}"
-            )
-
-            st.markdown("**Especificaciones Técnicas**")
-            item["subtitulo_specs"] = st.text_input(
-                "Subtítulo (equivalente a \"Modelo de Ejemplo\", se resalta en verde)",
-                value=item["subtitulo_specs"],
-                key=f"anexo1_subtitulo_{item_id}",
-            )
-
-            for indice_param, parametro in enumerate(item["parametros"]):
-                param_id = parametro["id"]
-                col_nombre, col_valor, col_quitar_p = st.columns([2, 2, 1])
-                etiquetas_visibles = "visible" if indice_param == 0 else "collapsed"
-                parametro["nombre"] = col_nombre.text_input(
-                    "Parámetro",
-                    value=parametro["nombre"],
-                    key=f"anexo1_param_nombre_{param_id}",
-                    label_visibility=etiquetas_visibles,
-                )
-                parametro["valor"] = col_valor.text_input(
-                    "Valor",
-                    value=parametro["valor"],
-                    key=f"anexo1_param_valor_{param_id}",
-                    label_visibility=etiquetas_visibles,
-                )
-                if col_quitar_p.button("🗑️", key=f"anexo1_quitar_param_{param_id}"):
-                    item["parametros"].pop(indice_param)
-                    st.rerun()
-
-            if st.button("➕ Añadir parámetro", key=f"anexo1_agregar_param_{item_id}"):
-                st.session_state.anexo1_siguiente_id += 1
-                item["parametros"].append(
-                    {"id": st.session_state.anexo1_siguiente_id, "nombre": "", "valor": ""}
-                )
-                st.rerun()
-
-    st.divider()
-    if st.button("📄 Descargar en Word", key="anexo1_generar", type="primary"):
-        if not st.session_state.anexo1_items:
-            st.warning("Agrega al menos un ítem antes de generar el documento.")
-        else:
-            datos = {
-                "nombre_anexo": nombre_anexo,
-                "titulo_proceso": titulo_proceso,
-                "coordinacion": coordinacion,
-                "texto_libre": texto_libre,
-                "items": st.session_state.anexo1_items,
-            }
-            nombre_archivo = f"Anexo1_{_slug_nombre_archivo(titulo_proceso)}.docx"
-            ruta_temporal = Path(tempfile.gettempdir()) / nombre_archivo
-            generar_anexo1(datos, ruta_temporal)
-            st.session_state.anexo1_docx_bytes = ruta_temporal.read_bytes()
-            st.session_state.anexo1_docx_nombre = nombre_archivo
-            ruta_temporal.unlink(missing_ok=True)
-            st.success("Documento generado correctamente.")
-
-    if st.session_state.get("anexo1_docx_bytes"):
-        st.download_button(
-            "⬇ Descargar " + st.session_state.anexo1_docx_nombre,
-            data=st.session_state.anexo1_docx_bytes,
-            file_name=st.session_state.anexo1_docx_nombre,
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    if tab_activa == NOMBRES_TABS_ANEXO1[0]:
+        st.markdown("**Encabezado fijo del documento**")
+        st.info(f"{TITULO_ANEXO_FIJO}\n\n{TITULO_PROCESO_FIJO}\n\n{COORDINACION_FIJA}")
+        st.text_area(
+            'Objeto de contratación (se resalta en amarillo en el documento generado)',
+            placeholder="Ej: SUMINISTRO, INSTALACIÓN, MANTENIMIENTO PREVENTIVO Y REPOTENCIACIÓN DE...",
+            key="anexo1_objeto_contratacion",
         )
+
+    elif tab_activa == NOMBRES_TABS_ANEXO1[1]:
+        st.markdown("**Ítems**")
+        st.caption(
+            'Cada ítem tiene su propio selector "Tipo" (Bien/Servicio): distintos ítems del '
+            'mismo proceso pueden ser de distinto tipo. La columna "Valor Total" se calcula '
+            'automáticamente (Cantidad Solicitada × Valor Unitario) y no es editable. Presiona '
+            '"Guardar Ítems" para aplicar los cambios.'
+        )
+        # La edicion vive dentro de un st.form: sin esto, CADA tecla/celda
+        # confirmada dispara un rerun completo de todo el script mientras
+        # el usuario sigue escribiendo, lo que puede chocar con el propio
+        # render en curso del data_editor (causa mas probable del error
+        # de consola "removeChild ... Node to be removed is not a child
+        # of this node", un fallo de reconciliacion de React por reruns
+        # solapados) y competir con el resto de la app por cada
+        # pulsacion. Dentro de un formulario, Streamlit NO reejecuta el
+        # script hasta que se presiona el boton de submit: todas las
+        # ediciones de celda se acumulan en el propio grid (estado del
+        # navegador) y se entregan de una sola vez.
+        with st.form("anexo1_form_items", clear_on_submit=False):
+            df_editado = st.data_editor(
+                st.session_state.anexo1_items_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="anexo1_data_editor",
+                column_config={
+                    "Ítem": st.column_config.NumberColumn("Ítem", disabled=True),
+                    "Tipo": st.column_config.SelectboxColumn(
+                        "Tipo", options=["Bien", "Servicio"], required=True, default="Bien"
+                    ),
+                    "Cantidad Solicitada": st.column_config.NumberColumn(
+                        "Cantidad Solicitada", min_value=0.0, step=1.0, default=0.0
+                    ),
+                    "Valor Unitario": st.column_config.NumberColumn(
+                        "Valor Unitario", min_value=0.0, format="%.2f", default=0.0
+                    ),
+                    "Valor Total": st.column_config.NumberColumn("Valor Total", disabled=True, format="%.2f"),
+                },
+            )
+            guardar_items = st.form_submit_button("💾 Guardar Ítems", type="primary")
+
+        if guardar_items:
+            # Se guarda la salida CRUDA del editor tal cual, sin
+            # recalcular "Ítem"/"Valor Total" sobre ella. Alimentar de
+            # vuelta una version recalculada (con valores/dtypes
+            # distintos a los que el usuario acaba de escribir) como
+            # `data=` del MISMO st.data_editor en el siguiente rerun es
+            # un antipatron conocido de Streamlit: el widget rastrea las
+            # ediciones como un diff contra el dataframe recibido, y si
+            # ese dataframe cambia de valores entre reruns (por haber
+            # sido recalculado aca), el diff puede aplicarse mal o
+            # perderse.
+            st.session_state.anexo1_items_df = df_editado
+            st.success("Ítems guardados.")
+
+        df_items_calculado = _recalcular_items_anexo1(st.session_state.anexo1_items_df)
+        st.dataframe(
+            df_items_calculado.style.format({"Valor Unitario": "$ {:,.2f}", "Valor Total": "$ {:,.2f}"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        buffer_excel = io.BytesIO()
+        df_items_calculado.to_excel(buffer_excel, index=False, engine="openpyxl")
+        st.download_button(
+            "📊 Descargar Tabla de Ítems en Excel",
+            data=buffer_excel.getvalue(),
+            file_name="Anexo1_items.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="anexo1_descargar_excel",
+        )
+
+    elif tab_activa == NOMBRES_TABS_ANEXO1[2]:
+        df_items = _recalcular_items_anexo1(st.session_state.anexo1_items_df)
+        cantidad_items = len(df_items)
+        specs = st.session_state.anexo1_specs
+        tipos_por_fila = df_items["Tipo"].fillna("Bien").tolist() if cantidad_items else []
+
+        while len(specs) < cantidad_items:
+            specs.append(_specs_vacias_anexo1(tipos_por_fila[len(specs)]))
+        del specs[cantidad_items:]
+        for indice, tipo_fila in enumerate(tipos_por_fila):
+            # si el usuario cambio el Tipo de ESE item en la pestaña
+            # anterior, la spec ya cargada tiene la forma equivocada y
+            # hay que reiniciarla (no se puede mezclar, ej., parametros
+            # de Bien con campos de Servicio).
+            es_spec_de_servicio = "procedimiento" in specs[indice]
+            if es_spec_de_servicio != (tipo_fila == "Servicio"):
+                specs[indice] = _specs_vacias_anexo1(tipo_fila)
+
+        if cantidad_items == 0:
+            st.info(
+                'Agrega ítems en la pestaña "2. Ítems y Valores" para poder '
+                "describir sus especificaciones técnicas."
+            )
+        else:
+            for indice in range(cantidad_items):
+                tipo_item = tipos_por_fila[indice]
+                descripcion_item = df_items.iloc[indice]["Descripción"] or f"Ítem {indice + 1}"
+                with st.expander(
+                    f"Ítem {indice + 1} ({tipo_item}) — {descripcion_item}", expanded=(indice == 0)
+                ):
+                    spec = specs[indice]
+                    if tipo_item == "Bien":
+                        spec["descripcion_material"] = st.text_area(
+                            "Descripción de Material",
+                            value=spec.get("descripcion_material", ""),
+                            key=f"anexo1_specs_material_{indice}",
+                        )
+                        spec["subtitulo_specs"] = st.text_input(
+                            'Subtítulo (equivalente a "Modelo de Ejemplo", se resalta en verde)',
+                            value=spec.get("subtitulo_specs", "MODELO DE EJEMPLO"),
+                            key=f"anexo1_specs_subtitulo_{indice}",
+                        )
+                        st.caption(
+                            "Parámetros técnicos (ej. Parámetros de módulos, Gabinetes, Pantalla, etc.)"
+                        )
+                        parametros = spec.setdefault("parametros", [])
+                        for indice_param, parametro in enumerate(parametros):
+                            param_id = parametro["id"]
+                            col_nombre, col_valor, col_quitar = st.columns([2, 2, 1])
+                            etiquetas = "visible" if indice_param == 0 else "collapsed"
+                            parametro["nombre"] = col_nombre.text_input(
+                                "Parámetro",
+                                value=parametro.get("nombre", ""),
+                                key=f"anexo1_specs_param_nombre_{indice}_{param_id}",
+                                label_visibility=etiquetas,
+                            )
+                            parametro["valor"] = col_valor.text_input(
+                                "Valor",
+                                value=parametro.get("valor", ""),
+                                key=f"anexo1_specs_param_valor_{indice}_{param_id}",
+                                label_visibility=etiquetas,
+                            )
+                            if col_quitar.button(
+                                "🗑️", key=f"anexo1_specs_param_quitar_{indice}_{param_id}"
+                            ):
+                                parametros.pop(indice_param)
+                                st.rerun()
+                        if st.button("➕ Añadir parámetro", key=f"anexo1_specs_agregar_param_{indice}"):
+                            st.session_state.anexo1_siguiente_param_id += 1
+                            parametros.append(
+                                {
+                                    "id": st.session_state.anexo1_siguiente_param_id,
+                                    "nombre": "",
+                                    "valor": "",
+                                }
+                            )
+                            st.rerun()
+                    else:
+                        spec["procedimiento"] = st.text_area(
+                            "Procedimiento (Desmontaje/Montaje)",
+                            value=spec.get("procedimiento", ""),
+                            key=f"anexo1_specs_procedimiento_{indice}",
+                        )
+                        spec["herramientas_equipo"] = st.text_area(
+                            "Herramientas/Equipo",
+                            value=spec.get("herramientas_equipo", ""),
+                            key=f"anexo1_specs_herramientas_{indice}",
+                        )
+                        spec["normas_aplicables"] = st.text_area(
+                            "Normas aplicables",
+                            value=spec.get("normas_aplicables", ""),
+                            key=f"anexo1_specs_normas_{indice}",
+                        )
+                        spec["medicion"] = st.text_area(
+                            "Medición",
+                            value=spec.get("medicion", ""),
+                            key=f"anexo1_specs_medicion_{indice}",
+                        )
+                        spec["forma_pago"] = st.text_area(
+                            "Forma de Pago",
+                            value=spec.get("forma_pago", ""),
+                            key=f"anexo1_specs_forma_pago_{indice}",
+                        )
+                        spec["obligaciones"] = st.text_area(
+                            "Obligaciones",
+                            value=spec.get("obligaciones", ""),
+                            key=f"anexo1_specs_obligaciones_{indice}",
+                        )
+
+    elif tab_activa == NOMBRES_TABS_ANEXO1[3]:
+        with st.expander("Presupuesto y Alcance", expanded=True):
+            st.text_input("Presupuesto Referencial", key="anexo1_presupuesto")
+            st.markdown("**Requerimientos Adicionales Obligatorios**")
+            st.session_state.anexo1_cpc_df = st.data_editor(
+                st.session_state.anexo1_cpc_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="anexo1_cpc_editor",
+            )
+            st.text_area("Alcance", key="anexo1_alcance")
+            st.text_input("Plazo de Ejecución: parcial y/o total (en días)", key="anexo1_plazo")
+            st.text_area(
+                "Personal técnico/equipo/recursos según corresponda", key="anexo1_personal_tecnico"
+            )
+            st.text_area("Forma y condiciones de pago", key="anexo1_forma_pago")
+            st.text_input("Lugar y dirección de entrega/ejecución", key="anexo1_lugar")
+
+        with st.expander("Obligaciones y Garantías"):
+            st.text_area("Obligaciones de la Entidad Contratante", key="anexo1_obligaciones_entidad")
+            st.text_area("Obligaciones de la Contratista", key="anexo1_obligaciones_contratista")
+            st.text_area(
+                "Garantías técnicas, en el caso de que aplique", key="anexo1_garantias_tecnicas"
+            )
+            st.number_input(
+                "Monto USD de la Garantía de Responsabilidad Civil",
+                min_value=0.0,
+                format="%.2f",
+                value=None,
+                key="anexo1_monto_garantia_rc",
+            )
+            st.number_input(
+                "Vigencia de la oferta (días)", min_value=0, step=1, value=90, key="anexo1_vigencia_oferta"
+            )
+            st.text_input("Tipo de adjudicación", key="anexo1_tipo_adjudicacion")
+            st.caption(
+                "El documento incluye, con el texto fijo del modelo institucional: Multas (1 por "
+                "1000), Garantía de Fiel Cumplimiento y Garantía de Buen Uso de Anticipo, y "
+                "Reajuste de Precios."
+            )
+
+        with st.expander("Administrador y Contactos"):
+            st.markdown("**Administrador del Contrato**")
+            col1, col2, col3 = st.columns(3)
+            col1.text_input("Nombre del Administrador", key="anexo1_admin_nombre")
+            col2.text_input("Cargo del Administrador", key="anexo1_admin_cargo")
+            col3.text_input("Cédula del Administrador", key="anexo1_admin_cedula")
+            st.caption(
+                f"El documento incluye, a continuación, la lista fija de "
+                f"{len(TEXTO_ATRIBUCIONES_ADMINISTRADOR)} atribuciones del Administrador del Contrato."
+            )
+
+            st.markdown("**Técnico que no interviene en la contratación**")
+            col4, col5, col6 = st.columns(3)
+            col4.text_input("Nombre del Técnico", key="anexo1_tecnico_nombre")
+            col5.text_input("Cargo del Técnico", key="anexo1_tecnico_cargo")
+            col6.text_input("Correo del Técnico", key="anexo1_tecnico_correo")
+
+            st.markdown("**Contacto**")
+            col7, col8 = st.columns(2)
+            col7.text_input("Dirección de contacto", key="anexo1_direccion_contacto")
+            col8.text_input("Teléfono de contacto", key="anexo1_telefono_contacto")
+
+            st.text_input("Proceso de contratación a aplicar", key="anexo1_proceso_aplicar")
+            st.text_area(
+                "Análisis para definir la estrategia de adquisición", key="anexo1_analisis_estrategia"
+            )
+
+        with st.expander("Evaluación y Calificación"):
+            col1, col2 = st.columns(2)
+            col1.number_input(
+                "% mínimo de experiencia general requerido",
+                min_value=0.0,
+                max_value=100.0,
+                value=None,
+                key="anexo1_pct_general",
+            )
+            col2.number_input(
+                "% mínimo de experiencia específica requerido",
+                min_value=0.0,
+                max_value=100.0,
+                value=None,
+                key="anexo1_pct_especifica",
+            )
+            st.text_input(
+                "Título profesional requerido para el personal técnico",
+                key="anexo1_titulo_profesional",
+            )
+            st.text_area("Equipo de trabajo/recursos a evaluar", key="anexo1_equipo_evaluar")
+            st.selectbox(
+                "Certificado de proveedor exclusivo o autorizado",
+                ["No", "Sí"],
+                key="anexo1_certificado_proveedor",
+            )
+            st.selectbox("¿Aplica Patrimonio?", ["No", "Sí"], key="anexo1_patrimonio_aplica")
+            if st.session_state.get("anexo1_patrimonio_aplica") == "Sí":
+                st.caption(
+                    "Se incluirán en el documento las 2 tablas fijas de rangos de Patrimonio "
+                    "(Bienes y/o Servicios, y Obras)."
+                )
+            st.text_area(
+                "Evaluación del análisis de estrategia de adquisición",
+                key="anexo1_evaluacion_estrategia",
+            )
+            st.text_area(
+                "Otros parámetros de evaluación y calificación", key="anexo1_otros_parametros"
+            )
+            st.caption(
+                "El documento incluye, con texto y puntajes fijos del modelo institucional: la "
+                "tabla de checklist Cumple/No Cumple, y la metodología de evaluación por puntaje "
+                "(Experiencia General 10, Experiencia Específica 20, Experiencia del Personal "
+                "Técnico 10, Oferta Económica 50, Valor Agregado Ecuatoriano 10, Total 100)."
+            )
+
+        with st.expander("Fecha y Firmas"):
+            st.text_input("Fecha del documento", key="anexo1_fecha")
+            st.markdown("**Firmas de responsabilidad**")
+            col_e1, col_e2, col_e3 = st.columns(3)
+            col_e1.text_input("Elaborado por — Nombre", key="anexo1_firma_elaborado_nombre")
+            col_e2.text_input("Elaborado por — Cargo", key="anexo1_firma_elaborado_cargo")
+            col_e3.text_input("Elaborado por — Firmado por", key="anexo1_firma_elaborado_firmado")
+
+            col_r1, col_r2, col_r3 = st.columns(3)
+            col_r1.text_input("Revisado por — Nombre", key="anexo1_firma_revisado_nombre")
+            col_r2.text_input("Revisado por — Cargo", key="anexo1_firma_revisado_cargo")
+            col_r3.text_input("Revisado por — Firmado por", key="anexo1_firma_revisado_firmado")
+
+            col_a1, col_a2, col_a3 = st.columns(3)
+            col_a1.text_input(
+                "Aprobado por — Nombre",
+                value=FIRMA_APROBADO_POR_DEFECTO_NOMBRE,
+                key="anexo1_firma_aprobado_nombre",
+            )
+            col_a2.text_input(
+                "Aprobado por — Cargo",
+                value=FIRMA_APROBADO_POR_DEFECTO_CARGO,
+                key="anexo1_firma_aprobado_cargo",
+            )
+            col_a3.text_input("Aprobado por — Firmado por", key="anexo1_firma_aprobado_firmado")
+
+        st.divider()
+        if st.button("📄 Descargar Anexo 1 en Word", key="anexo1_generar", type="primary"):
+            if st.session_state.anexo1_items_df.empty:
+                st.warning(
+                    'Agrega al menos un ítem en la pestaña "2. Ítems y Valores" '
+                    "antes de generar el documento."
+                )
+            else:
+                datos = _recolectar_datos_anexo1()
+                nombre_archivo = f"Anexo1_{_slug_nombre_archivo(datos['objeto_contratacion'] or 'documento')}.docx"
+                ruta_temporal = Path(tempfile.gettempdir()) / nombre_archivo
+                generar_anexo1(datos, ruta_temporal)
+                st.session_state.anexo1_docx_bytes = ruta_temporal.read_bytes()
+                st.session_state.anexo1_docx_nombre = nombre_archivo
+                ruta_temporal.unlink(missing_ok=True)
+                st.success("Documento generado correctamente.")
+
+        if st.session_state.get("anexo1_docx_bytes"):
+            st.download_button(
+                "⬇ Descargar " + st.session_state.anexo1_docx_nombre,
+                data=st.session_state.anexo1_docx_bytes,
+                file_name=st.session_state.anexo1_docx_nombre,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="anexo1_descargar_docx",
+            )
+
+    elif tab_activa == NOMBRES_TABS_ANEXO1[4]:
+        st.caption(
+            "Se actualiza automáticamente a medida que completas los datos en las otras "
+            'pestañas. Los campos vacíos se muestran como "LLENAR".'
+        )
+        _render_vista_previa_anexo1(_recolectar_datos_anexo1())
 
 
 def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None:
