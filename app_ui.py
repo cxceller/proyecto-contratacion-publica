@@ -5,10 +5,13 @@ Consume la API FastAPI (src/main.py) via requests. Arranque:
     uvicorn src.main:app --port 8000
     streamlit run app_ui.py --server.port 8501
 """
+import json
 import os
 import re
+import tempfile
 import unicodedata
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -16,6 +19,8 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 from dotenv import load_dotenv
+
+from scripts.anexo1_generator import generar_anexo1
 
 load_dotenv()
 
@@ -32,8 +37,30 @@ NAV_ITEMS = [
     ("Dashboard", "📊"),
     ("Procesos", "📋"),
     ("Reportes", "📄"),
+    ("Municipalidad de Guayaquil", "🏙️"),
     ("Configuración", "⚙️"),
 ]
+
+# Nombre exacto de la Entidad Contratante para la seccion "Municipalidad
+# de Guayaquil" (verificado contra la base real: un unico valor de
+# escritura, "Municipalidad de Guayaquil", 5 registros -- ver
+# filtrar_por_entidad, que igual normaliza tildes/mayusculas por si
+# aparecen variantes de escritura en datos futuros).
+ENTIDAD_MUNICIPALIDAD_GUAYAQUIL = "Municipalidad de Guayaquil"
+
+# Escudo institucional oficial para el item de menu "Municipalidad de
+# Guayaquil", en vez de un emoji. Recortado del logo apaisado original
+# (600x210px, "Muy Ilustre Municipalidad de Guayaquil") para quedarse
+# solo con el emblema (circulo + estrella + corona de laurel, 196x200px):
+# el wordmark de texto del logo completo, a tamaño de icono de menu, no
+# se leia (texto navy sobre el fondo navy del sidebar, y demasiado chico
+# de por si) -- el nombre ya esta como texto en el boton de al lado.
+# st.image solo permite fijar el ancho (la altura se escala sola
+# preservando el aspecto), asi que el ancho se calcula a partir de la
+# altura deseada y la relacion de aspecto real del recorte.
+LOGO_MUNICIPALIDAD_PATH = Path(__file__).resolve().parent / "assets" / "mimg_escudo.png"
+LOGO_MUNICIPALIDAD_ALTO_PX = 30
+LOGO_MUNICIPALIDAD_ANCHO_PX = round(LOGO_MUNICIPALIDAD_ALTO_PX * 196 / 200)
 
 # Estados tal como los expone el portal de Compras Publicas (algunos truncados).
 ESTADOS = [
@@ -135,6 +162,23 @@ CAPITALES_PROVINCIA = {
     "TUNGURAHUA": {"nombre": "Tungurahua", "capital": "Ambato", "lat": -1.2543, "lon": -78.6229},
     "ZAMORA CHINCHIPE": {"nombre": "Zamora Chinchipe", "capital": "Zamora", "lat": -4.0669, "lon": -78.9558},
 }
+
+# Limites provinciales (ADM1) del Ecuador, para el mapa coropletico.
+# Fuente: "Ecuador - Subnational Administrative Boundaries", Humanitarian
+# Data Exchange (HDX) -- https://data.humdata.org/dataset/cod-ab-ecu --
+# originado en el INEC. Licencia CC BY-IGO (uso libre, incluido
+# comercial, con atribucion -- ver el st.caption que acompaña al mapa).
+# Geometria simplificada (tolerance=0.01) para que cargue liviano en el
+# navegador; cada feature ya trae la propiedad "provincia_clave"
+# normalizada (mismo formato que las claves de CAPITALES_PROVINCIA) para
+# poder cruzar contra los datos sin depender de tildes/mayusculas.
+GEOJSON_PROVINCIAS_PATH = Path(__file__).resolve().parent / "data" / "provincias_ecuador.geojson"
+
+
+@st.cache_data
+def cargar_geojson_provincias() -> dict:
+    with open(GEOJSON_PROVINCIAS_PATH, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _normalizar_texto_provincia(texto: str) -> str:
@@ -437,14 +481,96 @@ def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+_MAPA_HOVERTEMPLATE = (
+    "<b>%{customdata[0]}</b> (%{customdata[1]})<br>"
+    "Total procesos: %{customdata[2]}<br>"
+    "Presupuesto total: $ %{customdata[3]:,.2f}<br>"
+    "%{customdata[4]}<extra></extra>"
+)
+_MAPA_CUSTOM_DATA = ["provincia", "capital", "procesos", "presupuesto", "detalle_estados"]
+
+
+def _aplicar_estilo_mapa_oscuro(fig: go.Figure) -> None:
+    """Layout compartido entre el mapa de burbujas y el coropletico:
+    mismo estilo oscuro, mismo tamaño, mismo formato de colorbar -- para
+    que ambas vistas del selector se vean visualmente consistentes."""
+    fig.update_layout(
+        mapbox_style="carto-darkmatter",
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=620,
+        paper_bgcolor=COLOR_LIENZO,
+        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),
+        coloraxis_colorbar=dict(
+            # El colorbar se dibuja fuera del area del mapa (sobre
+            # paper_bgcolor, que es blanco -- ver COLOR_LIENZO), no sobre
+            # las teselas oscuras: necesita su propio fondo oscuro
+            # explicito, si no el texto claro queda casi ilegible sobre
+            # blanco.
+            bgcolor="rgba(17, 24, 39, 0.9)",
+            bordercolor="rgba(255, 255, 255, 0.15)",
+            borderwidth=1,
+            title=dict(text="Presupuesto Total<br>(USD)", font=dict(color="#E0E0E0", size=14)),
+            tickfont=dict(color="#E0E0E0", size=12),
+            tickprefix="$ ",
+            tickformat=",.0f",
+            nticks=9,
+        ),
+        hoverlabel=dict(bgcolor=COLOR_LIENZO, font_size=13, font_color=COLOR_TEXTO_EJE),
+    )
+
+
+def _construir_mapa_burbujas(df_mapa: pd.DataFrame) -> go.Figure:
+    fig = px.scatter_mapbox(
+        df_mapa,
+        lat="lat",
+        lon="lon",
+        size="procesos",
+        color="presupuesto",
+        color_continuous_scale="Viridis",
+        size_max=45,
+        zoom=5.8,
+        center={"lat": -1.5, "lon": -78.5},
+        custom_data=_MAPA_CUSTOM_DATA,
+    )
+    fig.update_traces(marker=dict(opacity=0.9), hovertemplate=_MAPA_HOVERTEMPLATE)
+    _aplicar_estilo_mapa_oscuro(fig)
+    return fig
+
+
+def _construir_mapa_coropletico(df_mapa: pd.DataFrame) -> go.Figure:
+    geojson = cargar_geojson_provincias()
+    fig = px.choropleth_mapbox(
+        df_mapa,
+        geojson=geojson,
+        locations="provincia_clave",
+        featureidkey="properties.provincia_clave",
+        color="presupuesto",
+        color_continuous_scale="Viridis",
+        zoom=5.8,
+        center={"lat": -1.5, "lon": -78.5},
+        custom_data=_MAPA_CUSTOM_DATA,
+    )
+    fig.update_traces(marker=dict(opacity=0.75, line=dict(width=1, color="#1E293B")), hovertemplate=_MAPA_HOVERTEMPLATE)
+    _aplicar_estilo_mapa_oscuro(fig)
+    return fig
+
+
 def render_mapa_provincias(df: pd.DataFrame):
     """Mapa geografico real de Ecuador (teselas via Mapbox/Plotly, sin
-    necesidad de token: estilo "carto-positron"), con un punto en la
-    capital de cada provincia con datos. Tamaño de burbuja = volumen
-    total de procesos; color = categorico y distintivo por provincia
-    (PALETA_VIVA). El desglose completo por Estado del Proceso, junto
-    con el total y el presupuesto, se ve al pasar el cursor."""
+    necesidad de token: estilo oscuro "carto-darkmatter", a tono con el
+    resto del dashboard), con dos vistas intercambiables: burbujas (un
+    punto en la capital de cada provincia) o coropletico (cada provincia
+    pintada segun su metrica, usando el GeoJSON de limites del INEC/HDX).
+    En ambas, el tamaño/color de burbuja o el color de relleno indican
+    numero de procesos y presupuesto total; el desglose completo por
+    Estado del Proceso se ve al pasar el cursor."""
     st.markdown("**Contrataciones por Provincia (mapa)**")
+    st.caption(
+        "El tamaño de cada burbuja (o la intensidad del color, en la vista "
+        "coroplética) indica el número de procesos de contratación en esa "
+        "provincia; el color indica el presupuesto referencial total (más "
+        "claro = mayor presupuesto)."
+    )
     if df.empty:
         st.info("No hay datos para el mapa con los filtros actuales.")
         return
@@ -470,6 +596,7 @@ def render_mapa_provincias(df: pd.DataFrame):
         detalle_estados = "<br>".join(f"{estado}: {cantidad}" for estado, cantidad in conteo_estados.items())
 
         filas_mapa.append({
+            "provincia_clave": fila["provincia_clave"],
             "provincia": info["nombre"],
             "capital": info["capital"],
             "lat": info["lat"],
@@ -485,37 +612,21 @@ def render_mapa_provincias(df: pd.DataFrame):
 
     df_mapa = pd.DataFrame(filas_mapa)
 
-    fig = px.scatter_mapbox(
-        df_mapa,
-        lat="lat",
-        lon="lon",
-        size="procesos",
-        color="provincia",
-        color_discrete_sequence=PALETA_VIVA,
-        size_max=45,
-        zoom=5.7,
-        center={"lat": -1.83, "lon": -78.18},
-        custom_data=["provincia", "capital", "procesos", "presupuesto", "detalle_estados"],
+    vista = st.radio(
+        "Vista del mapa",
+        ["Burbujas", "Coroplético"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="vista_mapa_provincias",
     )
-    fig.update_traces(
-        marker=dict(opacity=0.85),
-        hovertemplate=(
-            "<b>%{customdata[0]}</b> (%{customdata[1]})<br>"
-            "Total procesos: %{customdata[2]}<br>"
-            "Presupuesto total: $ %{customdata[3]:,.2f}<br>"
-            "%{customdata[4]}<extra></extra>"
-        ),
-    )
-    fig.update_layout(
-        mapbox_style="carto-positron",
-        margin=dict(l=0, r=0, t=0, b=0),
-        height=560,
-        paper_bgcolor=COLOR_LIENZO,
-        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),
-        legend=dict(title="Provincia", font=dict(color=COLOR_TEXTO_EJE)),
-        hoverlabel=dict(bgcolor=COLOR_LIENZO, font_size=13, font_color=COLOR_TEXTO_EJE),
-    )
+    if vista == "Burbujas":
+        fig = _construir_mapa_burbujas(df_mapa)
+    else:
+        fig = _construir_mapa_coropletico(df_mapa)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    if vista == "Coroplético":
+        st.caption("Límites administrativos: INEC / HDX (data.humdata.org/dataset/cod-ab-ecu), CC BY-IGO.")
 
     if provincias_sin_ubicar:
         st.caption(
@@ -941,11 +1052,32 @@ def render_navegacion_sidebar() -> None:
 
         for nombre, icono in NAV_ITEMS:
             activo = st.session_state.pagina_activa == nombre
+            tipo_boton = "primary" if activo else "secondary"
+
+            if nombre == "Municipalidad de Guayaquil":
+                # Logo institucional real (600x210, apaisado) en vez de un
+                # emoji: se muestra a la izquierda del boton con una
+                # altura fija (LOGO_MUNICIPALIDAD_ALTO_PX) y el ancho
+                # calculado a partir de esa misma relacion de aspecto
+                # (st.image solo acepta fijar el ancho -- ver
+                # LOGO_MUNICIPALIDAD_ANCHO_PX), para que no se vea
+                # distorsionado.
+                col_icono, col_boton = st.columns([0.7, 4], gap="small", vertical_alignment="center")
+                with col_icono:
+                    st.image(str(LOGO_MUNICIPALIDAD_PATH), width=LOGO_MUNICIPALIDAD_ANCHO_PX)
+                with col_boton:
+                    if st.button(
+                        nombre.upper(), key=f"nav_{nombre}", use_container_width=True, type=tipo_boton,
+                    ):
+                        st.session_state.pagina_activa = nombre
+                        st.rerun()
+                continue
+
             if st.button(
                 f"{icono}  {nombre.upper()}",
                 key=f"nav_{nombre}",
                 use_container_width=True,
-                type="primary" if activo else "secondary",
+                type=tipo_boton,
             ):
                 st.session_state.pagina_activa = nombre
                 st.rerun()
@@ -1013,6 +1145,188 @@ def render_pagina_reportes() -> None:
     render_generador_reportes()
 
 
+def filtrar_por_entidad(registros: list[dict], entidad: str) -> list[dict]:
+    """Filtra por Entidad Contratante exacta, insensible a mayusculas y
+    tildes (misma normalizacion que _normalizar_texto_provincia, reusada
+    aqui igual que ya se hace para tipo_compra): protege contra
+    variaciones de escritura del dato crudo del portal, aunque hoy la
+    base solo tenga una unica forma de escritura para cada entidad."""
+    clave = _normalizar_texto_provincia(entidad)
+    return [r for r in registros if _normalizar_texto_provincia(r.get("entidad_contratante")) == clave]
+
+
+def _slug_nombre_archivo(texto: str) -> str:
+    clave = _normalizar_texto_provincia(texto)  # sin tildes, mayusculas
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", clave).strip("_")
+    return slug[:80] or "SinTitulo"
+
+
+def _nuevo_item_anexo1() -> dict:
+    st.session_state.anexo1_siguiente_id += 1
+    return {
+        "id": st.session_state.anexo1_siguiente_id,
+        "descripcion": "",
+        "unidad_medida": "",
+        "cantidad_solicitada": "",
+        "valor_unitario": "",
+        "valor_total": "",
+        "descripcion_cpc": "",
+        "numero_cpc": "",
+        "subtitulo_specs": "MODELO DE EJEMPLO",
+        "parametros": [],
+    }
+
+
+def render_formularios_y_registro() -> None:
+    """Subseccion "Formularios y Registro": genera el .docx del Anexo 1 -
+    Especificaciones Tecnicas para los Procesos de Bienes, replicando el
+    formato exacto de un modelo Word de referencia (ver
+    scripts/anexo1_generator.py). El encabezado/pie de pagina
+    institucionales son fijos (no editables); el resto -- caja de
+    titulo, items y sus especificaciones tecnicas -- se arma aqui con
+    los datos que ingrese el usuario."""
+    st.subheader("📝 Formularios y Registro")
+    st.caption(
+        "Genera el Anexo 1 - Especificaciones Técnicas para los Procesos de Bienes, "
+        "con el mismo formato del modelo institucional."
+    )
+
+    if "anexo1_items" not in st.session_state:
+        st.session_state.anexo1_items = []
+    if "anexo1_siguiente_id" not in st.session_state:
+        st.session_state.anexo1_siguiente_id = 0
+
+    nombre_anexo = st.text_input("Nombre del Anexo", value="ANEXO 1", key="anexo1_nombre_anexo")
+    titulo_proceso = st.text_input(
+        "Título del proceso",
+        value="ESPECIFICACIONES TÉCNICAS PARA LOS PROCESOS DE BIENES",
+        key="anexo1_titulo_proceso",
+    )
+    coordinacion = st.text_input("Coordinación / Área responsable", key="anexo1_coordinacion")
+    texto_libre = st.text_area(
+        "Línea final de texto libre (se resalta en amarillo en el documento generado)",
+        key="anexo1_texto_libre",
+    )
+
+    st.markdown("**Ítems**")
+    if st.button("➕ Añadir ítem", key="anexo1_agregar_item"):
+        st.session_state.anexo1_items.append(_nuevo_item_anexo1())
+        st.rerun()
+
+    for indice_item, item in enumerate(st.session_state.anexo1_items):
+        item_id = item["id"]
+        with st.container(border=True):
+            col_titulo, col_quitar = st.columns([5, 1])
+            col_titulo.markdown(f"**Ítem {indice_item + 1}**")
+            if col_quitar.button("🗑️ Quitar ítem", key=f"anexo1_quitar_item_{item_id}"):
+                st.session_state.anexo1_items.pop(indice_item)
+                st.rerun()
+
+            col1, col2 = st.columns(2)
+            item["descripcion"] = col1.text_area(
+                "Descripción", value=item["descripcion"], key=f"anexo1_desc_{item_id}"
+            )
+            item["unidad_medida"] = col2.text_input(
+                "Unidad de Medida", value=item["unidad_medida"], key=f"anexo1_unidad_{item_id}"
+            )
+
+            col3, col4, col5 = st.columns(3)
+            item["cantidad_solicitada"] = col3.text_input(
+                "Cantidad Solicitada", value=item["cantidad_solicitada"], key=f"anexo1_cant_{item_id}"
+            )
+            item["valor_unitario"] = col4.text_input(
+                "Valor Unitario", value=item["valor_unitario"], key=f"anexo1_vu_{item_id}"
+            )
+            item["valor_total"] = col5.text_input(
+                "Valor Total", value=item["valor_total"], key=f"anexo1_vt_{item_id}"
+            )
+
+            col6, col7 = st.columns(2)
+            item["descripcion_cpc"] = col6.text_input(
+                "Descripción del CPC", value=item["descripcion_cpc"], key=f"anexo1_cpcdesc_{item_id}"
+            )
+            item["numero_cpc"] = col7.text_input(
+                "Número CPC", value=item["numero_cpc"], key=f"anexo1_cpcnum_{item_id}"
+            )
+
+            st.markdown("**Especificaciones Técnicas**")
+            item["subtitulo_specs"] = st.text_input(
+                "Subtítulo (equivalente a \"Modelo de Ejemplo\", se resalta en verde)",
+                value=item["subtitulo_specs"],
+                key=f"anexo1_subtitulo_{item_id}",
+            )
+
+            for indice_param, parametro in enumerate(item["parametros"]):
+                param_id = parametro["id"]
+                col_nombre, col_valor, col_quitar_p = st.columns([2, 2, 1])
+                etiquetas_visibles = "visible" if indice_param == 0 else "collapsed"
+                parametro["nombre"] = col_nombre.text_input(
+                    "Parámetro",
+                    value=parametro["nombre"],
+                    key=f"anexo1_param_nombre_{param_id}",
+                    label_visibility=etiquetas_visibles,
+                )
+                parametro["valor"] = col_valor.text_input(
+                    "Valor",
+                    value=parametro["valor"],
+                    key=f"anexo1_param_valor_{param_id}",
+                    label_visibility=etiquetas_visibles,
+                )
+                if col_quitar_p.button("🗑️", key=f"anexo1_quitar_param_{param_id}"):
+                    item["parametros"].pop(indice_param)
+                    st.rerun()
+
+            if st.button("➕ Añadir parámetro", key=f"anexo1_agregar_param_{item_id}"):
+                st.session_state.anexo1_siguiente_id += 1
+                item["parametros"].append(
+                    {"id": st.session_state.anexo1_siguiente_id, "nombre": "", "valor": ""}
+                )
+                st.rerun()
+
+    st.divider()
+    if st.button("📄 Descargar en Word", key="anexo1_generar", type="primary"):
+        if not st.session_state.anexo1_items:
+            st.warning("Agrega al menos un ítem antes de generar el documento.")
+        else:
+            datos = {
+                "nombre_anexo": nombre_anexo,
+                "titulo_proceso": titulo_proceso,
+                "coordinacion": coordinacion,
+                "texto_libre": texto_libre,
+                "items": st.session_state.anexo1_items,
+            }
+            nombre_archivo = f"Anexo1_{_slug_nombre_archivo(titulo_proceso)}.docx"
+            ruta_temporal = Path(tempfile.gettempdir()) / nombre_archivo
+            generar_anexo1(datos, ruta_temporal)
+            st.session_state.anexo1_docx_bytes = ruta_temporal.read_bytes()
+            st.session_state.anexo1_docx_nombre = nombre_archivo
+            ruta_temporal.unlink(missing_ok=True)
+            st.success("Documento generado correctamente.")
+
+    if st.session_state.get("anexo1_docx_bytes"):
+        st.download_button(
+            "⬇ Descargar " + st.session_state.anexo1_docx_nombre,
+            data=st.session_state.anexo1_docx_bytes,
+            file_name=st.session_state.anexo1_docx_nombre,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+
+def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None:
+    st.header("🏙️ Municipalidad de Guayaquil")
+    registros_municipio = filtrar_por_entidad(registros_totales, ENTIDAD_MUNICIPALIDAD_GUAYAQUIL)
+    if registros_municipio:
+        render_contadores(registros_municipio)
+        st.divider()
+        render_metricas_resumen(registros_municipio)
+        render_tabla_con_color(registros_municipio)
+    else:
+        st.info(f'No se encontraron procesos para "{ENTIDAD_MUNICIPALIDAD_GUAYAQUIL}".')
+
+    st.divider()
+    render_formularios_y_registro()
+
+
 def render_pagina_configuracion() -> None:
     st.header("⚙️ Configuración")
     render_vaciar_base_datos()
@@ -1043,6 +1357,8 @@ def main():
         render_pagina_procesos(obtener_contrataciones())
     elif pagina == "Reportes":
         render_pagina_reportes()
+    elif pagina == "Municipalidad de Guayaquil":
+        render_pagina_municipalidad_guayaquil(obtener_contrataciones())
     elif pagina == "Configuración":
         render_pagina_configuracion()
 
