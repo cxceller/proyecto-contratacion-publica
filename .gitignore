@@ -19,6 +19,9 @@ page_dump.png
 # Capturas de pantalla por pagina generadas por scripts/scrape_portal.py
 capturas/
 
+# Documentos Word generados manualmente al probar la app (reportes, Anexo 1)
+/*.docx
+
 # Configuracion local de Claude Code (permisos especificos de esta maquina)
 .claude/settings.local.json
 
