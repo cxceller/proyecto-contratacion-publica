@@ -1,0 +1,11 @@
+# Tema global de la app: neutro (gris/blanco) para toda la interfaz, con el
+# naranja institucional reservado como color de accion primaria (botones
+# type="primary", sidebar activo). El rojo de alerta/destructivo (ej. Vaciar
+# Base de Datos) se aplica aparte con CSS especifico (ver COLOR_PELIGRO en
+# app_ui.py), para que sea visualmente distinto de una accion primaria normal.
+[theme]
+primaryColor = "#FF9800"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F5F9"
+textColor = "#1E293B"
+font = "sans serif"

@@ -79,14 +79,14 @@ ANCHOS_COLUMNAS_CM = [
     1276 * _TWIPS_A_CM,  # NUMERO CPC
 ]
 ENCABEZADOS_COLUMNAS = [
-    "ÍTEM",
+    "ITEM",
     "DESCRIPCIÓN",
     "Unidad de Medida",
-    "CANTIDAD SOLICITADA",
-    "VALOR UNITARIO",
-    "VALOR TOTAL",
+    "Cantidad Solicitada",
+    "Valor Unitario",
+    "Valor Total",
     "Descripción del CPC",
-    "NÚMERO CPC",
+    "NÚMERO DE CPC",
 ]
 ALINEACIONES_COLUMNAS = [
     WD_ALIGN_PARAGRAPH.CENTER,
@@ -115,14 +115,14 @@ TEXTO_MULTAS = (
     "Reglamento General de aplicación, excepto si media caso fortuito o fuerza mayor, conforme a "
     "lo dispuesto en el artículo 30 de la codificación del Código Civil, debidamente comprobado y "
     "aceptado por la contratante; para lo cual, la contratista notificará al administrador del "
-    "contrato dentro de las 48 horas subsiguientes de ocurridos los hechos, transcurrido lo cual, "
-    "de no mediar dicha notificación se entenderá como no ocurridos los hechos, que alegará el "
+    "contrato dentro de las 48 horas subsiguientes de ocurrido los hechos, transcurrido lo cual, "
+    "de no mediar dicha notificación se entenderán como no ocurridos los hechos, que alegue el "
     "contratista como causa para no prestar los servicios a los cuales está obligado y se le "
     "impondrá la multa prevista anteriormente.\n"
     "Si el valor de las multas llegare a superar el valor del 5% del monto total del contrato, la "
     "contratante podrá declarar anticipada y unilateralmente la terminación de este conforme al "
     "numeral 3 del artículo 108 de la LOSNCP.\n"
-    "La entidad contratante queda autorizada por el contratista para que haga efectiva la multa "
+    "La entidad contratante queda autorizada por la contratista para que haga efectiva la multa "
     "impuesta, de los valores que por la ejecución contractual le corresponde recibir.\n"
     "El administrador del contrato definirá el porcentaje de las obligaciones pendientes de "
     "ejecutar y deberá observar el procedimiento para la imposición de las mismas previsto en el "
@@ -191,6 +191,35 @@ TEXTO_VIGENCIA_OFERTA_PLANTILLA = (
 TEXTO_REAJUSTE_PRECIOS = (
     "El valor de la presente contratación no se sujeta al sistema de precios unitarios "
     "consecuentemente no habrá lugar al reajuste de precios."
+)
+
+TEXTO_ANALISIS_ESTRATEGIA_FIJO = (
+    "A efectos de seleccionar el tipo de procedimiento de contratación, la entidad contratante "
+    "deberá determinar, al menos:\n"
+    "i) Si los bienes o servicios son estandarizados y de adquisición frecuente; (Análisis de "
+    "procesos de la entidad iguales o similares y análisis de sus características técnicas, si el "
+    "precio más bajo fue el único parámetro de evaluación o existieron más, en los últimos 2 "
+    "años).\n"
+    "ii) Si existe un mercado competitivo de proveedores calificados.\n"
+    "iii) Si el precio refleja por sí solo el mejor valor por dinero o si deben priorizarse otros "
+    "atributos; identifique la alternativa que permita maximizar los resultados del gasto "
+    "público, considerando no solo el precio, sino también otros atributos relevantes como la "
+    "calidad, sostenibilidad, innovación, costos del ciclo de vida, desempeño y funcionalidad, "
+    "etc.\n"
+    "Deberán desarrollarse los Atributos de Evaluación Más Allá del Precio. El análisis deberá "
+    "considerar, de manera motivada y proporcional al objeto contractual, los atributos que "
+    "apliquen del informe de necesidad y por qué ayudan a maximizar los resultados del gasto "
+    "público durante el ciclo de vida del bien, servicio u obra. En caso de que alguno de ellos "
+    "sea más relevante que el precio, deberá indicarse y sustentarse; caso contrario, deberá "
+    "indicarse que lo que prevalece es el precio.\n"
+    "El precio solo no necesariamente representa el mejor valor por dinero, dado que también "
+    "podrían priorizarse como parte de la oferta atributos distintos al precio, tales como la "
+    "calidad, la sostenibilidad, la innovación, los costos del ciclo de vida, y, en general, "
+    "cuando se utilizan criterios de desempeño y funcionales, y no descripciones exactas del bien "
+    "y/o servicio o que sean limitantes en la participación de oferentes.\n"
+    "Cuando el precio más bajo y el mercado competitivo representen el mejor valor por dinero, se "
+    "aplicará Subasta Inversa Electrónica; en caso contrario, Licitación. Para las contrataciones "
+    "de obra siempre se optará por el procedimiento de Licitación."
 )
 
 TEXTO_ADMINISTRADOR_INTRO_PLANTILLA = (
@@ -262,8 +291,19 @@ TEXTO_ATRIBUCIONES_ADMINISTRADOR = [
     "Cualquier otra que de acuerdo con la naturaleza del objeto de contratación sea "
     "indispensable para garantizar su debida ejecución. Las atribuciones adicionales del "
     "administrador del contrato deberán estar descritas en el contrato.",
+]
+
+# Tras las 21 atribuciones numeradas, el modelo agrega -- sin numeracion propia --
+# una frase de transicion, un listado de obligaciones adicionales en vinetas, y un
+# parrafo de cierre sobre el cambio de administrador. No son continuacion de la
+# lista numerada de arriba (serian los items 22-33 si se numeraran, pero el modelo
+# real los presenta como vinetas sueltas).
+TEXTO_ADMINISTRADOR_OBLIGACIONES_INTRO = (
     "El/la administrador/a del contrato tendrá, a más de las establecidas en la normativa legal "
-    "vigente, las siguientes obligaciones y atribuciones, según corresponda:",
+    "vigente, las siguientes obligaciones y atribuciones, según corresponda:"
+)
+
+TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES = [
     "Realizar un informe motivado y recomendar de manera expresa a la máxima autoridad o su "
     "delegado la autorización o negativa a la solicitud de prórroga efectuada por el "
     "contratista, la suscripción de un contrato modificatorio o complementario, y la suspensión "
@@ -296,13 +336,16 @@ TEXTO_ATRIBUCIONES_ADMINISTRADOR = [
     "Pública, su Reglamento, Resoluciones del Servicio Nacional de Contratación Pública "
     "(SERCOP), las Normas de Control Interno de la Contraloría General del Estado, el contrato "
     "que se suscriba entre las partes y demás normativa aplicable.",
-    "La Municipalidad de Guayaquil podrá cambiar al/la administrador/a del contrato, para lo "
-    "cual bastará una comunicación escrita al contratista; sin que sea necesaria la "
-    "modificación del texto contractual.",
 ]
 
+TEXTO_ADMINISTRADOR_CIERRE = (
+    "La Municipalidad de Guayaquil podrá cambiar al/la administrador/a del contrato, para lo "
+    "cual bastará una comunicación escrita al contratista; sin que sea necesaria la "
+    "modificación del texto contractual."
+)
+
 TEXTO_TIEMPO_EXISTENCIA_LEGAL = (
-    "Art. 93.-Reglas de participación. -  1. Tiempo de existencia legal de personas jurídicas: "
+    "Art. 93.-Reglas de participación.-  1. Tiempo de existencia legal de personas jurídicas: "
     "para procedimientos de contratación cuyo presupuesto referencial sea igual o inferior a "
     "USD$ 500.000,00 (Quinientos mil dólares de los Estados Unidos de América con 00/100), no "
     "habrá tiempo de existencia legal mínima requerida. Para los procedimientos de contratación "
@@ -311,16 +354,12 @@ TEXTO_TIEMPO_EXISTENCIA_LEGAL = (
 )
 
 TEXTO_PATRIMONIO_INTRO = (
-    "Art. 93.- Reglas de participación.- Las entidades contratantes deberán exigir y verificar el "
-    "cumplimiento obligatorio de las siguientes reglas de participación de oferentes en todos los "
-    "tipos de procedimientos establecidos en la Ley Orgánica del Sistema Nacional de Contratación "
-    "Pública, a excepción de los procedimientos de Régimen Especial establecidos en los numerales "
-    "2 y 6 del artículo 38 de la referida Ley, los de catálogo electrónico, ínfima cuantía y "
-    "declaratoria de situación de emergencia.\n"
-    "Patrimonio de personas jurídicas: en el caso de personas jurídicas, la entidad contratante "
-    "verificará que el patrimonio sea igual o superior a la relación con el presupuesto "
-    "referencial del procedimiento de contratación, de conformidad con el contenido de la "
-    "siguiente tabla y en función del tipo de contratación que vaya a realizarse:"
+    "Art. 93.- Reglas de participación.- 2. Patrimonio de personas jurídicas: en el caso de "
+    "personas jurídicas, la entidad contratante verificará que el patrimonio sea igual o superior "
+    "a la relación con el presupuesto referencial del procedimiento de contratación.\n"
+    "El patrimonio se podrá verificar a través de la declaración del impuesto a la renta del "
+    "último ejercicio fiscal realizado ante el Servicio de Rentas Internas, o por el documento "
+    "equivalente en el país de origen para aquellas ofertas extranjeras."
 )
 
 TABLA_PATRIMONIO_ENCABEZADO = [
@@ -748,6 +787,14 @@ def _agregar_lista_numerada(documento: Document, items: list[str]) -> None:
         _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False)
 
 
+def _agregar_lista_vinetas(documento: Document, items: list[str]) -> None:
+    for texto in items:
+        parrafo = documento.add_paragraph()
+        parrafo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        run = parrafo.add_run(f"● {texto}")
+        _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False)
+
+
 def _agregar_tabla_simple(documento: Document, encabezados: list[str], filas: list[list[str]]) -> None:
     tabla = documento.add_table(rows=1, cols=len(encabezados))
     tabla.style = "Table Grid"
@@ -798,6 +845,12 @@ def _agregar_seccion_legal(documento: Document, datos: dict) -> None:
         [[r.get("cpc", "") or "LLENAR", r.get("descripcion", "") or "LLENAR"] for r in requerimientos_cpc],
     )
 
+    _agregar_campo_legal(
+        documento,
+        "CÓDIGO CPC (DETALLAR EL CÓDIGO Y LA DESCRIPCIÓN DEL DE MAYOR PESO ECONÓMICO DE LA CONTRATACIÓN)",
+        datos.get("codigo_cpc_mayor_peso", ""),
+    )
+
     _agregar_titulo_seccion(documento, "ALCANCE")
     _agregar_parrafo_legal(documento, datos.get("alcance", "") or "LLENAR")
 
@@ -806,11 +859,17 @@ def _agregar_seccion_legal(documento: Document, datos: dict) -> None:
         "PLAZO DE EJECUCIÓN: PARCIALES Y/O TOTAL (EN DÍAS)",
         datos.get("plazo_ejecucion", ""),
     )
-    _agregar_campo_legal(
-        documento,
-        "PERSONAL TÉCNICO/EQUIPO DE TRABAJO/RECURSOS SEGÚN CORRESPONDA",
-        datos.get("personal_tecnico_recursos", ""),
+
+    _agregar_titulo_seccion(
+        documento, "PERSONAL TÉCNICO/EQUIPO DE TRABAJO/RECURSOS SEGÚN CORRESPONDA, Y DE SER PERTINENTE"
     )
+    _agregar_campo_legal(documento, "1.- PERSONAL TÉCNICO PRINCIPAL", datos.get("personal_tecnico_principal", ""))
+    _agregar_campo_legal(
+        documento, "2.- PERSONAL TÉCNICO AUXILIAR O SECUNDARIO", datos.get("personal_tecnico_auxiliar", "")
+    )
+    _agregar_campo_legal(documento, "3.- EQUIPO DE TRABAJO", datos.get("equipo_trabajo", ""))
+    _agregar_campo_legal(documento, "4.- RECURSOS", datos.get("recursos", ""))
+
     _agregar_campo_legal(documento, "FORMA Y CONDICIONES DE PAGO", datos.get("forma_condiciones_pago", ""))
     _agregar_campo_legal(
         documento, "LUGAR Y DIRECCIÓN DE ENTREGA/EJECUCIÓN", datos.get("lugar_direccion", "")
@@ -860,6 +919,9 @@ def _agregar_seccion_legal(documento: Document, datos: dict) -> None:
         ),
     )
     _agregar_lista_numerada(documento, TEXTO_ATRIBUCIONES_ADMINISTRADOR)
+    _agregar_parrafo_legal(documento, TEXTO_ADMINISTRADOR_OBLIGACIONES_INTRO)
+    _agregar_lista_vinetas(documento, TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES)
+    _agregar_parrafo_legal(documento, TEXTO_ADMINISTRADOR_CIERRE)
 
     _agregar_titulo_seccion(documento, "TÉCNICO QUE NO INTERVIENE EN LA CONTRATACIÓN")
     _agregar_campo_legal(documento, "Funcionario", datos.get("tecnico_no_interviene_nombre", ""))
@@ -868,9 +930,9 @@ def _agregar_seccion_legal(documento: Document, datos: dict) -> None:
     _agregar_campo_legal(documento, "Dirección", datos.get("direccion_contacto", ""))
     _agregar_campo_legal(documento, "Teléfono", datos.get("telefono_contacto", ""))
 
-    _agregar_campo_legal(
-        documento, "ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN", datos.get("analisis_estrategia", "")
-    )
+    _agregar_titulo_seccion(documento, "ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN")
+    _agregar_parrafo_legal(documento, TEXTO_ANALISIS_ESTRATEGIA_FIJO)
+    _agregar_campo_legal(documento, "Análisis específico de la contratación", datos.get("analisis_estrategia", ""))
     _agregar_campo_legal(
         documento, "PROCESO DE CONTRATACIÓN A APLICAR", datos.get("proceso_contratacion_aplicar", "")
     )

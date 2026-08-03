@@ -13,7 +13,7 @@ import os
 import re
 import tempfile
 import unicodedata
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -36,6 +36,10 @@ from scripts.anexo1_generator import (
     TABLA_PATRIMONIO_OBRAS,
     TABLA_PUNTAJE_ENCABEZADO,
     TABLA_PUNTAJE_FIJA,
+    TEXTO_ADMINISTRADOR_CIERRE,
+    TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES,
+    TEXTO_ADMINISTRADOR_OBLIGACIONES_INTRO,
+    TEXTO_ANALISIS_ESTRATEGIA_FIJO,
     TEXTO_ATRIBUCIONES_ADMINISTRADOR,
     TEXTO_CERTIFICADO_PROVEEDOR_EXCLUSIVO_INTRO,
     TEXTO_EXPERIENCIA_PERSONAL_TECNICO,
@@ -62,6 +66,18 @@ COLOR_SIDEBAR_FONDO = "#1E293B"
 COLOR_SIDEBAR_TEXTO = "#CBD5E1"
 COLOR_SIDEBAR_TEXTO_ACTIVO = "#FFFFFF"
 COLOR_SIDEBAR_ACENTO = "#FF9800"  # mismo naranja de PALETA_VIVA, como acento de marca
+
+# Paleta general de la interfaz (fuera de graficos): el naranja/rojo vibrante
+# se reserva para botones de accion primaria (type="primary", ya configurado
+# como primaryColor en .streamlit/config.toml) y para alertas -- el resto de
+# la UI usa estos tonos neutros. COLOR_PELIGRO es un rojo aparte, mas oscuro
+# y saturado que el naranja de marca, exclusivo para acciones destructivas
+# (Vaciar Base de Datos), para que nunca se confunda con una accion primaria
+# normal (Generar Reporte, Guardar Items, etc.).
+COLOR_PELIGRO = "#DC2626"
+COLOR_PELIGRO_FONDO_SUAVE = "#FEF2F2"
+COLOR_NEUTRO_BORDE = "#E2E8F0"
+COLOR_NEUTRO_TEXTO_SUAVE = "#64748B"
 
 NAV_ITEMS = [
     ("Dashboard", "📊"),
@@ -337,27 +353,44 @@ def preparar_dataframe(registros: list[dict]) -> pd.DataFrame:
     return df
 
 
+CLAVES_FILTRO_DASHBOARD = ["dashboard_anio", "dashboard_mes", "dashboard_provincia"]
+
+
 def render_filtros_dashboard(df: pd.DataFrame) -> pd.DataFrame:
     """Fila de filtros superiores (Año, Mes, Provincia/Cantón) que acota
     todo lo que se muestra debajo: graficos, tablas y KPIs comparten el
-    mismo dataframe filtrado, para que las cifras siempre coincidan."""
-    col1, col2, col3 = st.columns(3)
+    mismo dataframe filtrado, para que las cifras siempre coincidan. Los
+    widgets tienen key propia para que "Limpiar filtros" pueda resetearlos
+    de verdad (no solo re-consultar datos), ver CLAVES_FILTRO_DASHBOARD."""
+    col1, col2, col3, col4 = st.columns([1, 1, 2, 1])
 
     if df.empty:
         col1.selectbox("Año", ["(Todos)"], disabled=True)
         col2.selectbox("Mes", ["(Todos)"], disabled=True)
-        col3.multiselect("Provincia/Cantón", [], disabled=True)
+        col3.multiselect("Provincia/Cantón", [], disabled=True, placeholder="Sin datos disponibles")
         return df
 
     anios_disponibles = sorted(df["anio"].dropna().unique().astype(int), reverse=True)
-    anio_sel = col1.selectbox("Año", ["(Todos)"] + [str(a) for a in anios_disponibles])
+    anio_sel = col1.selectbox("Año", ["(Todos)"] + [str(a) for a in anios_disponibles], key="dashboard_anio")
 
     meses_disponibles = sorted(df["mes_num"].dropna().unique().astype(int))
     opciones_mes = ["(Todos)"] + [MESES_ES[m] for m in meses_disponibles]
-    mes_sel = col2.selectbox("Mes", opciones_mes)
+    mes_sel = col2.selectbox("Mes", opciones_mes, key="dashboard_mes")
 
     provincias_disponibles = sorted(df["provincia_canton"].dropna().unique())
-    provincias_sel = col3.multiselect("Provincia/Cantón", provincias_disponibles)
+    provincias_sel = col3.multiselect(
+        "Provincia/Cantón",
+        provincias_disponibles,
+        key="dashboard_provincia",
+        placeholder="Selecciona una o más provincias/cantones",
+    )
+
+    with col4:
+        st.write("")  # alinea verticalmente el boton con los selectbox de arriba
+        if st.button("🧹 Limpiar filtros", key="dashboard_limpiar_filtros", use_container_width=True):
+            for clave in CLAVES_FILTRO_DASHBOARD:
+                st.session_state.pop(clave, None)
+            st.rerun()
 
     df_filtrado = df
     if anio_sel != "(Todos)":
@@ -389,16 +422,20 @@ def _aplicar_estilo_base(fig: go.Figure, altura: int = 380) -> None:
     )
 
 
-def _tarjeta_kpi_html(etiqueta: str, valor: str) -> str:
-    """Tarjeta KPI en HTML puro (no st.metric): el fondo se fuerza por
-    inline-style con COLOR_LIENZO, igual que plot_bgcolor/paper_bgcolor de
-    los graficos, para que ambos recuadros hagan juego sin depender del
-    tema claro/oscuro de Streamlit."""
+def _tarjeta_kpi_html(etiqueta: str, valor: str, ayuda: str | None = None) -> str:
+    """Tarjeta KPI en HTML puro (no st.metric): mismo fondo/tipografia/
+    bordes en toda la app (Dashboard, Procesos y Municipio de Guayaquil,
+    vía render_kpi_card mas abajo), en vez de la mezcla anterior de
+    st.metric (texto plano) en unas paginas y esta tarjeta HTML en otras.
+    El fondo se fuerza por inline-style con COLOR_LIENZO, igual que
+    plot_bgcolor/paper_bgcolor de los graficos, para que ambos recuadros
+    hagan juego sin depender del tema claro/oscuro de Streamlit."""
+    atributo_titulo = f' title="{html.escape(ayuda)}"' if ayuda else ""
     return f"""
-    <div style="background-color:{COLOR_LIENZO}; border-radius:0;
-                border:none; box-shadow:none; padding:1.25rem 1.5rem;
-                margin-bottom:0.5rem;">
-        <div style="font-size:0.875rem; color:{COLOR_TEXTO_EJE}; opacity:0.7;">
+    <div{atributo_titulo} style="background-color:{COLOR_LIENZO};
+                border:1px solid {COLOR_NEUTRO_BORDE}; border-radius:8px;
+                padding:1.25rem 1.5rem; margin-bottom:0.5rem;">
+        <div style="font-size:0.875rem; color:{COLOR_NEUTRO_TEXTO_SUAVE};">
             {etiqueta}
         </div>
         <div style="font-size:2rem; font-weight:600; color:{COLOR_TEXTO_EJE}; line-height:1.3;">
@@ -408,13 +445,37 @@ def _tarjeta_kpi_html(etiqueta: str, valor: str) -> str:
     """
 
 
+def render_kpi_card(columna, etiqueta: str, valor: str, ayuda: str | None = None) -> None:
+    """Tarjeta KPI reutilizable: mismo componente para Dashboard
+    (render_kpis_dashboard), Procesos y Municipio de Guayaquil
+    (render_contadores, render_metricas_resumen), en vez de que cada
+    pagina eligiera su propio estilo (st.metric vs. tarjeta HTML)."""
+    columna.markdown(_tarjeta_kpi_html(etiqueta, valor, ayuda), unsafe_allow_html=True)
+
+
 def render_kpis_dashboard(df: pd.DataFrame):
-    col1, col2 = st.columns(2)
+    """KPIs principales del Dashboard: Procesos, Presupuesto Total y Valor
+    Adjudicado -- lo unico visible por defecto antes de expandir cualquier
+    detalle (ver render_pagina_dashboard)."""
+    col1, col2, col3 = st.columns(3)
     presupuesto_total = df["presupuesto_referencial"].fillna(0).sum() if not df.empty else 0
-    col1.markdown(_tarjeta_kpi_html("Procesos (filtro actual)", str(len(df))), unsafe_allow_html=True)
-    col2.markdown(
-        _tarjeta_kpi_html("Presupuesto Total (filtro actual)", f"$ {presupuesto_total:,.2f}"),
-        unsafe_allow_html=True,
+    valor_adjudicado_total = (
+        df.loc[df["estado"].str.strip().str.lower().str.startswith("adjudicad", na=False), "presupuesto_referencial"]
+        .fillna(0)
+        .sum()
+        if not df.empty
+        else 0
+    )
+    render_kpi_card(col1, "Procesos (filtro actual)", str(len(df)))
+    render_kpi_card(col2, "Presupuesto Total (filtro actual)", f"$ {presupuesto_total:,.2f}")
+    render_kpi_card(
+        col3,
+        "Valor Adjudicado (filtro actual)",
+        f"$ {valor_adjudicado_total:,.2f}",
+        ayuda=(
+            "Suma del Presupuesto Referencial de los procesos con estado "
+            "Adjudicada/Adjudicado dentro del filtro actual."
+        ),
     )
 
 
@@ -762,12 +823,13 @@ def render_metricas_resumen(registros: list[dict]):
     )
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Número de Procesos", len(registros))
-    col2.metric("Presupuesto Total", f"$ {presupuesto_total:,.2f}")
-    col3.metric(
+    render_kpi_card(col1, "Número de Procesos", str(len(registros)))
+    render_kpi_card(col2, "Presupuesto Total", f"$ {presupuesto_total:,.2f}")
+    render_kpi_card(
+        col3,
         "Valor Adjudicado Total",
         f"$ {valor_adjudicado_total:,.2f}",
-        help=(
+        ayuda=(
             "Suma del Presupuesto Referencial de los procesos con estado "
             "Adjudicada/Adjudicado. No hay un campo separado de valor final "
             "adjudicado en los datos disponibles."
@@ -815,13 +877,20 @@ def render_tabla_con_color(registros: list[dict]):
     # el texto de estado tal cual viene de la API.
     df_visible["Estado del Proceso"] = df_visible["Estado del Proceso"].apply(estado_con_emoji)
 
+    # Anchos priorizados para las columnas mas importantes (Código, Entidad,
+    # Estado quedan fijas/legibles sin importar cuantas columnas tenga la
+    # tabla), y "Objeto del Proceso" en un ancho medio en vez de "large":
+    # st.dataframe (glide-data-grid) ya trunca con "…" y muestra el texto
+    # completo al pasar el cursor/hacer clic en la celda, asi que no hace
+    # falta "large" para que el dato no se pierda -- solo hacia que esta
+    # columna dominara el ancho de toda la tabla.
     column_config = {
         "Código": st.column_config.LinkColumn(
             "Código", pinned=True, display_text=r"#(.*)$", width="medium"
         ),
-        "Objeto del Proceso": st.column_config.TextColumn(
-            "Objeto del Proceso", width="large"
-        ),
+        "Entidad Contratante": st.column_config.TextColumn("Entidad Contratante", width="medium"),
+        "Estado del Proceso": st.column_config.TextColumn("Estado del Proceso", width="medium"),
+        "Objeto del Proceso": st.column_config.TextColumn("Objeto del Proceso", width="medium"),
         "Presupuesto Referencial (sin IVA)": st.column_config.NumberColumn(
             "Presupuesto Referencial (sin IVA)", format="$ %.2f", width="medium"
         ),
@@ -830,6 +899,10 @@ def render_tabla_con_color(registros: list[dict]):
         ),
     }
 
+    st.caption(
+        "💡 Las celdas con texto largo (ej. Objeto del Proceso) se truncan con "
+        "\"…\": pasa el cursor sobre la celda o haz clic para ver el texto completo."
+    )
     st.dataframe(
         df_visible,
         column_config=column_config,
@@ -846,6 +919,38 @@ def render_tabla_con_color(registros: list[dict]):
     )
 
 
+def _opciones_lote_id(registros: list[dict]) -> dict[str, str]:
+    """Etiqueta legible -> lote_id real, derivada de los registros ya
+    cargados (no hay un endpoint dedicado de lotes en la API). El lote_id
+    crudo es un timestamp ISO ("2026-07-28T11:07:02"): aca se convierte a
+    una fecha/hora legible en español y se le suma la palabra clave y el
+    numero de procesos de ese lote, para no forzar al usuario a copiar/
+    pegar el timestamp a mano. Ordenado del lote mas reciente al mas
+    antiguo."""
+    info_por_lote: dict[str, dict] = {}
+    for registro in registros:
+        lote = registro.get("lote_id")
+        if not lote:
+            continue
+        info = info_por_lote.setdefault(lote, {"palabra_clave": registro.get("palabra_clave") or "", "n": 0})
+        info["n"] += 1
+
+    opciones = {}
+    for lote in sorted(info_por_lote, reverse=True):
+        info = info_por_lote[lote]
+        try:
+            fecha_legible = datetime.fromisoformat(lote).strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            fecha_legible = lote
+        palabra_clave = info["palabra_clave"] or "sin palabra clave"
+        etiqueta = f"{fecha_legible} — {palabra_clave} ({info['n']} procesos)"
+        opciones[etiqueta] = lote
+    return opciones
+
+
+SIN_LOTE_ESPECIFICO = "(Ninguno — usar todo el rango de fechas)"
+
+
 def render_generador_reportes():
     """Seccion 'Generación de Reportes Automáticos': arma el payload y
     llama a POST /api/generar-reporte (src/api_reportes.py), que devuelve
@@ -859,23 +964,44 @@ def render_generador_reportes():
     if "reporte_docx_bytes" not in st.session_state:
         st.session_state.reporte_docx_bytes = None
 
+    claves_filtro_reportes = [
+        "reportes_palabras_clave",
+        "reportes_fecha_inicio",
+        "reportes_fecha_fin",
+        "reportes_lote_id",
+    ]
+    if st.button("🧹 Limpiar filtros", key="reportes_limpiar_filtros"):
+        for clave in claves_filtro_reportes:
+            st.session_state.pop(clave, None)
+        st.rerun()
+
     with st.form("form_generar_reporte"):
         palabras_clave_texto = st.text_input(
             "Palabras clave (separadas por comas)",
             placeholder="Ej: luminarias, repotenciacion",
+            key="reportes_palabras_clave",
         )
         col_inicio, col_fin = st.columns(2)
-        fecha_inicio = col_inicio.date_input("Fecha inicio", value=None)
-        fecha_fin = col_fin.date_input("Fecha fin", value=None)
-        lote_id_texto = st.text_input(
-            "Lote ID (opcional)",
-            placeholder="Ej: 2026-07-28T11:07:02",
-            help=(
-                "Si se indica, acota el reporte a una unica ejecucion de "
-                "scraping/importacion en vez de todo el rango de fechas."
-            ),
-        )
-        enviado = st.form_submit_button("📝 Generar Reporte Word", use_container_width=True)
+        fecha_inicio = col_inicio.date_input("Fecha inicio", value=None, key="reportes_fecha_inicio")
+        fecha_fin = col_fin.date_input("Fecha fin", value=None, key="reportes_fecha_fin")
+
+        # "Lote ID" (el timestamp crudo de una ejecucion de scraping/
+        # importacion) es un dato de debugging, no algo que un usuario
+        # normal deba escribir a mano: se esconde en un expander colapsado
+        # y se elige por un selectbox con etiquetas legibles (fecha +
+        # palabra clave + cantidad de procesos), no el timestamp crudo.
+        with st.expander("Opciones avanzadas", expanded=False):
+            opciones_lote = _opciones_lote_id(obtener_contrataciones())
+            etiqueta_lote_sel = st.selectbox(
+                "Lote de carga específico (opcional)",
+                [SIN_LOTE_ESPECIFICO] + list(opciones_lote.keys()),
+                key="reportes_lote_id",
+                help=(
+                    "Si se indica, acota el reporte a una única ejecución de "
+                    "scraping/importación en vez de todo el rango de fechas."
+                ),
+            )
+        enviado = st.form_submit_button("📝 Generar Reporte Word", type="primary", use_container_width=True)
 
     if enviado:
         palabras_clave = [p.strip() for p in palabras_clave_texto.split(",") if p.strip()]
@@ -889,8 +1015,8 @@ def render_generador_reportes():
                 "fecha_inicio": fecha_inicio.isoformat(),
                 "fecha_fin": fecha_fin.isoformat(),
             }
-            if lote_id_texto.strip():
-                payload["lote_id"] = lote_id_texto.strip()
+            if etiqueta_lote_sel != SIN_LOTE_ESPECIFICO:
+                payload["lote_id"] = opciones_lote[etiqueta_lote_sel]
 
             with st.spinner("Generando reporte..."):
                 response = api_request(
@@ -947,10 +1073,10 @@ def render_contadores(registros_totales: list[dict]):
 
     etiquetas = ESTADOS + ["Otros"]
     cols = st.columns(4)
-    cols[0].metric("Total", total)
+    render_kpi_card(cols[0], "Total", str(total))
     for i, estado_categoria in enumerate(etiquetas, start=1):
         etiqueta_mostrar = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
-        cols[i % 4].metric(etiqueta_mostrar, conteos[estado_categoria])
+        render_kpi_card(cols[i % 4], etiqueta_mostrar, str(conteos[estado_categoria]))
 
 
 def render_vaciar_base_datos():
@@ -960,39 +1086,68 @@ def render_vaciar_base_datos():
     if "confirmar_vaciado" not in st.session_state:
         st.session_state.confirmar_vaciado = False
 
-    if not st.session_state.confirmar_vaciado:
-        if st.button("⚠️ Vaciar Base de Datos", use_container_width=True):
-            st.session_state.confirmar_vaciado = True
-            st.rerun()
-        return
-
-    st.warning(
-        "Esto eliminará **todos** los procesos de contratación de la base "
-        "de datos de forma permanente. Esta acción no se puede deshacer."
-    )
-    confirmado = st.checkbox("Sí, entiendo y quiero vaciar la base de datos por completo")
-
-    col_confirmar, col_cancelar = st.columns(2)
-    if col_confirmar.button(
-        "Confirmar vaciado",
-        type="primary",
-        disabled=not confirmado,
-        use_container_width=True,
-    ):
-        response = api_request("DELETE", "/api/todos")
-        if response is None:
-            return
-        if response.status_code == 204:
-            st.session_state.confirmar_vaciado = False
-            st.session_state.resultados = None
-            st.session_state.mensaje_vaciado = "✅ Base de datos vaciada por completo."
-            st.rerun()
+    # Contenedor con borde rojo (CSS scoped via st.container(key=...), que
+    # Streamlit expone como la clase ".st-key-<key>") para que la zona de
+    # peligro sea inconfundible a simple vista frente al resto de la UI
+    # (neutra) y frente a botones de accion normal (naranja, type="primary"
+    # sin este contenedor). El boton real de borrado solo aparece
+    # habilitado tras el checkbox de confirmacion.
+    with st.container(key="zona_peligro_vaciar_bd", border=True):
+        if not st.session_state.confirmar_vaciado:
+            st.caption("Elimina **todos** los procesos de contratación de forma permanente.")
+            if st.button("⚠️ Vaciar Base de Datos", use_container_width=True):
+                st.session_state.confirmar_vaciado = True
+                st.rerun()
         else:
-            st.error(f"Error al vaciar la base de datos: {response.status_code}")
+            st.error(
+                "Esto eliminará **todos** los procesos de contratación de la base "
+                "de datos de forma permanente. Esta acción no se puede deshacer."
+            )
+            confirmado = st.checkbox("Sí, entiendo y quiero vaciar la base de datos por completo")
 
-    if col_cancelar.button("Cancelar", use_container_width=True):
-        st.session_state.confirmar_vaciado = False
-        st.rerun()
+            col_confirmar, col_cancelar = st.columns(2)
+            if col_confirmar.button(
+                "🗑️ Confirmar vaciado definitivo",
+                type="primary",
+                disabled=not confirmado,
+                use_container_width=True,
+            ):
+                with st.spinner("Vaciando la base de datos..."):
+                    response = api_request("DELETE", "/api/todos")
+                if response is None:
+                    return
+                if response.status_code == 204:
+                    st.session_state.confirmar_vaciado = False
+                    st.session_state.resultados = None
+                    st.session_state.mensaje_vaciado = "✅ Base de datos vaciada por completo."
+                    st.rerun()
+                else:
+                    st.error(f"Error al vaciar la base de datos: {response.status_code}")
+
+            if col_cancelar.button("Cancelar", use_container_width=True):
+                st.session_state.confirmar_vaciado = False
+                st.rerun()
+
+    st.markdown(
+        f"""
+        <style>
+        .st-key-zona_peligro_vaciar_bd {{
+            border-color: {COLOR_PELIGRO} !important;
+            background-color: {COLOR_PELIGRO_FONDO_SUAVE};
+        }}
+        .st-key-zona_peligro_vaciar_bd button[kind="primary"] {{
+            background-color: {COLOR_PELIGRO} !important;
+            border-color: {COLOR_PELIGRO} !important;
+            color: #FFFFFF !important;
+        }}
+        .st-key-zona_peligro_vaciar_bd button[kind="primary"]:hover {{
+            background-color: #B91C1C !important;
+            border-color: #B91C1C !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _inyectar_estilos_sidebar() -> None:
@@ -1114,6 +1269,11 @@ def render_navegacion_sidebar() -> None:
 
 
 def render_pagina_dashboard(registros_totales: list[dict]) -> None:
+    """Revelacion progresiva: por defecto solo se ven los contadores y los
+    3 KPIs principales (Procesos, Presupuesto, Adjudicado); el resto del
+    detalle (evolucion mensual, provincia, mapa, treemap, tablas resumen)
+    queda agrupado en pestañas, para no abrumar con todo el dashboard de
+    una sola vez."""
     render_contadores(registros_totales)
     st.divider()
     st.header("📊 Dashboard Analítico")
@@ -1121,15 +1281,31 @@ def render_pagina_dashboard(registros_totales: list[dict]) -> None:
     df_filtrado = render_filtros_dashboard(df_totales)
     render_kpis_dashboard(df_filtrado)
 
-    col_mensual, col_provincia = st.columns(2)
-    with col_mensual:
+    tab_mensual, tab_provincia, tab_treemap, tab_resumen = st.tabs(
+        [
+            "📅 Ver detalle por mes",
+            "📍 Ver detalle por provincia",
+            "🌳 Ver Provincia → Estado",
+            "🧾 Ver resumen por estado y tipo de compra",
+        ]
+    )
+    with tab_mensual:
         render_grafico_mensual(df_filtrado)
-    with col_provincia:
+    with tab_provincia:
         render_grafico_provincia(df_filtrado)
+        render_mapa_provincias(df_filtrado)
+    with tab_treemap:
+        render_treemap_provincia_estado(df_filtrado)
+    with tab_resumen:
+        render_tablas_resumen(df_filtrado)
 
-    render_mapa_provincias(df_filtrado)
-    render_treemap_provincia_estado(df_filtrado)
-    render_tablas_resumen(df_filtrado)
+
+CLAVES_FILTRO_PROCESOS = [
+    "procesos_estado",
+    "procesos_fecha_inicio",
+    "procesos_fecha_fin",
+    "procesos_palabra_clave",
+]
 
 
 def render_pagina_procesos(registros_totales: list[dict]) -> None:
@@ -1137,27 +1313,32 @@ def render_pagina_procesos(registros_totales: list[dict]) -> None:
 
     col_estado, col_inicio, col_fin, col_palabra = st.columns([1, 1, 1, 1.4])
     with col_estado:
-        estado_filtro = st.selectbox("Estado del Proceso", ["(Todos)"] + ESTADOS)
+        estado_filtro = st.selectbox("Estado del Proceso", ["(Todos)"] + ESTADOS, key="procesos_estado")
     with col_inicio:
-        fecha_inicio = st.date_input("Fecha inicio", value=None)
+        fecha_inicio = st.date_input("Fecha inicio", value=None, key="procesos_fecha_inicio")
     with col_fin:
-        fecha_fin = st.date_input("Fecha fin", value=None)
+        fecha_fin = st.date_input("Fecha fin", value=None, key="procesos_fecha_fin")
     with col_palabra:
-        palabra_clave_filtro = st.text_input("Palabra clave", placeholder="Ej: luminarias")
+        palabra_clave_filtro = st.text_input(
+            "Palabra clave", placeholder="Ej: luminarias", key="procesos_palabra_clave"
+        )
 
     col_buscar, col_limpiar, _ = st.columns([1, 1, 4])
-    buscar = col_buscar.button("🔍 Buscar", use_container_width=True)
-    limpiar = col_limpiar.button("🧹 Limpiar", use_container_width=True)
+    buscar = col_buscar.button("🔍 Buscar", type="primary", use_container_width=True)
+    limpiar = col_limpiar.button("🧹 Limpiar filtros", use_container_width=True)
 
     if buscar:
-        st.session_state.resultados = obtener_contrataciones(
-            status=None if estado_filtro == "(Todos)" else estado_filtro,
-            fecha_inicio=fecha_inicio,
-            fecha_fin=fecha_fin,
-            palabra_clave=palabra_clave_filtro or None,
-        )
+        with st.spinner("Buscando procesos..."):
+            st.session_state.resultados = obtener_contrataciones(
+                status=None if estado_filtro == "(Todos)" else estado_filtro,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                palabra_clave=palabra_clave_filtro or None,
+            )
     if limpiar:
         st.session_state.resultados = None
+        for clave in CLAVES_FILTRO_PROCESOS:
+            st.session_state.pop(clave, None)
         st.rerun()
 
     st.divider()
@@ -1204,10 +1385,92 @@ COLUMNAS_ITEMS_ANEXO1 = [
 ]
 
 
+CATALOGO_CPC_PATH = Path(__file__).resolve().parent / "data" / "cpc_n9.csv"
+
+
+@st.cache_data
+def _cargar_catalogo_cpc() -> dict[str, str]:
+    """Catalogo oficial 'Listado de CPC N9' (SERCOP, ~30.000 codigos):
+    codigo -> descripcion. Se carga UNA sola vez por sesion (cache_data) y
+    se expone como dict, no como DataFrame, para que la busqueda del
+    autocompletado sea O(1) por codigo en vez de recorrer/filtrar
+    30.000 filas en cada guardado."""
+    df = pd.read_csv(CATALOGO_CPC_PATH, dtype=str)
+    return dict(zip(df["codigo_cpc"].str.strip(), df["descripcion_cpc"].str.strip()))
+
+
+COLUMNAS_VISIBLES_ITEMS_ANEXO1 = [
+    "Ítem",
+    "Tipo",
+    "Descripción",
+    "Unidad de Medida",
+    "Cantidad Solicitada",
+    "Valor Unitario",
+    "Valor Total",
+    "Descripción CPC",
+    "Número CPC",
+]
+
+
+def _asignar_fila_ids_anexo1(df: pd.DataFrame) -> pd.DataFrame:
+    """Asigna un '_fila_id' unico y estable (via un contador en
+    session_state) a toda fila que todavia no lo tenga -- en la practica,
+    las filas nuevas que el usuario acaba de agregar en el data_editor.
+    Este id persiste entre guardados y es la clave real para reconocer
+    "la misma fila" de un guardado al siguiente: la POSICION (indice) no
+    sirve para eso, porque num_rows="dynamic" permite borrar una fila de
+    la mitad de la tabla, lo que corre de posicion a todas las filas
+    siguientes sin que hayan cambiado en nada."""
+    df = df.reset_index(drop=True).copy()
+    if "_fila_id" not in df.columns:
+        df["_fila_id"] = pd.array([pd.NA] * len(df), dtype="Int64")
+    for indice in df.index[df["_fila_id"].isna()]:
+        st.session_state.anexo1_siguiente_fila_id += 1
+        df.at[indice, "_fila_id"] = st.session_state.anexo1_siguiente_fila_id
+    return df
+
+
+def _autocompletar_descripcion_cpc(
+    df_nuevo: pd.DataFrame, df_anterior: pd.DataFrame, catalogo: dict[str, str]
+) -> tuple[pd.DataFrame, list[str]]:
+    """Autocompleta 'Descripción CPC' fila por fila cuando el 'Número CPC'
+    de ESA fila (identificada por su '_fila_id' estable, no por su
+    posicion -- ver _asignar_fila_ids_anexo1) cambio respecto al guardado
+    anterior, y el codigo se encuentra en el catalogo oficial. Si el
+    codigo no cambio, se respeta lo que el usuario haya dejado en
+    'Descripción CPC' (no se sobreescribe). Si el codigo cambio pero NO
+    esta en el catalogo, tampoco se sobreescribe -- se reporta como no
+    encontrado para mostrar una advertencia. df_nuevo debe venir ya
+    procesado por _asignar_fila_ids_anexo1 (toda fila, incluidas las
+    nuevas, ya tiene un '_fila_id')."""
+    df_nuevo = df_nuevo.reset_index(drop=True).copy()
+    codigo_previo_por_fila_id: dict[int, str] = {}
+    if "_fila_id" in df_anterior.columns and "Número CPC" in df_anterior.columns:
+        for _, fila in df_anterior.iterrows():
+            fila_id = fila.get("_fila_id")
+            if pd.notna(fila_id):
+                codigo_previo_por_fila_id[int(fila_id)] = str(fila.get("Número CPC") or "").strip()
+
+    no_encontrados = []
+    for indice, fila in df_nuevo.iterrows():
+        codigo_nuevo = str(fila.get("Número CPC") or "").strip()
+        if not codigo_nuevo:
+            continue
+        fila_id = fila.get("_fila_id")
+        codigo_previo = codigo_previo_por_fila_id.get(int(fila_id), "") if pd.notna(fila_id) else ""
+        if codigo_nuevo == codigo_previo:
+            continue
+        if codigo_nuevo in catalogo:
+            df_nuevo.at[indice, "Descripción CPC"] = catalogo[codigo_nuevo]
+        else:
+            no_encontrados.append(codigo_nuevo)
+    return df_nuevo, no_encontrados
+
+
 def _dataframe_items_anexo1_vacio() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "Ítem": pd.Series(dtype="int"),
+            "Ítem": pd.Series(dtype="Int64"),
             "Tipo": pd.Series(dtype="str"),
             "Descripción": pd.Series(dtype="str"),
             "Unidad de Medida": pd.Series(dtype="str"),
@@ -1216,6 +1479,7 @@ def _dataframe_items_anexo1_vacio() -> pd.DataFrame:
             "Valor Total": pd.Series(dtype="float"),
             "Descripción CPC": pd.Series(dtype="str"),
             "Número CPC": pd.Series(dtype="str"),
+            "_fila_id": pd.Series(dtype="Int64"),
         }
     )
 
@@ -1303,9 +1567,13 @@ def _recolectar_datos_anexo1() -> dict:
         "items": items_datos,
         "presupuesto_referencial": st.session_state.get("anexo1_presupuesto", ""),
         "requerimientos_cpc": requerimientos_cpc,
+        "codigo_cpc_mayor_peso": st.session_state.get("anexo1_codigo_cpc_mayor_peso", ""),
         "alcance": st.session_state.get("anexo1_alcance", ""),
         "plazo_ejecucion": st.session_state.get("anexo1_plazo", ""),
-        "personal_tecnico_recursos": st.session_state.get("anexo1_personal_tecnico", ""),
+        "personal_tecnico_principal": st.session_state.get("anexo1_personal_tecnico_principal", ""),
+        "personal_tecnico_auxiliar": st.session_state.get("anexo1_personal_tecnico_auxiliar", ""),
+        "equipo_trabajo": st.session_state.get("anexo1_equipo_trabajo", ""),
+        "recursos": st.session_state.get("anexo1_recursos", ""),
         "forma_condiciones_pago": st.session_state.get("anexo1_forma_pago", ""),
         "lugar_direccion": st.session_state.get("anexo1_lugar", ""),
         "obligaciones_entidad": st.session_state.get("anexo1_obligaciones_entidad", ""),
@@ -1368,21 +1636,57 @@ def _html_valor_o_llenar(valor: str) -> str:
     return html.escape(valor) if valor else _LLENAR
 
 
-def _html_campo(etiqueta: str, valor: str) -> str:
+def _html_fila_ancho_completo(contenido_html: str, *, fondo: str = "white", negrita: bool = False) -> str:
+    """Una fila-tabla de ancho completo, con borde solido en las 4 caras.
+    margin:0 0 -1px 0 hace que el borde inferior de una fila se superponga
+    con el superior de la siguiente (misma tecnica que usa la tabla real
+    de items), para que la Vista Previa se vea como una sola hoja/tabla
+    institucional continua en vez de parrafos sueltos."""
+    peso = "font-weight:bold;" if negrita else ""
     return (
-        f'<p style="margin:3px 0;"><b>{html.escape(etiqueta)}:</b> '
-        f'<span style="background:#fff59d; padding:0 2px;">{_html_valor_o_llenar(valor)}</span></p>'
+        '<table style="width:100%; border-collapse:collapse; margin:0 0 -1px 0;">'
+        f'<tr><td style="border:1px solid #000; padding:5px 8px; background:{fondo}; {peso}">'
+        f"{contenido_html}</td></tr></table>"
     )
+
+
+def _html_campo(etiqueta: str, valor: str) -> str:
+    contenido = (
+        '<table style="width:100%; border-collapse:collapse;"><tr>'
+        f'<td style="border:none; padding:0; font-weight:bold; width:38%; vertical-align:top;">'
+        f"{html.escape(etiqueta)}</td>"
+        f'<td style="border:none; padding:0; vertical-align:top;">'
+        f'<span style="background:#fff59d; padding:0 2px;">{_html_valor_o_llenar(valor)}</span></td>'
+        "</tr></table>"
+    )
+    return _html_fila_ancho_completo(contenido)
 
 
 def _html_parrafo_fijo(texto: str) -> str:
-    return "".join(
+    parrafos = "".join(
         f'<p style="margin:3px 0; text-align:justify;">{html.escape(linea)}</p>' for linea in texto.split("\n")
     )
+    return _html_fila_ancho_completo(parrafos)
 
 
 def _html_titulo(texto: str) -> str:
-    return f'<p style="margin:12px 0 3px 0; font-weight:bold;">{html.escape(texto)}</p>'
+    return _html_fila_ancho_completo(html.escape(texto), fondo="#f2f2f2", negrita=True)
+
+
+def _html_lista_numerada(items: list[str]) -> str:
+    parrafos = "".join(
+        f'<p style="margin:2px 0; text-align:justify; font-size:12px;">{numero}. {html.escape(texto)}</p>'
+        for numero, texto in enumerate(items, start=1)
+    )
+    return _html_fila_ancho_completo(parrafos)
+
+
+def _html_lista_vinetas(items: list[str]) -> str:
+    parrafos = "".join(
+        f'<p style="margin:2px 0; text-align:justify; font-size:12px;">● {html.escape(texto)}</p>'
+        for texto in items
+    )
+    return _html_fila_ancho_completo(parrafos)
 
 
 def _html_tabla(encabezados: list[str], filas: list[list[str]]) -> str:
@@ -1399,8 +1703,8 @@ def _html_tabla(encabezados: list[str], filas: list[list[str]]) -> str:
 
 def _html_bloque_item(numero: int, item: dict) -> str:
     encabezados = [
-        "ÍTEM", "DESCRIPCIÓN", "Unidad de Medida", "CANTIDAD SOLICITADA",
-        "VALOR UNITARIO", "VALOR TOTAL", "Descripción del CPC", "NÚMERO CPC",
+        "ITEM", "DESCRIPCIÓN", "Unidad de Medida", "Cantidad Solicitada",
+        "Valor Unitario", "Valor Total", "Descripción del CPC", "NÚMERO DE CPC",
     ]
     valores = [
         str(numero), item.get("descripcion", ""), item.get("unidad_medida", ""),
@@ -1509,9 +1813,16 @@ def _render_vista_previa_anexo1(datos: dict) -> None:
         )
     )
 
+    partes.append(_html_campo("CÓDIGO CPC (MAYOR PESO ECONÓMICO)", datos.get("codigo_cpc_mayor_peso", "")))
     partes.append(_html_campo("ALCANCE", datos.get("alcance", "")))
     partes.append(_html_campo("PLAZO DE EJECUCIÓN (DÍAS)", datos.get("plazo_ejecucion", "")))
-    partes.append(_html_campo("PERSONAL TÉCNICO/EQUIPO/RECURSOS", datos.get("personal_tecnico_recursos", "")))
+    partes.append(_html_titulo("PERSONAL TÉCNICO/EQUIPO DE TRABAJO/RECURSOS SEGÚN CORRESPONDA"))
+    partes.append(_html_campo("1.- Personal Técnico Principal", datos.get("personal_tecnico_principal", "")))
+    partes.append(
+        _html_campo("2.- Personal Técnico Auxiliar o Secundario", datos.get("personal_tecnico_auxiliar", ""))
+    )
+    partes.append(_html_campo("3.- Equipo de Trabajo", datos.get("equipo_trabajo", "")))
+    partes.append(_html_campo("4.- Recursos", datos.get("recursos", "")))
     partes.append(_html_campo("FORMA Y CONDICIONES DE PAGO", datos.get("forma_condiciones_pago", "")))
     partes.append(_html_campo("LUGAR Y DIRECCIÓN DE ENTREGA/EJECUCIÓN", datos.get("lugar_direccion", "")))
 
@@ -1529,12 +1840,14 @@ def _render_vista_previa_anexo1(datos: dict) -> None:
     partes.append(_html_parrafo_fijo(TEXTO_GARANTIA_FIEL_CUMPLIMIENTO))
     partes.append(_html_parrafo_fijo(TEXTO_GARANTIA_BUEN_USO_ANTICIPO))
     partes.append(
-        '<p style="margin:3px 0; font-weight:bold;">GARANTÍA DE RESPONSABILIDAD CIVIL</p>'
-        f'<p style="margin:3px 0; text-align:justify;">Al momento de suscribir el contrato de '
-        f'"{_html_valor_o_llenar(datos.get("objeto_contratacion", ""))}", la contratista deberá '
-        f'justificar que cuenta con una póliza de responsabilidad civil con un valor asegurado '
-        f'mínimo de USD {_html_valor_o_llenar(datos.get("monto_garantia_responsabilidad_civil", ""))} '
-        f"por evento (texto completo en el documento final).</p>"
+        _html_fila_ancho_completo(
+            '<p style="margin:3px 0; font-weight:bold;">GARANTÍA DE RESPONSABILIDAD CIVIL</p>'
+            f'<p style="margin:3px 0; text-align:justify;">Al momento de suscribir el contrato de '
+            f'"{_html_valor_o_llenar(datos.get("objeto_contratacion", ""))}", la contratista deberá '
+            f'justificar que cuenta con una póliza de responsabilidad civil con un valor asegurado '
+            f'mínimo de USD {_html_valor_o_llenar(datos.get("monto_garantia_responsabilidad_civil", ""))} '
+            f"por evento (texto completo en el documento final).</p>"
+        )
     )
 
     partes.append(_html_titulo("VIGENCIA DE LA OFERTA"))
@@ -1550,9 +1863,13 @@ def _render_vista_previa_anexo1(datos: dict) -> None:
     partes.append(_html_campo("Cargo", datos.get("administrador_cargo", "")))
     partes.append(_html_campo("Cédula", datos.get("administrador_cedula", "")))
     partes.append(
-        f'<p style="margin:3px 0; font-size:11px; color:#555;">'
-        f"(+ lista fija de {len(TEXTO_ATRIBUCIONES_ADMINISTRADOR)} atribuciones del administrador, en el documento final)</p>"
+        '<p style="margin:3px 0; text-align:justify;">Para los efectos deberá cumplir con las '
+        "siguientes atribuciones:</p>"
     )
+    partes.append(_html_lista_numerada(TEXTO_ATRIBUCIONES_ADMINISTRADOR))
+    partes.append(_html_parrafo_fijo(TEXTO_ADMINISTRADOR_OBLIGACIONES_INTRO))
+    partes.append(_html_lista_vinetas(TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES))
+    partes.append(_html_parrafo_fijo(TEXTO_ADMINISTRADOR_CIERRE))
 
     partes.append(_html_titulo("TÉCNICO QUE NO INTERVIENE EN LA CONTRATACIÓN"))
     partes.append(_html_campo("Nombre", datos.get("tecnico_no_interviene_nombre", "")))
@@ -1561,7 +1878,9 @@ def _render_vista_previa_anexo1(datos: dict) -> None:
     partes.append(_html_campo("Dirección de contacto", datos.get("direccion_contacto", "")))
     partes.append(_html_campo("Teléfono de contacto", datos.get("telefono_contacto", "")))
 
-    partes.append(_html_campo("ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN", datos.get("analisis_estrategia", "")))
+    partes.append(_html_titulo("ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN"))
+    partes.append(_html_parrafo_fijo(TEXTO_ANALISIS_ESTRATEGIA_FIJO))
+    partes.append(_html_campo("Análisis específico de la contratación", datos.get("analisis_estrategia", "")))
     partes.append(_html_campo("PROCESO DE CONTRATACIÓN A APLICAR", datos.get("proceso_contratacion_aplicar", "")))
 
     partes.append(_html_titulo("PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN"))
@@ -1569,10 +1888,8 @@ def _render_vista_previa_anexo1(datos: dict) -> None:
     partes.append(_html_campo("% experiencia general mínima", datos.get("pct_experiencia_general", "")))
     partes.append(_html_campo("% experiencia específica mínima", datos.get("pct_experiencia_especifica", "")))
     partes.append(_html_campo("Título profesional del personal técnico", datos.get("titulo_profesional_personal_tecnico", "")))
-    partes.append(
-        f'<p style="margin:3px 0; font-size:11px; color:#555;">'
-        f"(+ texto fijo de Experiencia del Personal Técnico en el documento final)</p>"
-    )
+    partes.append(_html_titulo("EXPERIENCIA DEL PERSONAL TÉCNICO"))
+    partes.append(_html_parrafo_fijo(TEXTO_EXPERIENCIA_PERSONAL_TECNICO))
     partes.append(_html_campo("EQUIPO DE TRABAJO/RECURSOS A EVALUAR", datos.get("equipo_trabajo_recursos_evaluar", "")))
     partes.append(
         _html_campo(
@@ -1641,6 +1958,10 @@ def render_formularios_y_registro() -> None:
 
     if "anexo1_items_df" not in st.session_state:
         st.session_state.anexo1_items_df = _dataframe_items_anexo1_vacio()
+    if "anexo1_items_editor_version" not in st.session_state:
+        st.session_state.anexo1_items_editor_version = 0
+    if "anexo1_siguiente_fila_id" not in st.session_state:
+        st.session_state.anexo1_siguiente_fila_id = 0
     if "anexo1_cpc_df" not in st.session_state:
         st.session_state.anexo1_cpc_df = _dataframe_cpc_anexo1_vacio()
     if "anexo1_specs" not in st.session_state:
@@ -1693,22 +2014,37 @@ def render_formularios_y_registro() -> None:
         # La edicion vive dentro de un st.form: sin esto, CADA tecla/celda
         # confirmada dispara un rerun completo de todo el script mientras
         # el usuario sigue escribiendo, lo que puede chocar con el propio
-        # render en curso del data_editor (causa mas probable del error
-        # de consola "removeChild ... Node to be removed is not a child
-        # of this node", un fallo de reconciliacion de React por reruns
-        # solapados) y competir con el resto de la app por cada
-        # pulsacion. Dentro de un formulario, Streamlit NO reejecuta el
-        # script hasta que se presiona el boton de submit: todas las
-        # ediciones de celda se acumulan en el propio grid (estado del
-        # navegador) y se entregan de una sola vez.
+        # render en curso del data_editor y competir con el resto de la
+        # app por cada pulsacion. Dentro de un formulario, Streamlit NO
+        # reejecuta el script hasta que se presiona el boton de submit:
+        # todas las ediciones de celda se acumulan en el propio grid
+        # (estado del navegador) y se entregan de una sola vez.
+        #
+        # La columna "Ítem" es NumberColumn(disabled=True): el usuario no
+        # puede escribir en ella, asi que una fila nueva (num_rows are
+        # "dynamic") queda con ese valor en None hasta que se recalcula.
+        # Si esa fila con None se guarda tal cual en session_state y se
+        # vuelve a pasar como `data=` al MISMO key de data_editor, el
+        # dtype de la columna cambia de una corrida a otra (numpy "int"
+        # no admite None, así que pandas lo sube silenciosamente a
+        # float/object): el grid del frontend (glide-data-grid) recibe un
+        # esquema de columnas distinto al que ya tenia montado para ese
+        # key y su reconciliacion de React falla con "NotFoundError:
+        # Failed to execute 'removeChild'", tipicamente ocultando o
+        # perdiendo filas incompletas en el proceso. La solucion no es
+        # solo evitar recalcular -- es no reutilizar el mismo key con un
+        # dataframe de forma/dtype distinta: version = un key nuevo cada
+        # vez que se guarda, forzando un remount limpio del grid en vez
+        # de un diff incremental sobre un esquema que ya no coincide.
         with st.form("anexo1_form_items", clear_on_submit=False):
             df_editado = st.data_editor(
                 st.session_state.anexo1_items_df,
                 num_rows="dynamic",
                 use_container_width=True,
-                key="anexo1_data_editor",
+                key=f"anexo1_data_editor_{st.session_state.anexo1_items_editor_version}",
+                column_order=COLUMNAS_VISIBLES_ITEMS_ANEXO1,
                 column_config={
-                    "Ítem": st.column_config.NumberColumn("Ítem", disabled=True),
+                    "Ítem": st.column_config.NumberColumn("Ítem", disabled=True, default=0),
                     "Tipo": st.column_config.SelectboxColumn(
                         "Tipo", options=["Bien", "Servicio"], required=True, default="Bien"
                     ),
@@ -1724,28 +2060,42 @@ def render_formularios_y_registro() -> None:
             guardar_items = st.form_submit_button("💾 Guardar Ítems", type="primary")
 
         if guardar_items:
-            # Se guarda la salida CRUDA del editor tal cual, sin
-            # recalcular "Ítem"/"Valor Total" sobre ella. Alimentar de
-            # vuelta una version recalculada (con valores/dtypes
-            # distintos a los que el usuario acaba de escribir) como
-            # `data=` del MISMO st.data_editor en el siguiente rerun es
-            # un antipatron conocido de Streamlit: el widget rastrea las
-            # ediciones como un diff contra el dataframe recibido, y si
-            # ese dataframe cambia de valores entre reruns (por haber
-            # sido recalculado aca), el diff puede aplicarse mal o
-            # perderse.
-            st.session_state.anexo1_items_df = df_editado
+            # Al guardar SI se recalcula (a diferencia de antes): "Ítem"
+            # y "Valor Total" quedan bien formados (sin None) antes de
+            # persistir a session_state, y el key con version bumped
+            # fuerza al grid a remontarse desde cero con ese dataframe ya
+            # limpio en el siguiente rerun -- no hay diff incremental que
+            # pueda desincronizarse. _asignar_fila_ids_anexo1 (identidad
+            # estable por fila) y el autocompletado de "Descripción CPC"
+            # corren ANTES de ese recalculo/remount, por la misma razon:
+            # nunca se reintroduce un dataframe a medio transformar en el
+            # mismo key.
+            df_con_ids = _asignar_fila_ids_anexo1(df_editado)
+            df_autocompletado, cpc_no_encontrados = _autocompletar_descripcion_cpc(
+                df_con_ids, st.session_state.anexo1_items_df, _cargar_catalogo_cpc()
+            )
+            st.session_state.anexo1_items_df = _recalcular_items_anexo1(df_autocompletado)
+            st.session_state.anexo1_items_editor_version += 1
+            if cpc_no_encontrados:
+                codigos_unicos = ", ".join(sorted(set(cpc_no_encontrados)))
+                st.warning(f"Código(s) CPC no encontrado(s) en el catálogo: {codigos_unicos}")
             st.success("Ítems guardados.")
+            st.rerun()
 
+        # "_fila_id" es un detalle interno (identidad estable entre
+        # guardados, ver _asignar_fila_ids_anexo1): se excluye de la
+        # vista de solo lectura y del Excel exportado, igual que ya se
+        # excluye del data_editor via column_order.
         df_items_calculado = _recalcular_items_anexo1(st.session_state.anexo1_items_df)
+        df_items_visible = df_items_calculado.drop(columns=["_fila_id"], errors="ignore")
         st.dataframe(
-            df_items_calculado.style.format({"Valor Unitario": "$ {:,.2f}", "Valor Total": "$ {:,.2f}"}),
+            df_items_visible.style.format({"Valor Unitario": "$ {:,.2f}", "Valor Total": "$ {:,.2f}"}),
             use_container_width=True,
             hide_index=True,
         )
 
         buffer_excel = io.BytesIO()
-        df_items_calculado.to_excel(buffer_excel, index=False, engine="openpyxl")
+        df_items_visible.to_excel(buffer_excel, index=False, engine="openpyxl")
         st.download_button(
             "📊 Descargar Tabla de Ítems en Excel",
             data=buffer_excel.getvalue(),
@@ -1873,11 +2223,19 @@ def render_formularios_y_registro() -> None:
                 use_container_width=True,
                 key="anexo1_cpc_editor",
             )
+            st.text_input(
+                "Código CPC (detallar el código y la descripción del de mayor peso económico)",
+                key="anexo1_codigo_cpc_mayor_peso",
+            )
             st.text_area("Alcance", key="anexo1_alcance")
             st.text_input("Plazo de Ejecución: parcial y/o total (en días)", key="anexo1_plazo")
+            st.markdown("**Personal Técnico/Equipo de Trabajo/Recursos según corresponda**")
+            st.text_area("1.- Personal Técnico Principal", key="anexo1_personal_tecnico_principal")
             st.text_area(
-                "Personal técnico/equipo/recursos según corresponda", key="anexo1_personal_tecnico"
+                "2.- Personal Técnico Auxiliar o Secundario", key="anexo1_personal_tecnico_auxiliar"
             )
+            st.text_area("3.- Equipo de Trabajo", key="anexo1_equipo_trabajo")
+            st.text_area("4.- Recursos", key="anexo1_recursos")
             st.text_area("Forma y condiciones de pago", key="anexo1_forma_pago")
             st.text_input("Lugar y dirección de entrega/ejecución", key="anexo1_lugar")
 
@@ -1888,8 +2246,8 @@ def render_formularios_y_registro() -> None:
                 "Garantías técnicas, en el caso de que aplique", key="anexo1_garantias_tecnicas"
             )
             st.number_input(
-                "Monto USD de la Garantía de Responsabilidad Civil",
-                min_value=0.0,
+                "Monto USD de la Garantía de Responsabilidad Civil (mínimo USD 3.000)",
+                min_value=3000.0,
                 format="%.2f",
                 value=None,
                 key="anexo1_monto_garantia_rc",
@@ -1912,7 +2270,9 @@ def render_formularios_y_registro() -> None:
             col3.text_input("Cédula del Administrador", key="anexo1_admin_cedula")
             st.caption(
                 f"El documento incluye, a continuación, la lista fija de "
-                f"{len(TEXTO_ATRIBUCIONES_ADMINISTRADOR)} atribuciones del Administrador del Contrato."
+                f"{len(TEXTO_ATRIBUCIONES_ADMINISTRADOR)} atribuciones numeradas del Administrador del "
+                f"Contrato, más {len(TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES)} obligaciones "
+                f"adicionales en viñetas y el párrafo de cierre sobre cambio de administrador."
             )
 
             st.markdown("**Técnico que no interviene en la contratación**")
@@ -2074,16 +2434,24 @@ def main():
 
     # obtener_contrataciones() esta cacheada (ttl=30s), pero igual evitamos
     # llamarla del todo en paginas que no la necesitan (Reportes solo pega a
-    # /api/generar-reporte, Configuración solo a /api/todos DELETE).
+    # /api/generar-reporte, Configuración solo a /api/todos DELETE). El
+    # spinner solo se nota quando hay cache miss (round-trip real a la
+    # API); en cache hit es practicamente instantaneo.
     pagina = st.session_state.pagina_activa
     if pagina == "Dashboard":
-        render_pagina_dashboard(obtener_contrataciones())
+        with st.spinner("Cargando datos del dashboard..."):
+            registros = obtener_contrataciones()
+        render_pagina_dashboard(registros)
     elif pagina == "Procesos":
-        render_pagina_procesos(obtener_contrataciones())
+        with st.spinner("Cargando procesos..."):
+            registros = obtener_contrataciones()
+        render_pagina_procesos(registros)
     elif pagina == "Reportes":
         render_pagina_reportes()
     elif pagina == "Municipalidad de Guayaquil":
-        render_pagina_municipalidad_guayaquil(obtener_contrataciones())
+        with st.spinner("Cargando datos de la Municipalidad de Guayaquil..."):
+            registros = obtener_contrataciones()
+        render_pagina_municipalidad_guayaquil(registros)
     elif pagina == "Configuración":
         render_pagina_configuracion()
 
