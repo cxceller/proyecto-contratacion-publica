@@ -45,6 +45,17 @@ TAMANO_PARAMETRO_PT = 9
 TAMANO_LEGAL_PT = 10
 
 COLOR_FONDO_ENCABEZADO = "F2F2F2"
+# Bordes de la tabla principal de items, replicados del modelo real: azul
+# marino institucional, mas gruesos en el contorno exterior que entre
+# filas/columnas.
+COLOR_BORDE_TABLA_ITEMS = "002060"
+GROSOR_BORDE_EXTERIOR = "12"
+GROSOR_BORDE_INTERIOR = "8"
+# Bordes de la subtabla de parametros (dentro de la celda de
+# especificaciones tecnicas de un item Bien): gris claro y mas fino que
+# los de la tabla principal, tal como en el modelo.
+COLOR_BORDE_TABLA_PARAMETROS = "C0C0C0"
+GROSOR_BORDE_TABLA_PARAMETROS = "6"
 
 # Lineas fijas de la caja de titulo (solo "objeto_contratacion" es
 # variable -- ver generar_anexo1).
@@ -486,6 +497,36 @@ def _sombrear_celda(cell, color_hex: str) -> None:
     tc_pr.append(shd)
 
 
+def _bordes_tabla(color: str, grosor_exterior: str, grosor_interior: str):
+    """Arma un w:tblBorders con el mismo grosor en los 4 lados exteriores
+    y (opcionalmente distinto) en las lineas interiores, tal como se
+    definen los bordes de tabla en el modelo Word de referencia."""
+    bordes = OxmlElement("w:tblBorders")
+    for etiqueta, grosor in (
+        ("top", grosor_exterior),
+        ("left", grosor_exterior),
+        ("bottom", grosor_exterior),
+        ("right", grosor_exterior),
+        ("insideH", grosor_interior),
+        ("insideV", grosor_interior),
+    ):
+        borde = OxmlElement(f"w:{etiqueta}")
+        borde.set(qn("w:val"), "single")
+        borde.set(qn("w:sz"), grosor)
+        borde.set(qn("w:space"), "0")
+        borde.set(qn("w:color"), color)
+        bordes.append(borde)
+    return bordes
+
+
+def _aplicar_bordes_tabla_items(tbl_pr) -> None:
+    """w:tblBorders con el azul marino institucional del modelo -- debe
+    insertarse despues de tblInd y antes de tblLayout/tblCellMar segun el
+    orden que exige el esquema CT_TblPrBase, por eso se llama al final de
+    _configurar_propiedades_tabla_items en vez de antes."""
+    tbl_pr.append(_bordes_tabla(COLOR_BORDE_TABLA_ITEMS, GROSOR_BORDE_EXTERIOR, GROSOR_BORDE_INTERIOR))
+
+
 def _configurar_propiedades_tabla_items(tabla) -> None:
     tabla.alignment = WD_TABLE_ALIGNMENT.LEFT
     tbl_pr = tabla._tbl.tblPr
@@ -499,6 +540,8 @@ def _configurar_propiedades_tabla_items(tabla) -> None:
     tbl_ind.set(qn("w:type"), "dxa")
     tbl_ind.set(qn("w:w"), str(Cm(INDENTACION_TABLA_CM).twips))
     tbl_pr.append(tbl_ind)
+
+    _aplicar_bordes_tabla_items(tbl_pr)
 
 
 def _fijar_anchos_fila(celdas, anchos: list[Length]) -> None:
@@ -650,12 +693,29 @@ def _agregar_fila_especificaciones_tecnicas(tabla, item: dict, anchos: list[Leng
         if parametros:
             tabla_specs = celda_contenido.add_table(rows=0, cols=2)
             tabla_specs.style = "Table Grid"
+            tabla_specs._tbl.tblPr.append(
+                _bordes_tabla(
+                    COLOR_BORDE_TABLA_PARAMETROS, GROSOR_BORDE_TABLA_PARAMETROS, GROSOR_BORDE_TABLA_PARAMETROS
+                )
+            )
             for parametro in parametros:
                 fila_parametro = tabla_specs.add_row()
                 run_nombre = fila_parametro.cells[0].paragraphs[0].add_run(parametro.get("nombre", ""))
                 _aplicar_fuente(run_nombre, TAMANO_PARAMETRO_PT, negrita=True)
                 run_valor = fila_parametro.cells[1].paragraphs[0].add_run(parametro.get("valor", ""))
                 _aplicar_fuente(run_valor, TAMANO_PARAMETRO_PT, negrita=False)
+
+
+def _agregar_fila_separacion_items(tabla, anchos: list[Length]) -> None:
+    """Fila vacia entre items: en el modelo es una unica celda fusionada
+    (gridSpan sobre toda la fila), no 8 celdas sueltas -- si no se
+    fusionan, las lineas verticales de la cuadricula cruzan igual el
+    espacio en blanco entre bloques de item."""
+    fila = tabla.add_row()
+    _fijar_anchos_fila(fila.cells, anchos)
+    celda_unica = fila.cells[0]
+    for celda_extra in fila.cells[1:]:
+        celda_unica = celda_unica.merge(celda_extra)
 
 
 def _agregar_titulo_seccion(documento: Document, texto: str) -> None:
@@ -910,7 +970,7 @@ def generar_anexo1(datos: dict, ruta_salida) -> Path:
         _agregar_fila_datos_item(tabla, numero, item, anchos)
         _agregar_fila_divisor_especificaciones(tabla, anchos)
         _agregar_fila_especificaciones_tecnicas(tabla, item, anchos)
-        tabla.add_row()  # fila vacia de separacion, igual que en el modelo
+        _agregar_fila_separacion_items(tabla, anchos)
 
     _agregar_seccion_legal(documento, datos)
 
