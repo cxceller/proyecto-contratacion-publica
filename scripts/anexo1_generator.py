@@ -328,10 +328,6 @@ TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES = [
     "contratación y las obligaciones adquiridas para el cierre y finalización del proceso en el "
     "portal institucional del SERCOP.",
     "Comunicar al contratista los cambios requeridos en la ejecución del contrato.",
-    "Solicitar la clave correspondiente a la Dirección Administrativa a fin de publicar toda la "
-    'información relevante de la fase de ejecución contractual en el portal institucional del '
-    'Servicio Nacional de Contratación Pública; hasta dejar el proceso en la etapa "En '
-    'recepción".',
     "Las demás obligaciones previstas en la Ley Orgánica del Sistema Nacional de Contratación "
     "Pública, su Reglamento, Resoluciones del Servicio Nacional de Contratación Pública "
     "(SERCOP), las Normas de Control Interno de la Contraloría General del Estado, el contrato "

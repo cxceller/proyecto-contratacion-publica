@@ -54,6 +54,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Length, Pt, RGBColor
 
+from scripts.formato_ec import formatear_moneda_ec
+
 # Estilo del documento: tipografia general del cuerpo, de titulos y de
 # la tabla, mas el borde de las capturas de pantalla.
 FUENTE = "Tahoma"
@@ -306,10 +308,7 @@ def _formatear_fecha_corta(valor) -> str:
 def _formatear_moneda(valor) -> str:
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return ""
-    try:
-        return f"$ {float(valor):,.2f}"
-    except (TypeError, ValueError):
-        return str(valor)
+    return formatear_moneda_ec(valor)
 
 
 def _formatear_lista_con_comillas_y(elementos: list[str]) -> str:

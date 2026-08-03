@@ -55,6 +55,7 @@ from scripts.anexo1_generator import (
     TITULO_PROCESO_FIJO,
     generar_anexo1,
 )
+from scripts.formato_ec import formatear_moneda_ec, formatear_numero_ec
 
 load_dotenv()
 
@@ -419,6 +420,13 @@ def _aplicar_estilo_base(fig: go.Figure, altura: int = 380) -> None:
         showlegend=False,
         hoverlabel=dict(bgcolor=COLOR_LIENZO, font_size=13, font_color=COLOR_TEXTO_EJE),
         bargap=0.35,
+        # Formato numerico de Ecuador (coma decimal, punto de miles) para
+        # TODOS los numeros que Plotly renderiza con specs tipo d3-format
+        # (tickformat de ejes, ":,.2f" embebido en hovertemplate, etc.):
+        # "separators" es el mecanismo nativo de Plotly para esto -- primer
+        # caracter es el separador decimal, segundo el de miles -- asi no
+        # hace falta reescribir cada hovertemplate/tickformat a mano.
+        separators=",.",
     )
 
 
@@ -466,12 +474,12 @@ def render_kpis_dashboard(df: pd.DataFrame):
         if not df.empty
         else 0
     )
-    render_kpi_card(col1, "Procesos (filtro actual)", str(len(df)))
-    render_kpi_card(col2, "Presupuesto Total (filtro actual)", f"$ {presupuesto_total:,.2f}")
+    render_kpi_card(col1, "Procesos (filtro actual)", formatear_numero_ec(len(df)))
+    render_kpi_card(col2, "Presupuesto Total (filtro actual)", formatear_moneda_ec(presupuesto_total))
     render_kpi_card(
         col3,
         "Valor Adjudicado (filtro actual)",
-        f"$ {valor_adjudicado_total:,.2f}",
+        formatear_moneda_ec(valor_adjudicado_total),
         ayuda=(
             "Suma del Presupuesto Referencial de los procesos con estado "
             "Adjudicada/Adjudicado dentro del filtro actual."
@@ -607,6 +615,7 @@ def _aplicar_estilo_mapa_oscuro(fig: go.Figure) -> None:
             nticks=9,
         ),
         hoverlabel=dict(bgcolor=COLOR_LIENZO, font_size=13, font_color=COLOR_TEXTO_EJE),
+        separators=",.",  # formato numerico de Ecuador -- ver _aplicar_estilo_base
     )
 
 
@@ -788,7 +797,7 @@ def render_tablas_resumen(df: pd.DataFrame):
         .rename(columns={"estado": "Estado", "Presupuesto_Total": "Presupuesto Total"})
         .sort_values("Presupuesto Total", ascending=False)
     )
-    resumen_estado["Presupuesto Total"] = resumen_estado["Presupuesto Total"].map("$ {:,.2f}".format)
+    resumen_estado["Presupuesto Total"] = resumen_estado["Presupuesto Total"].map(formatear_moneda_ec)
     col1.caption("Por Estado del Proceso")
     # st.table (HTML estatico) en vez de st.dataframe: el componente
     # interactivo (glide-data-grid) a veces queda en negro/vacio hasta que
@@ -804,7 +813,7 @@ def render_tablas_resumen(df: pd.DataFrame):
         .rename(columns={"tipo_compra": "Tipo de Compra", "Presupuesto_Total": "Presupuesto Total"})
         .sort_values("Presupuesto Total", ascending=False)
     )
-    resumen_tipo["Presupuesto Total"] = resumen_tipo["Presupuesto Total"].map("$ {:,.2f}".format)
+    resumen_tipo["Presupuesto Total"] = resumen_tipo["Presupuesto Total"].map(formatear_moneda_ec)
     col2.caption("Por Tipo de Compra (inferido del Objeto del Proceso)")
     col2.table(_tabla_estatica(resumen_tipo))
 
@@ -823,12 +832,12 @@ def render_metricas_resumen(registros: list[dict]):
     )
 
     col1, col2, col3 = st.columns(3)
-    render_kpi_card(col1, "Número de Procesos", str(len(registros)))
-    render_kpi_card(col2, "Presupuesto Total", f"$ {presupuesto_total:,.2f}")
+    render_kpi_card(col1, "Número de Procesos", formatear_numero_ec(len(registros)))
+    render_kpi_card(col2, "Presupuesto Total", formatear_moneda_ec(presupuesto_total))
     render_kpi_card(
         col3,
         "Valor Adjudicado Total",
-        f"$ {valor_adjudicado_total:,.2f}",
+        formatear_moneda_ec(valor_adjudicado_total),
         ayuda=(
             "Suma del Presupuesto Referencial de los procesos con estado "
             "Adjudicada/Adjudicado. No hay un campo separado de valor final "
@@ -877,6 +886,17 @@ def render_tabla_con_color(registros: list[dict]):
     # el texto de estado tal cual viene de la API.
     df_visible["Estado del Proceso"] = df_visible["Estado del Proceso"].apply(estado_con_emoji)
 
+    # Presupuesto Referencial se muestra ya formateado con la convencion de
+    # Ecuador (punto de miles, coma decimal): st.column_config.NumberColumn
+    # no soporta configurar esos separadores (su "format" es printf/d3, en
+    # locale en-US), asi que se preformatea como texto en vez de dejarlo
+    # como columna numerica -- el CSV descargable (csv_bytes, mas arriba)
+    # ya se armo con el valor numerico crudo, asi que la descarga no pierde
+    # precision ni queda atada a este formato de texto.
+    df_visible["Presupuesto Referencial (sin IVA)"] = df_visible["Presupuesto Referencial (sin IVA)"].apply(
+        formatear_moneda_ec
+    )
+
     # Anchos priorizados para las columnas mas importantes (Código, Entidad,
     # Estado quedan fijas/legibles sin importar cuantas columnas tenga la
     # tabla), y "Objeto del Proceso" en un ancho medio en vez de "large":
@@ -891,8 +911,8 @@ def render_tabla_con_color(registros: list[dict]):
         "Entidad Contratante": st.column_config.TextColumn("Entidad Contratante", width="medium"),
         "Estado del Proceso": st.column_config.TextColumn("Estado del Proceso", width="medium"),
         "Objeto del Proceso": st.column_config.TextColumn("Objeto del Proceso", width="medium"),
-        "Presupuesto Referencial (sin IVA)": st.column_config.NumberColumn(
-            "Presupuesto Referencial (sin IVA)", format="$ %.2f", width="medium"
+        "Presupuesto Referencial (sin IVA)": st.column_config.TextColumn(
+            "Presupuesto Referencial (sin IVA)", width="medium"
         ),
         "Fecha de Publicación": st.column_config.DateColumn(
             "Fecha de Publicación", format="YYYY-MM-DD"
@@ -1073,10 +1093,10 @@ def render_contadores(registros_totales: list[dict]):
 
     etiquetas = ESTADOS + ["Otros"]
     cols = st.columns(4)
-    render_kpi_card(cols[0], "Total", str(total))
+    render_kpi_card(cols[0], "Total", formatear_numero_ec(total))
     for i, estado_categoria in enumerate(etiquetas, start=1):
         etiqueta_mostrar = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
-        render_kpi_card(cols[i % 4], etiqueta_mostrar, str(conteos[estado_categoria]))
+        render_kpi_card(cols[i % 4], etiqueta_mostrar, formatear_numero_ec(conteos[estado_categoria]))
 
 
 def render_vaciar_base_datos():
@@ -1509,14 +1529,13 @@ def _recalcular_items_anexo1(df: pd.DataFrame) -> pd.DataFrame:
 def _formatear_numero_anexo1(valor) -> str:
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return ""
-    numero = float(valor)
-    return str(int(numero)) if numero == int(numero) else str(numero)
+    return formatear_numero_ec(valor)
 
 
 def _formatear_moneda_anexo1(valor) -> str:
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return ""
-    return f"{float(valor):,.2f}"
+    return formatear_numero_ec(valor, decimales=2)
 
 
 def _specs_vacias_anexo1(tipo: str) -> dict:
@@ -1565,7 +1584,7 @@ def _recolectar_datos_anexo1() -> dict:
     return {
         "objeto_contratacion": st.session_state.get("anexo1_objeto_contratacion", ""),
         "items": items_datos,
-        "presupuesto_referencial": st.session_state.get("anexo1_presupuesto", ""),
+        "presupuesto_referencial": formatear_moneda_ec(st.session_state.get("anexo1_presupuesto")),
         "requerimientos_cpc": requerimientos_cpc,
         "codigo_cpc_mayor_peso": st.session_state.get("anexo1_codigo_cpc_mayor_peso", ""),
         "alcance": st.session_state.get("anexo1_alcance", ""),
@@ -2089,7 +2108,7 @@ def render_formularios_y_registro() -> None:
         df_items_calculado = _recalcular_items_anexo1(st.session_state.anexo1_items_df)
         df_items_visible = df_items_calculado.drop(columns=["_fila_id"], errors="ignore")
         st.dataframe(
-            df_items_visible.style.format({"Valor Unitario": "$ {:,.2f}", "Valor Total": "$ {:,.2f}"}),
+            df_items_visible.style.format({"Valor Unitario": formatear_moneda_ec, "Valor Total": formatear_moneda_ec}),
             use_container_width=True,
             hide_index=True,
         )
@@ -2215,7 +2234,14 @@ def render_formularios_y_registro() -> None:
 
     elif tab_activa == NOMBRES_TABS_ANEXO1[3]:
         with st.expander("Presupuesto y Alcance", expanded=True):
-            st.text_input("Presupuesto Referencial", key="anexo1_presupuesto")
+            st.number_input(
+                "Presupuesto Referencial (USD)",
+                min_value=0.0,
+                format="%.2f",
+                value=None,
+                key="anexo1_presupuesto",
+                help="Se muestra en el documento con formato ecuatoriano, ej. $ 9.106.285,46.",
+            )
             st.markdown("**Requerimientos Adicionales Obligatorios**")
             st.session_state.anexo1_cpc_df = st.data_editor(
                 st.session_state.anexo1_cpc_df,
