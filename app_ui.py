@@ -24,6 +24,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from scripts.anexo1_generator import (
+    COLOR_BORDE_TABLA_ITEMS,
     COORDINACION_FIJA,
     FIRMA_APROBADO_POR_DEFECTO_CARGO,
     FIRMA_APROBADO_POR_DEFECTO_NOMBRE,
@@ -39,18 +40,25 @@ from scripts.anexo1_generator import (
     TEXTO_ADMINISTRADOR_CIERRE,
     TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES,
     TEXTO_ADMINISTRADOR_OBLIGACIONES_INTRO,
+    TEXTO_ADMINISTRADOR_INTRO_PLANTILLA,
     TEXTO_ANALISIS_ESTRATEGIA_FIJO,
     TEXTO_ATRIBUCIONES_ADMINISTRADOR,
     TEXTO_CERTIFICADO_PROVEEDOR_EXCLUSIVO_INTRO,
+    TEXTO_CHECKLIST_INTRO,
+    TEXTO_EXPERIENCIA_ESPECIFICA_PLANTILLA,
+    TEXTO_EXPERIENCIA_GENERAL_PLANTILLA,
     TEXTO_EXPERIENCIA_PERSONAL_TECNICO,
+    TEXTO_FORMACION_PERSONAL_TECNICO_PLANTILLA,
     TEXTO_GARANTIA_BUEN_USO_ANTICIPO,
     TEXTO_GARANTIA_FIEL_CUMPLIMIENTO,
+    TEXTO_GARANTIA_RESPONSABILIDAD_CIVIL_PLANTILLA,
     TEXTO_MULTAS,
     TEXTO_PARAMETROS_EVALUACION_INTRO,
     TEXTO_PATRIMONIO_INTRO,
     TEXTO_PUNTAJE_INTRO,
     TEXTO_REAJUSTE_PRECIOS,
     TEXTO_TIEMPO_EXISTENCIA_LEGAL,
+    TEXTO_VIGENCIA_OFERTA_PLANTILLA,
     TITULO_ANEXO_FIJO,
     TITULO_PROCESO_FIJO,
     generar_anexo1,
@@ -1642,85 +1650,111 @@ def _recolectar_datos_anexo1() -> dict:
     }
 
 
-# --- Vista previa HTML (pestaña 5): reutiliza los mismos textos fijos
-# que scripts/anexo1_generator.py (importados arriba) para que la
-# previsualizacion y el .docx final coincidan siempre. No pretende ser
-# pixel-perfect con el Word (eso ya lo garantiza generar_anexo1 en si);
-# el objetivo es que el usuario vea la estructura, el contenido y los
-# resaltados de color completos sin tener que descargar el archivo. ---
+# --- Vista previa HTML (pestaña 5): UNA sola tabla continua con los
+# mismos bordes azul marino institucionales (COLOR_BORDE_TABLA_ITEMS) y
+# la misma estructura fila por fila que la tabla continua real de
+# scripts/anexo1_generator.py -- confirmado contra el .docx del modelo
+# oficial de referencia (solo "REQUERIMIENTOS ADICIONALES OBLIGATORIOS" y
+# "PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN" son titulos de ancho completo
+# reales; todo lo demas es una fila de campo etiqueta+valor). Reutiliza
+# los mismos textos fijos que el generador para que la previsualizacion y
+# el .docx final coincidan siempre. FECHA y FIRMAS DE RESPONSABILIDAD no
+# existen en el modelo de referencia y por eso se muestran aparte, fuera
+# de la tabla continua, igual que en el generador. ---
 _LLENAR = '<span style="background:#fff59d; padding:0 2px;">LLENAR</span>'
+_BORDE = f"1px solid #{COLOR_BORDE_TABLA_ITEMS}"
 
 
 def _html_valor_o_llenar(valor: str) -> str:
     return html.escape(valor) if valor else _LLENAR
 
 
-def _html_fila_ancho_completo(contenido_html: str, *, fondo: str = "white", negrita: bool = False) -> str:
-    """Una fila-tabla de ancho completo, con borde solido en las 4 caras.
-    margin:0 0 -1px 0 hace que el borde inferior de una fila se superponga
-    con el superior de la siguiente (misma tecnica que usa la tabla real
-    de items), para que la Vista Previa se vea como una sola hoja/tabla
-    institucional continua en vez de parrafos sueltos."""
-    peso = "font-weight:bold;" if negrita else ""
+def _html_fila_campo(etiqueta: str, valor: str) -> str:
+    """Fila de campo editable por el usuario: etiqueta centrada (~33%
+    del ancho, misma proporcion que en el .docx) + valor resaltado en
+    amarillo si esta vacio."""
     return (
-        '<table style="width:100%; border-collapse:collapse; margin:0 0 -1px 0;">'
-        f'<tr><td style="border:1px solid #000; padding:5px 8px; background:{fondo}; {peso}">'
-        f"{contenido_html}</td></tr></table>"
-    )
-
-
-def _html_campo(etiqueta: str, valor: str) -> str:
-    contenido = (
-        '<table style="width:100%; border-collapse:collapse;"><tr>'
-        f'<td style="border:none; padding:0; font-weight:bold; width:38%; vertical-align:top;">'
+        "<tr>"
+        f'<td style="border:{_BORDE}; padding:5px 8px; width:33%; text-align:center; vertical-align:middle;">'
         f"{html.escape(etiqueta)}</td>"
-        f'<td style="border:none; padding:0; vertical-align:top;">'
-        f'<span style="background:#fff59d; padding:0 2px;">{_html_valor_o_llenar(valor)}</span></td>'
-        "</tr></table>"
+        f'<td style="border:{_BORDE}; padding:5px 8px; text-align:justify; vertical-align:middle;">'
+        f"{_html_valor_o_llenar(valor)}</td>"
+        "</tr>"
     )
-    return _html_fila_ancho_completo(contenido)
 
 
-def _html_parrafo_fijo(texto: str) -> str:
-    parrafos = "".join(
+def _html_fila_campo_fijo(etiqueta: str, contenido_html: str) -> str:
+    """Como _html_fila_campo, pero el valor es contenido fijo ya armado
+    en HTML (texto institucional, listas, subtablas), sin resaltado."""
+    return (
+        "<tr>"
+        f'<td style="border:{_BORDE}; padding:5px 8px; width:33%; text-align:center; vertical-align:middle;">'
+        f"{html.escape(etiqueta)}</td>"
+        f'<td style="border:{_BORDE}; padding:5px 8px; text-align:justify; vertical-align:top;">'
+        f"{contenido_html}</td>"
+        "</tr>"
+    )
+
+
+def _html_titulo_ancho(texto: str) -> str:
+    """Uno de los 2 unicos titulos de seccion de ancho completo reales
+    del modelo: centrado, negrita, sin relleno de color."""
+    return (
+        '<tr><td colspan="2" style='
+        f'"border:{_BORDE}; padding:6px 8px; text-align:center; font-weight:bold; font-size:16px;">'
+        f"{html.escape(texto)}</td></tr>"
+    )
+
+
+def _html_fila_ancho_parrafo(contenido_html: str) -> str:
+    """Fila de ancho completo sin etiqueta (parrafo introductorio suelto,
+    o una subtabla como la lista de CPC)."""
+    return f'<tr><td colspan="2" style="border:{_BORDE}; padding:5px 8px;">{contenido_html}</td></tr>'
+
+
+def _html_parrafos(texto: str) -> str:
+    return "".join(
         f'<p style="margin:3px 0; text-align:justify;">{html.escape(linea)}</p>' for linea in texto.split("\n")
     )
-    return _html_fila_ancho_completo(parrafos)
-
-
-def _html_titulo(texto: str) -> str:
-    return _html_fila_ancho_completo(html.escape(texto), fondo="#f2f2f2", negrita=True)
 
 
 def _html_lista_numerada(items: list[str]) -> str:
-    parrafos = "".join(
-        f'<p style="margin:2px 0; text-align:justify; font-size:12px;">{numero}. {html.escape(texto)}</p>'
+    """Cursiva, igual que el modelo real (atribuciones del administrador)."""
+    return "".join(
+        f'<p style="margin:2px 0; text-align:justify; font-size:12px; font-style:italic;">'
+        f"{numero}. {html.escape(texto)}</p>"
         for numero, texto in enumerate(items, start=1)
     )
-    return _html_fila_ancho_completo(parrafos)
 
 
 def _html_lista_vinetas(items: list[str]) -> str:
-    parrafos = "".join(
-        f'<p style="margin:2px 0; text-align:justify; font-size:12px;">● {html.escape(texto)}</p>'
+    """Cursiva, igual que el modelo real (obligaciones adicionales)."""
+    return "".join(
+        f'<p style="margin:2px 0; text-align:justify; font-size:12px; font-style:italic;">'
+        f"● {html.escape(texto)}</p>"
         for texto in items
     )
-    return _html_fila_ancho_completo(parrafos)
 
 
 def _html_tabla(encabezados: list[str], filas: list[list[str]]) -> str:
     ths = "".join(
-        f'<th style="border:1px solid #000; padding:3px; background:#f2f2f2; font-size:11px;">{html.escape(h)}</th>'
+        f'<th style="border:{_BORDE}; padding:3px; background:#f2f2f2; font-size:11px;">{html.escape(h)}</th>'
         for h in encabezados
     )
     trs = "".join(
-        "<tr>" + "".join(f'<td style="border:1px solid #000; padding:3px; font-size:11px;">{html.escape(str(v))}</td>' for v in fila) + "</tr>"
+        "<tr>"
+        + "".join(f'<td style="border:{_BORDE}; padding:3px; font-size:11px;">{html.escape(str(v))}</td>' for v in fila)
+        + "</tr>"
         for fila in filas
     )
-    return f'<table style="width:100%; border-collapse:collapse; margin-bottom:8px;"><tr>{ths}</tr>{trs}</table>'
+    return f'<table style="width:100%; border-collapse:collapse; margin:4px 0;"><tr>{ths}</tr>{trs}</table>'
 
 
-def _html_bloque_item(numero: int, item: dict) -> str:
+def _html_filas_item(numero: int, item: dict) -> str:
+    """Filas (no tabla aparte) de un item: encabezado de 8 columnas, fila
+    de datos, fila divisora PARAMETROS/ESPECIFICACIONES TECNICAS, fila de
+    especificaciones y una fila vacia de separacion -- se insertan
+    directamente en la tabla continua, igual que en el modelo real."""
     encabezados = [
         "ITEM", "DESCRIPCIÓN", "Unidad de Medida", "Cantidad Solicitada",
         "Valor Unitario", "Valor Total", "Descripción del CPC", "NÚMERO DE CPC",
@@ -1731,11 +1765,12 @@ def _html_bloque_item(numero: int, item: dict) -> str:
         item.get("valor_total", ""), item.get("descripcion_cpc", ""), item.get("numero_cpc", ""),
     ]
     fila_encabezado = "".join(
-        f'<th style="border:1px solid #000; padding:2px; background:#f2f2f2; font-size:10px;">{html.escape(h)}</th>'
+        f'<th style="border:{_BORDE}; padding:2px; background:#f2f2f2; font-size:10px;">{html.escape(h)}</th>'
         for h in encabezados
     )
     fila_datos = "".join(
-        f'<td style="border:1px solid #000; padding:2px; font-size:10px;">{_html_valor_o_llenar(str(v)) if not v else html.escape(str(v))}</td>'
+        f'<td style="border:{_BORDE}; padding:2px; font-size:10px; text-align:center;">'
+        f'{_html_valor_o_llenar(str(v)) if not v else html.escape(str(v))}</td>'
         for v in valores
     )
 
@@ -1767,26 +1802,26 @@ def _html_bloque_item(numero: int, item: dict) -> str:
         parametros = item.get("parametros") or []
         if parametros:
             filas_parametros = "".join(
-                f'<tr><td style="border:1px solid #000; padding:2px; font-weight:bold; font-size:10px;">'
+                f'<tr><td style="border:{_BORDE}; padding:2px; font-weight:bold; font-size:10px;">'
                 f'{html.escape(p.get("nombre",""))}</td>'
-                f'<td style="border:1px solid #000; padding:2px; font-size:10px;">{html.escape(p.get("valor",""))}</td></tr>'
+                f'<td style="border:{_BORDE}; padding:2px; font-size:10px;">{html.escape(p.get("valor",""))}</td></tr>'
                 for p in parametros
             )
             contenido_specs += f'<table style="width:100%; border-collapse:collapse;">{filas_parametros}</table>'
 
     return (
-        '<table style="width:100%; border-collapse:collapse; margin-bottom:2px;">'
         f"<tr>{fila_encabezado}</tr>"
         f"<tr>{fila_datos}</tr>"
-        '<tr>'
-        '<td style="border:1px solid #000; padding:3px; font-weight:bold; text-align:center; font-size:11px;">PARÁMETROS</td>'
-        '<td colspan="7" style="border:1px solid #000; padding:3px; font-weight:bold; text-align:center; font-size:11px;">ESPECIFICACIONES TÉCNICAS</td>'
+        "<tr>"
+        f'<td style="border:{_BORDE}; padding:3px; font-weight:bold; text-align:center; font-size:11px;">PARÁMETROS</td>'
+        f'<td colspan="7" style="border:{_BORDE}; padding:3px; font-weight:bold; text-align:center; font-size:11px;">'
+        "ESPECIFICACIONES TÉCNICAS</td>"
         "</tr>"
         "<tr>"
-        f'<td style="border:1px solid #000; padding:3px; font-weight:bold; text-align:center; font-size:11px;">{etiqueta_label}</td>'
-        f'<td colspan="7" style="border:1px solid #000; padding:5px;">{contenido_specs}</td>'
+        f'<td style="border:{_BORDE}; padding:3px; font-weight:bold; text-align:center; font-size:11px;">{etiqueta_label}</td>'
+        f'<td colspan="7" style="border:{_BORDE}; padding:5px; vertical-align:top;">{contenido_specs}</td>'
         "</tr>"
-        "</table>"
+        f'<tr><td colspan="8" style="border:{_BORDE}; padding:8px;"></td></tr>'
     )
 
 
@@ -1806,146 +1841,237 @@ def _render_vista_previa_anexo1(datos: dict) -> None:
         'font-family: Arial, sans-serif; max-height:75vh; overflow-y:auto;">',
         f'<img src="data:image/jpeg;base64,{encabezado_b64}" style="width:100%; margin-bottom:10px;">',
         '<table style="width:100%; border-collapse:collapse; text-align:center; font-weight:bold; margin-bottom:14px;">',
-        f'<tr><td style="border:1px solid #000; padding:6px;">{html.escape(TITULO_ANEXO_FIJO)}</td></tr>',
-        f'<tr><td style="border:1px solid #000; padding:6px;">{html.escape(TITULO_PROCESO_FIJO)}</td></tr>',
-        f'<tr><td style="border:1px solid #000; padding:6px;">{html.escape(COORDINACION_FIJA)}</td></tr>',
-        f'<tr><td style="border:1px solid #000; padding:8px; background:#fff59d;">'
+        f'<tr><td style="border:{_BORDE}; padding:6px;">{html.escape(TITULO_ANEXO_FIJO)}</td></tr>',
+        f'<tr><td style="border:{_BORDE}; padding:6px;">{html.escape(TITULO_PROCESO_FIJO)}</td></tr>',
+        f'<tr><td style="border:{_BORDE}; padding:6px;">{html.escape(COORDINACION_FIJA)}</td></tr>',
+        f'<tr><td style="border:{_BORDE}; padding:8px; background:#fff59d;">'
         f'{_html_valor_o_llenar(datos.get("objeto_contratacion", ""))}</td></tr>',
         "</table>",
+        '<table style="width:100%; border-collapse:collapse; font-size:12px;">',
     ]
 
     items = datos.get("items", [])
     if not items:
-        partes.append('<p style="color:#999;">(sin ítems agregados todavía en la pestaña "2. Ítems y Valores")</p>')
+        partes.append(
+            '<tr><td colspan="2" style="padding:6px; color:#999;">'
+            '(sin ítems agregados todavía en la pestaña "2. Ítems y Valores")</td></tr>'
+        )
     for numero, item in enumerate(items, start=1):
-        partes.append(_html_bloque_item(numero, item))
+        partes.append(_html_filas_item(numero, item))
 
-    partes.append(_html_titulo("CONDICIONES LEGALES Y ADMINISTRATIVAS"))
-    partes.append(_html_campo("PRESUPUESTO REFERENCIAL", datos.get("presupuesto_referencial", "")))
+    partes.append(_html_fila_campo("PRESUPUESTO REFERENCIAL", datos.get("presupuesto_referencial", "")))
 
-    partes.append(_html_titulo("REQUERIMIENTOS ADICIONALES OBLIGATORIOS"))
+    partes.append(_html_titulo_ancho("REQUERIMIENTOS ADICIONALES OBLIGATORIOS"))
     requerimientos = datos.get("requerimientos_cpc") or [{"cpc": "", "descripcion": ""}]
     partes.append(
-        _html_tabla(
-            ["CPC", "DESCRIPCIÓN DEL CPC"],
-            [[r.get("cpc") or "LLENAR", r.get("descripcion") or "LLENAR"] for r in requerimientos],
+        _html_fila_ancho_parrafo(
+            _html_tabla(
+                ["CPC", "DESCRIPCIÓN DEL CPC"],
+                [[r.get("cpc") or "LLENAR", r.get("descripcion") or "LLENAR"] for r in requerimientos],
+            )
         )
     )
 
-    partes.append(_html_campo("CÓDIGO CPC (MAYOR PESO ECONÓMICO)", datos.get("codigo_cpc_mayor_peso", "")))
-    partes.append(_html_campo("ALCANCE", datos.get("alcance", "")))
-    partes.append(_html_campo("PLAZO DE EJECUCIÓN (DÍAS)", datos.get("plazo_ejecucion", "")))
-    partes.append(_html_titulo("PERSONAL TÉCNICO/EQUIPO DE TRABAJO/RECURSOS SEGÚN CORRESPONDA"))
-    partes.append(_html_campo("1.- Personal Técnico Principal", datos.get("personal_tecnico_principal", "")))
     partes.append(
-        _html_campo("2.- Personal Técnico Auxiliar o Secundario", datos.get("personal_tecnico_auxiliar", ""))
+        _html_fila_campo(
+            "CÓDIGO CPC (DETALLAR EL CÓDIGO Y LA DESCRIPCIÓN DEL DE MAYOR PESO ECONÓMICO DE LA CONTRATACIÓN)",
+            datos.get("codigo_cpc_mayor_peso", ""),
+        )
     )
-    partes.append(_html_campo("3.- Equipo de Trabajo", datos.get("equipo_trabajo", "")))
-    partes.append(_html_campo("4.- Recursos", datos.get("recursos", "")))
-    partes.append(_html_campo("FORMA Y CONDICIONES DE PAGO", datos.get("forma_condiciones_pago", "")))
-    partes.append(_html_campo("LUGAR Y DIRECCIÓN DE ENTREGA/EJECUCIÓN", datos.get("lugar_direccion", "")))
-
-    partes.append(_html_titulo("MULTAS"))
-    partes.append(_html_parrafo_fijo(TEXTO_MULTAS))
-
-    partes.append(_html_titulo("OBLIGACIONES DE LAS PARTES"))
-    partes.append(_html_campo("OBLIGACIONES DE LA ENTIDAD CONTRATANTE", datos.get("obligaciones_entidad", "")))
-    partes.append(_html_campo("OBLIGACIONES DE LA CONTRATISTA", datos.get("obligaciones_contratista", "")))
-
-    partes.append(_html_titulo("GARANTÍAS TÉCNICAS, EN EL CASO DE QUE APLIQUE"))
-    partes.append(_html_campo("Garantías técnicas", datos.get("garantias_tecnicas", "")))
-
-    partes.append(_html_titulo("GARANTÍAS ADICIONALES, EN EL CASO DE QUE APLIQUE"))
-    partes.append(_html_parrafo_fijo(TEXTO_GARANTIA_FIEL_CUMPLIMIENTO))
-    partes.append(_html_parrafo_fijo(TEXTO_GARANTIA_BUEN_USO_ANTICIPO))
+    partes.append(_html_fila_campo("ALCANCE", datos.get("alcance", "")))
     partes.append(
-        _html_fila_ancho_completo(
-            '<p style="margin:3px 0; font-weight:bold;">GARANTÍA DE RESPONSABILIDAD CIVIL</p>'
-            f'<p style="margin:3px 0; text-align:justify;">Al momento de suscribir el contrato de '
-            f'"{_html_valor_o_llenar(datos.get("objeto_contratacion", ""))}", la contratista deberá '
-            f'justificar que cuenta con una póliza de responsabilidad civil con un valor asegurado '
-            f'mínimo de USD {_html_valor_o_llenar(datos.get("monto_garantia_responsabilidad_civil", ""))} '
-            f"por evento (texto completo en el documento final).</p>"
+        _html_fila_campo("PLAZO DE EJECUCIÓN: PARCIALES Y/O TOTAL (EN DÍAS)", datos.get("plazo_ejecucion", ""))
+    )
+
+    partes.append(_html_fila_campo("1.- PERSONAL TÉCNICO PRINCIPAL", datos.get("personal_tecnico_principal", "")))
+    partes.append(
+        _html_fila_campo(
+            "2.- PERSONAL TÉCNICO AUXILIAR O SECUNDARIO", datos.get("personal_tecnico_auxiliar", "")
+        )
+    )
+    partes.append(_html_fila_campo("3.- EQUIPO DE TRABAJO", datos.get("equipo_trabajo", "")))
+    partes.append(_html_fila_campo("4.- RECURSOS", datos.get("recursos", "")))
+
+    partes.append(_html_fila_campo("FORMA Y CONDICIONES DE PAGO", datos.get("forma_condiciones_pago", "")))
+    partes.append(
+        _html_fila_campo("LUGAR Y DIRECCIÓN DE ENTREGA/EJECUCIÓN", datos.get("lugar_direccion", ""))
+    )
+
+    partes.append(_html_fila_campo_fijo("MULTAS", _html_parrafos(TEXTO_MULTAS)))
+
+    partes.append(
+        _html_fila_campo("i) OBLIGACIONES DE LA ENTIDAD CONTRATANTE", datos.get("obligaciones_entidad", ""))
+    )
+    partes.append(
+        _html_fila_campo("ii) OBLIGACIONES DE LA CONTRATISTA", datos.get("obligaciones_contratista", ""))
+    )
+
+    partes.append(
+        _html_fila_campo("GARANTÍAS TÉCNICAS, EN EL CASO DE QUE APLIQUE", datos.get("garantias_tecnicas", ""))
+    )
+
+    texto_responsabilidad_civil = TEXTO_GARANTIA_RESPONSABILIDAD_CIVIL_PLANTILLA.format(
+        objeto=datos.get("objeto_contratacion", "") or "LLENAR",
+        monto=datos.get("monto_garantia_responsabilidad_civil", "") or "LLENAR",
+    )
+    partes.append(
+        _html_fila_campo_fijo(
+            "GARANTÍAS ADICIONALES, EN EL CASO DE QUE APLIQUE",
+            _html_parrafos(TEXTO_GARANTIA_FIEL_CUMPLIMIENTO)
+            + _html_parrafos(TEXTO_GARANTIA_BUEN_USO_ANTICIPO)
+            + _html_parrafos(texto_responsabilidad_civil),
         )
     )
 
-    partes.append(_html_titulo("VIGENCIA DE LA OFERTA"))
-    partes.append(_html_campo("Días de vigencia", datos.get("vigencia_oferta_dias", "")))
-
-    partes.append(_html_titulo("REAJUSTE DE PRECIOS"))
-    partes.append(_html_parrafo_fijo(TEXTO_REAJUSTE_PRECIOS))
-
-    partes.append(_html_campo("TIPO DE ADJUDICACIÓN", datos.get("tipo_adjudicacion", "")))
-
-    partes.append(_html_titulo("ADMINISTRADOR DEL CONTRATO"))
-    partes.append(_html_campo("Nombre", datos.get("administrador_nombre", "")))
-    partes.append(_html_campo("Cargo", datos.get("administrador_cargo", "")))
-    partes.append(_html_campo("Cédula", datos.get("administrador_cedula", "")))
     partes.append(
-        '<p style="margin:3px 0; text-align:justify;">Para los efectos deberá cumplir con las '
-        "siguientes atribuciones:</p>"
+        _html_fila_campo_fijo(
+            "VIGENCIA DE LA OFERTA",
+            _html_parrafos(
+                TEXTO_VIGENCIA_OFERTA_PLANTILLA.format(dias=datos.get("vigencia_oferta_dias", "") or "LLENAR")
+            ),
+        )
     )
-    partes.append(_html_lista_numerada(TEXTO_ATRIBUCIONES_ADMINISTRADOR))
-    partes.append(_html_parrafo_fijo(TEXTO_ADMINISTRADOR_OBLIGACIONES_INTRO))
-    partes.append(_html_lista_vinetas(TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES))
-    partes.append(_html_parrafo_fijo(TEXTO_ADMINISTRADOR_CIERRE))
+    partes.append(_html_fila_campo_fijo("REAJUSTE DE PRECIOS", _html_parrafos(TEXTO_REAJUSTE_PRECIOS)))
+    partes.append(_html_fila_campo("TIPO DE ADJUDICACIÓN", datos.get("tipo_adjudicacion", "")))
 
-    partes.append(_html_titulo("TÉCNICO QUE NO INTERVIENE EN LA CONTRATACIÓN"))
-    partes.append(_html_campo("Nombre", datos.get("tecnico_no_interviene_nombre", "")))
-    partes.append(_html_campo("Cargo", datos.get("tecnico_no_interviene_cargo", "")))
-    partes.append(_html_campo("Correo", datos.get("tecnico_no_interviene_correo", "")))
-    partes.append(_html_campo("Dirección de contacto", datos.get("direccion_contacto", "")))
-    partes.append(_html_campo("Teléfono de contacto", datos.get("telefono_contacto", "")))
+    contenido_administrador = _html_parrafos(
+        TEXTO_ADMINISTRADOR_INTRO_PLANTILLA.format(
+            nombre=datos.get("administrador_nombre", "") or "LLENAR",
+            cedula=datos.get("administrador_cedula", "") or "LLENAR",
+            cargo=datos.get("administrador_cargo", "") or "LLENAR",
+        )
+    )
+    contenido_administrador += _html_lista_numerada(TEXTO_ATRIBUCIONES_ADMINISTRADOR)
+    contenido_administrador += _html_parrafos(TEXTO_ADMINISTRADOR_OBLIGACIONES_INTRO)
+    contenido_administrador += _html_lista_vinetas(TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES)
+    contenido_administrador += _html_parrafos(TEXTO_ADMINISTRADOR_CIERRE)
+    partes.append(_html_fila_campo_fijo("ADMINISTRADOR DEL CONTRATO", contenido_administrador))
 
-    partes.append(_html_titulo("ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN"))
-    partes.append(_html_parrafo_fijo(TEXTO_ANALISIS_ESTRATEGIA_FIJO))
-    partes.append(_html_campo("Análisis específico de la contratación", datos.get("analisis_estrategia", "")))
-    partes.append(_html_campo("PROCESO DE CONTRATACIÓN A APLICAR", datos.get("proceso_contratacion_aplicar", "")))
+    contenido_tecnico = "".join(
+        f'<p style="margin:2px 0; font-size:11px;"><b>{etiqueta}:</b> {_html_valor_o_llenar(valor)}</p>'
+        for etiqueta, valor in (
+            ("Funcionario", datos.get("tecnico_no_interviene_nombre", "")),
+            ("Cargo", datos.get("tecnico_no_interviene_cargo", "")),
+            ("Mail", datos.get("tecnico_no_interviene_correo", "")),
+            ("Dirección", datos.get("direccion_contacto", "")),
+            ("Teléfono", datos.get("telefono_contacto", "")),
+        )
+    )
+    partes.append(_html_fila_campo_fijo("TÉCNICO QUE NO INTERVIENE EN LA CONTRATACIÓN", contenido_tecnico))
 
-    partes.append(_html_titulo("PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN"))
-    partes.append(_html_parrafo_fijo(TEXTO_PARAMETROS_EVALUACION_INTRO))
-    partes.append(_html_campo("% experiencia general mínima", datos.get("pct_experiencia_general", "")))
-    partes.append(_html_campo("% experiencia específica mínima", datos.get("pct_experiencia_especifica", "")))
-    partes.append(_html_campo("Título profesional del personal técnico", datos.get("titulo_profesional_personal_tecnico", "")))
-    partes.append(_html_titulo("EXPERIENCIA DEL PERSONAL TÉCNICO"))
-    partes.append(_html_parrafo_fijo(TEXTO_EXPERIENCIA_PERSONAL_TECNICO))
-    partes.append(_html_campo("EQUIPO DE TRABAJO/RECURSOS A EVALUAR", datos.get("equipo_trabajo_recursos_evaluar", "")))
+    contenido_estrategia = _html_parrafos(TEXTO_ANALISIS_ESTRATEGIA_FIJO)
+    contenido_estrategia += (
+        f'<p style="margin:4px 0 2px; font-size:11px;"><b>Análisis específico de la contratación:</b> '
+        f'{_html_valor_o_llenar(datos.get("analisis_estrategia", ""))}</p>'
+    )
+    partes.append(_html_fila_campo_fijo("ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN", contenido_estrategia))
     partes.append(
-        _html_campo(
-            "CERTIFICADO DE PROVEEDOR EXCLUSIVO O AUTORIZADO",
-            datos.get("certificado_proveedor_exclusivo", "No"),
+        _html_fila_campo("PROCESO DE CONTRATACIÓN A APLICAR", datos.get("proceso_contratacion_aplicar", ""))
+    )
+
+    partes.append(_html_titulo_ancho("PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN"))
+    partes.append(_html_fila_ancho_parrafo(_html_parrafos(TEXTO_PARAMETROS_EVALUACION_INTRO)))
+
+    partes.append(
+        _html_fila_campo_fijo(
+            "EXPERIENCIA GENERAL DEL OFERENTE",
+            _html_parrafos(
+                TEXTO_EXPERIENCIA_GENERAL_PLANTILLA.format(
+                    pct_general=datos.get("pct_experiencia_general", "") or "LLENAR"
+                )
+            ),
+        )
+    )
+    partes.append(
+        _html_fila_campo_fijo(
+            "EXPERIENCIA ESPECÍFICA DEL OFERENTE",
+            _html_parrafos(
+                TEXTO_EXPERIENCIA_ESPECIFICA_PLANTILLA.format(
+                    pct_especifica=datos.get("pct_experiencia_especifica", "") or "LLENAR"
+                )
+            ),
+        )
+    )
+    partes.append(
+        _html_fila_campo_fijo(
+            "FORMACIÓN DEL PERSONAL TÉCNICO",
+            _html_parrafos(
+                TEXTO_FORMACION_PERSONAL_TECNICO_PLANTILLA.format(
+                    titulo_profesional=datos.get("titulo_profesional_personal_tecnico", "") or "LLENAR"
+                )
+            ),
+        )
+    )
+    partes.append(
+        _html_fila_campo_fijo(
+            "EXPERIENCIA DEL PERSONAL TÉCNICO", _html_parrafos(TEXTO_EXPERIENCIA_PERSONAL_TECNICO)
+        )
+    )
+    partes.append(
+        _html_fila_campo(
+            "EQUIPO DE TRABAJO/RECURSOS A EVALUAR", datos.get("equipo_trabajo_recursos_evaluar", "")
         )
     )
 
-    partes.append(_html_titulo("PATRIMONIO"))
+    contenido_certificado = _html_parrafos(TEXTO_CERTIFICADO_PROVEEDOR_EXCLUSIVO_INTRO)
+    contenido_certificado += (
+        f'<p style="margin:4px 0 2px; font-size:11px;"><b>¿Aplica?:</b> '
+        f'{_html_valor_o_llenar(datos.get("certificado_proveedor_exclusivo", "No"))}</p>'
+    )
+    partes.append(_html_fila_campo_fijo("CERTIFICADO DE PROVEEDOR EXCLUSIVO O AUTORIZADO", contenido_certificado))
+
     patrimonio_aplica = datos.get("patrimonio_aplica", "No")
-    partes.append(_html_campo("¿Aplica?", patrimonio_aplica))
+    contenido_patrimonio = (
+        f'<p style="margin:2px 0; font-size:11px;"><b>¿Aplica?:</b> {_html_valor_o_llenar(patrimonio_aplica)}</p>'
+    )
     if patrimonio_aplica == "Sí":
-        partes.append(_html_parrafo_fijo(TEXTO_PATRIMONIO_INTRO))
-        partes.append(_html_titulo("Bienes y/o Servicios"))
-        partes.append(_html_tabla(TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_BIENES_SERVICIOS))
-        partes.append(_html_titulo("Obras"))
-        partes.append(_html_tabla(TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_OBRAS))
+        contenido_patrimonio += _html_parrafos(TEXTO_PATRIMONIO_INTRO)
+        contenido_patrimonio += '<p style="margin:4px 0 2px; font-weight:bold;">Bienes y/o Servicios</p>'
+        contenido_patrimonio += _html_tabla(TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_BIENES_SERVICIOS)
+        contenido_patrimonio += '<p style="margin:4px 0 2px; font-weight:bold;">Obras</p>'
+        contenido_patrimonio += _html_tabla(TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_OBRAS)
+    partes.append(_html_fila_campo_fijo("PATRIMONIO", contenido_patrimonio))
 
-    partes.append(_html_titulo("TIEMPO DE EXISTENCIA LEGAL DE PERSONAS JURÍDICAS"))
-    partes.append(_html_parrafo_fijo(TEXTO_TIEMPO_EXISTENCIA_LEGAL))
-
-    partes.append(_html_titulo("METODOLOGÍA DE EVALUACIÓN DE OFERTA (CUMPLE/NO CUMPLE)"))
     partes.append(
-        _html_tabla(TABLA_CHECKLIST_ENCABEZADO, [[c, "", "", ""] for c in TABLA_CHECKLIST_CRITERIOS_FIJOS])
+        _html_fila_campo_fijo(
+            "TIEMPO DE EXISTENCIA LEGAL DE PERSONAS JURÍDICAS", _html_parrafos(TEXTO_TIEMPO_EXISTENCIA_LEGAL)
+        )
     )
 
-    partes.append(_html_campo("EVALUACIÓN DEL ANÁLISIS DE ESTRATEGIA DE ADQUISICIÓN", datos.get("evaluacion_estrategia_adquisicion", "")))
-    partes.append(_html_campo("OTROS PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN", datos.get("otros_parametros_evaluacion", "")))
+    contenido_checklist = _html_parrafos(TEXTO_CHECKLIST_INTRO)
+    contenido_checklist += _html_tabla(
+        TABLA_CHECKLIST_ENCABEZADO, [[c, "", "", ""] for c in TABLA_CHECKLIST_CRITERIOS_FIJOS]
+    )
+    partes.append(
+        _html_fila_campo_fijo("METODOLOGÍA DE EVALUACIÓN DE OFERTA (CUMPLE/NO CUMPLE)", contenido_checklist)
+    )
 
-    partes.append(_html_titulo("METODOLOGÍA DE EVALUACIÓN DE OFERTA POR PUNTAJE"))
-    partes.append(_html_parrafo_fijo(TEXTO_PUNTAJE_INTRO))
-    partes.append(_html_tabla(TABLA_PUNTAJE_ENCABEZADO, TABLA_PUNTAJE_FIJA))
+    partes.append(
+        _html_fila_campo(
+            "EVALUACIÓN DEL ANÁLISIS DE ESTRATEGIA DE ADQUISICIÓN (MEJOR VALOR POR DINERO)",
+            datos.get("evaluacion_estrategia_adquisicion", ""),
+        )
+    )
+    partes.append(
+        _html_fila_campo(
+            "OTROS PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN", datos.get("otros_parametros_evaluacion", "")
+        )
+    )
 
-    partes.append(_html_campo("FECHA", datos.get("fecha_documento", "")))
+    contenido_puntaje = _html_parrafos(TEXTO_PUNTAJE_INTRO)
+    contenido_puntaje += _html_tabla(TABLA_PUNTAJE_ENCABEZADO, TABLA_PUNTAJE_FIJA)
+    partes.append(_html_fila_campo_fijo("METODOLOGÍA DE EVALUACIÓN DE OFERTA POR PUNTAJE", contenido_puntaje))
 
+    partes.append("</table>")
+
+    # FECHA y FIRMAS DE RESPONSABILIDAD no existen en el modelo de
+    # referencia -- se muestran aparte, fuera de la tabla continua, igual
+    # que en el .docx (ver scripts/anexo1_generator.py).
+    partes.append(
+        f'<p style="margin:14px 0 4px;"><b>FECHA:</b> {_html_valor_o_llenar(datos.get("fecha_documento", ""))}</p>'
+    )
     firmas = datos.get("firmas", {})
-    partes.append(_html_titulo("FIRMAS DE RESPONSABILIDAD"))
+    partes.append('<p style="margin:10px 0 4px; font-weight:bold;">FIRMAS DE RESPONSABILIDAD:</p>')
     filas_firmas = []
     for clave, etiqueta in (("elaborado", "Elaborado por"), ("revisado", "Revisado por"), ("aprobado", "Aprobado por")):
         d = firmas.get(clave, {})

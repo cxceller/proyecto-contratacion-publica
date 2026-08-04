@@ -118,7 +118,8 @@ class TestGenerarAnexo1:
         assert ruta.exists()
         documento = Document(str(ruta))
         texto = _texto_completo(documento)
-        assert "CONDICIONES LEGALES Y ADMINISTRATIVAS" in texto
+        assert "REQUERIMIENTOS ADICIONALES OBLIGATORIOS" in texto
+        assert "PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN" in texto
         assert "FIRMAS DE RESPONSABILIDAD" in texto
 
     def test_campos_legales_vacios_muestran_placeholder_llenar(self, tmp_path):

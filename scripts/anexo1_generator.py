@@ -43,6 +43,12 @@ TAMANO_DIVISOR_PT = 10
 TAMANO_SUBTITULO_PT = 9
 TAMANO_PARAMETRO_PT = 9
 TAMANO_LEGAL_PT = 10
+# Tamano de los 2 unicos titulos de seccion de ancho completo que existen
+# de verdad en el modelo real ("REQUERIMIENTOS ADICIONALES OBLIGATORIOS" y
+# "PARAMETROS DE EVALUACION Y CALIFICACION") -- todo lo demas que antes se
+# dibujaba como "titulo" es en realidad una fila de campo (etiqueta +
+# valor) de 2 columnas, confirmado contra el .docx de referencia.
+TAMANO_TITULO_SECCION_ANCHA_PT = 14
 
 COLOR_FONDO_ENCABEZADO = "F2F2F2"
 # Bordes de la tabla principal de items, replicados del modelo real: azul
@@ -477,6 +483,8 @@ TEXTO_CERTIFICADO_PROVEEDOR_EXCLUSIVO_INTRO = (
     "normativa vigente del Servicio Nacional de Contratación Pública."
 )
 
+TEXTO_CHECKLIST_INTRO = "Aplica para todos los procedimientos."
+
 TEXTO_PUNTAJE_INTRO = (
     "El puntaje puede variar de acuerdo con la Comisión Técnica. Solo las ofertas que cumplan "
     "con los requisitos mínimos serán objeto de evaluación por puntaje. No se otorgará puntaje a "
@@ -514,10 +522,11 @@ FIRMA_APROBADO_POR_DEFECTO_CARGO = (
 )
 
 
-def _aplicar_fuente(run, tamano_pt: float, negrita: bool = True, resaltado=None) -> None:
+def _aplicar_fuente(run, tamano_pt: float, negrita: bool = True, resaltado=None, italica: bool = False) -> None:
     run.font.name = FUENTE
     run.font.size = Pt(tamano_pt)
     run.font.bold = negrita
+    run.font.italic = italica
     r_fonts = run._element.get_or_add_rPr().get_or_add_rFonts()
     r_fonts.set(qn("w:eastAsia"), FUENTE)
     if resaltado is not None:
@@ -672,12 +681,15 @@ def _agregar_fila_divisor_especificaciones(tabla, anchos: list[Length]) -> None:
         _aplicar_fuente(run, TAMANO_DIVISOR_PT)
 
 
-def _agregar_parrafo_campo(celda, etiqueta: str, valor: str, primero: bool = False) -> None:
+def _agregar_parrafo_campo(
+    celda, etiqueta: str, valor: str, primero: bool = False, resaltar_si_vacio: bool = False
+) -> None:
     parrafo = celda.paragraphs[0] if primero else celda.add_paragraph()
     run_etiqueta = parrafo.add_run(f"{etiqueta}: ")
     _aplicar_fuente(run_etiqueta, TAMANO_SUBTITULO_PT, negrita=True)
     run_valor = parrafo.add_run(valor or "LLENAR")
-    _aplicar_fuente(run_valor, TAMANO_SUBTITULO_PT, negrita=False)
+    resaltado = WD_COLOR_INDEX.YELLOW if (resaltar_si_vacio and not valor) else None
+    _aplicar_fuente(run_valor, TAMANO_SUBTITULO_PT, negrita=False, resaltado=resaltado)
 
 
 def _agregar_fila_especificaciones_tecnicas(tabla, item: dict, anchos: list[Length]) -> None:
@@ -754,12 +766,18 @@ def _agregar_fila_separacion_items(tabla, anchos: list[Length]) -> None:
 
 
 def _agregar_titulo_seccion(documento: Document, texto: str) -> None:
+    """Parrafo suelto (sin tabla/borde) -- se mantiene solo para el
+    encabezado "FIRMAS DE RESPONSABILIDAD", seccion que no existe en el
+    modelo real y por eso queda fuera de la tabla continua legal."""
     parrafo = documento.add_paragraph()
     run = parrafo.add_run(texto)
     _aplicar_fuente(run, TAMANO_DIVISOR_PT)
 
 
 def _agregar_campo_legal(documento: Document, etiqueta: str, valor: str) -> None:
+    """Campo "Etiqueta: valor" como parrafo suelto (sin tabla/borde) --
+    se mantiene solo para el campo FECHA, que tampoco existe en el modelo
+    real y por eso queda fuera de la tabla continua legal."""
     parrafo = documento.add_paragraph()
     run_etiqueta = parrafo.add_run(f"{etiqueta}: ")
     _aplicar_fuente(run_etiqueta, TAMANO_LEGAL_PT, negrita=True)
@@ -767,32 +785,115 @@ def _agregar_campo_legal(documento: Document, etiqueta: str, valor: str) -> None
     _aplicar_fuente(run_valor, TAMANO_LEGAL_PT, resaltado=WD_COLOR_INDEX.YELLOW if not valor else None, negrita=False)
 
 
-def _agregar_parrafo_legal(documento: Document, texto: str) -> None:
-    for linea in texto.split("\n"):
-        parrafo = documento.add_paragraph()
+def _fila_legal(tabla, anchos: list[Length]):
+    """Fila de la tabla continua de items/seccion legal con 2 columnas
+    logicas: etiqueta (fusiona las 2 primeras columnas del bloque de
+    items, ~33% del ancho) y valor (fusiona las 6 restantes, ~67%) --
+    misma proporcion visual que las filas de campo del modelo real.
+    Al reutilizar `tabla` (la misma tabla de items), la fila hereda
+    automaticamente los bordes azul marino institucionales definidos a
+    nivel de tabla (w:tblBorders), sin tener que repetirlos por celda."""
+    fila = tabla.add_row()
+    _fijar_anchos_fila(fila.cells, anchos)
+    celda_etiqueta = fila.cells[0].merge(fila.cells[1])
+    celda_valor = fila.cells[2]
+    for extra in fila.cells[3:]:
+        celda_valor = celda_valor.merge(extra)
+    celda_etiqueta.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    celda_valor.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    return celda_etiqueta, celda_valor
+
+
+def _fila_legal_ancho_completo(tabla, anchos: list[Length]):
+    """Fila de ancho completo (las 8 columnas fusionadas en una sola
+    celda), para los 2 titulos de seccion reales y para los parrafos sin
+    etiqueta que el modelo presenta a ancho completo."""
+    fila = tabla.add_row()
+    _fijar_anchos_fila(fila.cells, anchos)
+    celda = fila.cells[0]
+    for extra in fila.cells[1:]:
+        celda = celda.merge(extra)
+    celda.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    return celda
+
+
+def _agregar_titulo_ancho_legal(tabla, anchos: list[Length], texto: str) -> None:
+    """Uno de los 2 unicos titulos de seccion de ancho completo reales
+    del modelo: centrado, negrita, sin relleno de color."""
+    celda = _fila_legal_ancho_completo(tabla, anchos)
+    parrafo = celda.paragraphs[0]
+    parrafo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = parrafo.add_run(texto)
+    _aplicar_fuente(run, TAMANO_TITULO_SECCION_ANCHA_PT, negrita=True)
+
+
+def _agregar_campo_tabla(tabla, anchos: list[Length], etiqueta: str, valor: str):
+    """Fila de campo editable por el usuario (etiqueta centrada + valor
+    resaltado en amarillo si esta vacio). Devuelve la celda de valor por
+    si el llamador necesita agregarle mas contenido (listas, subtablas)."""
+    celda_etiqueta, celda_valor = _fila_legal(tabla, anchos)
+    parrafo_etiqueta = celda_etiqueta.paragraphs[0]
+    parrafo_etiqueta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run_etiqueta = parrafo_etiqueta.add_run(etiqueta)
+    _aplicar_fuente(run_etiqueta, TAMANO_LEGAL_PT, negrita=False)
+
+    parrafo_valor = celda_valor.paragraphs[0]
+    parrafo_valor.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    run_valor = parrafo_valor.add_run(valor or "LLENAR")
+    _aplicar_fuente(run_valor, TAMANO_LEGAL_PT, resaltado=WD_COLOR_INDEX.YELLOW if not valor else None, negrita=False)
+    return celda_valor
+
+
+def _iniciar_campo_tabla(tabla, anchos: list[Length], etiqueta: str):
+    """Como _agregar_campo_tabla, pero deja la celda de valor vacia para
+    que el llamador arme su contenido a mano (texto fijo + listas +
+    subtablas), con _agregar_parrafo_legal/_agregar_lista_*/
+    _agregar_tabla_simple recibiendo esta celda como `contenedor`."""
+    celda_etiqueta, celda_valor = _fila_legal(tabla, anchos)
+    parrafo_etiqueta = celda_etiqueta.paragraphs[0]
+    parrafo_etiqueta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run_etiqueta = parrafo_etiqueta.add_run(etiqueta)
+    _aplicar_fuente(run_etiqueta, TAMANO_LEGAL_PT, negrita=False)
+    return celda_valor
+
+
+def _agregar_parrafo_legal(contenedor, texto: str) -> None:
+    """`contenedor` puede ser el Document o una celda de tabla (_Cell) --
+    ambos exponen add_paragraph() con la misma firma. Si `contenedor` es
+    una celda recien creada por _iniciar_campo_tabla (con su unico
+    parrafo vacio por defecto), la primera linea reutiliza ese parrafo en
+    vez de dejar una linea en blanco arriba del texto."""
+    parrafos_existentes = contenedor.paragraphs
+    reutilizar_primero = len(parrafos_existentes) == 1 and not parrafos_existentes[0].runs
+    for indice, linea in enumerate(texto.split("\n")):
+        parrafo = parrafos_existentes[0] if indice == 0 and reutilizar_primero else contenedor.add_paragraph()
         parrafo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         run = parrafo.add_run(linea)
         _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False)
 
 
-def _agregar_lista_numerada(documento: Document, items: list[str]) -> None:
+def _agregar_lista_numerada(contenedor, items: list[str]) -> None:
+    """Cursiva, igual que el modelo real (atribuciones del administrador)."""
     for numero, texto in enumerate(items, start=1):
-        parrafo = documento.add_paragraph()
+        parrafo = contenedor.add_paragraph()
         parrafo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         run = parrafo.add_run(f"{numero}. {texto}")
-        _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False)
+        _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False, italica=True)
 
 
-def _agregar_lista_vinetas(documento: Document, items: list[str]) -> None:
+def _agregar_lista_vinetas(contenedor, items: list[str]) -> None:
+    """Cursiva, igual que el modelo real (obligaciones adicionales)."""
     for texto in items:
-        parrafo = documento.add_paragraph()
+        parrafo = contenedor.add_paragraph()
         parrafo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         run = parrafo.add_run(f"● {texto}")
-        _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False)
+        _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False, italica=True)
 
 
-def _agregar_tabla_simple(documento: Document, encabezados: list[str], filas: list[list[str]]) -> None:
-    tabla = documento.add_table(rows=1, cols=len(encabezados))
+def _agregar_tabla_simple(contenedor, encabezados: list[str], filas: list[list[str]]) -> None:
+    """`contenedor` puede ser el Document o una celda de tabla (_Cell) --
+    ambos exponen add_table() con la misma firma."""
+    tabla = contenedor.add_table(rows=1, cols=len(encabezados))
     tabla.style = "Table Grid"
     for celda, texto in zip(tabla.rows[0].cells, encabezados):
         celda.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
@@ -827,186 +928,213 @@ def _agregar_tabla_firmas(documento: Document, firmas: dict) -> None:
             _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False)
 
 
-def _agregar_seccion_legal(documento: Document, datos: dict) -> None:
-    documento.add_paragraph()
-    _agregar_titulo_seccion(documento, "CONDICIONES LEGALES Y ADMINISTRATIVAS")
+def _agregar_seccion_legal(documento: Document, datos: dict, tabla, anchos: list[Length]) -> None:
+    """Continua la misma `tabla` de items -- la unica tabla continua del
+    modelo real, con sus mismos bordes azul marino -- agregando la
+    seccion legal como filas de campo (etiqueta centrada + valor) de 2
+    columnas. Solo "REQUERIMIENTOS ADICIONALES OBLIGATORIOS" y
+    "PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN" son titulos de ancho
+    completo de verdad: se confirmo fila por fila contra el .docx de
+    referencia que todo lo demas (Multas, Garantias, Administrador del
+    Contrato, Patrimonio, etc.) es un campo normal, no un titulo ancho.
 
-    _agregar_campo_legal(documento, "PRESUPUESTO REFERENCIAL", datos.get("presupuesto_referencial", ""))
+    FECHA y FIRMAS DE RESPONSABILIDAD no existen en ese modelo de
+    referencia, asi que quedan fuera de la tabla, como parrafos sueltos
+    (ver _agregar_campo_legal/_agregar_titulo_seccion mas arriba)."""
+    _agregar_campo_tabla(tabla, anchos, "PRESUPUESTO REFERENCIAL", datos.get("presupuesto_referencial", ""))
 
-    _agregar_titulo_seccion(documento, "REQUERIMIENTOS ADICIONALES OBLIGATORIOS")
+    _agregar_titulo_ancho_legal(tabla, anchos, "REQUERIMIENTOS ADICIONALES OBLIGATORIOS")
     requerimientos_cpc = datos.get("requerimientos_cpc") or [{"cpc": "", "descripcion": ""}]
+    celda_cpc = _fila_legal_ancho_completo(tabla, anchos)
     _agregar_tabla_simple(
-        documento,
+        celda_cpc,
         ["CPC", "DESCRIPCIÓN DEL CPC"],
         [[r.get("cpc", "") or "LLENAR", r.get("descripcion", "") or "LLENAR"] for r in requerimientos_cpc],
     )
 
-    _agregar_campo_legal(
-        documento,
+    _agregar_campo_tabla(
+        tabla,
+        anchos,
         "CÓDIGO CPC (DETALLAR EL CÓDIGO Y LA DESCRIPCIÓN DEL DE MAYOR PESO ECONÓMICO DE LA CONTRATACIÓN)",
         datos.get("codigo_cpc_mayor_peso", ""),
     )
-
-    _agregar_titulo_seccion(documento, "ALCANCE")
-    _agregar_parrafo_legal(documento, datos.get("alcance", "") or "LLENAR")
-
-    _agregar_campo_legal(
-        documento,
-        "PLAZO DE EJECUCIÓN: PARCIALES Y/O TOTAL (EN DÍAS)",
-        datos.get("plazo_ejecucion", ""),
+    _agregar_campo_tabla(tabla, anchos, "ALCANCE", datos.get("alcance", ""))
+    _agregar_campo_tabla(
+        tabla, anchos, "PLAZO DE EJECUCIÓN: PARCIALES Y/O TOTAL (EN DÍAS)", datos.get("plazo_ejecucion", "")
     )
 
-    _agregar_titulo_seccion(
-        documento, "PERSONAL TÉCNICO/EQUIPO DE TRABAJO/RECURSOS SEGÚN CORRESPONDA, Y DE SER PERTINENTE"
+    _agregar_campo_tabla(
+        tabla, anchos, "1.- PERSONAL TÉCNICO PRINCIPAL", datos.get("personal_tecnico_principal", "")
     )
-    _agregar_campo_legal(documento, "1.- PERSONAL TÉCNICO PRINCIPAL", datos.get("personal_tecnico_principal", ""))
-    _agregar_campo_legal(
-        documento, "2.- PERSONAL TÉCNICO AUXILIAR O SECUNDARIO", datos.get("personal_tecnico_auxiliar", "")
+    _agregar_campo_tabla(
+        tabla, anchos, "2.- PERSONAL TÉCNICO AUXILIAR O SECUNDARIO", datos.get("personal_tecnico_auxiliar", "")
     )
-    _agregar_campo_legal(documento, "3.- EQUIPO DE TRABAJO", datos.get("equipo_trabajo", ""))
-    _agregar_campo_legal(documento, "4.- RECURSOS", datos.get("recursos", ""))
+    _agregar_campo_tabla(tabla, anchos, "3.- EQUIPO DE TRABAJO", datos.get("equipo_trabajo", ""))
+    _agregar_campo_tabla(tabla, anchos, "4.- RECURSOS", datos.get("recursos", ""))
 
-    _agregar_campo_legal(documento, "FORMA Y CONDICIONES DE PAGO", datos.get("forma_condiciones_pago", ""))
-    _agregar_campo_legal(
-        documento, "LUGAR Y DIRECCIÓN DE ENTREGA/EJECUCIÓN", datos.get("lugar_direccion", "")
+    _agregar_campo_tabla(tabla, anchos, "FORMA Y CONDICIONES DE PAGO", datos.get("forma_condiciones_pago", ""))
+    _agregar_campo_tabla(
+        tabla, anchos, "LUGAR Y DIRECCIÓN DE ENTREGA/EJECUCIÓN", datos.get("lugar_direccion", "")
     )
 
-    _agregar_titulo_seccion(documento, "MULTAS")
-    _agregar_parrafo_legal(documento, TEXTO_MULTAS)
+    celda_multas = _iniciar_campo_tabla(tabla, anchos, "MULTAS")
+    _agregar_parrafo_legal(celda_multas, TEXTO_MULTAS)
 
-    _agregar_titulo_seccion(documento, "OBLIGACIONES DE LAS PARTES")
-    _agregar_campo_legal(documento, "OBLIGACIONES DE LA ENTIDAD CONTRATANTE", datos.get("obligaciones_entidad", ""))
-    _agregar_campo_legal(documento, "OBLIGACIONES DE LA CONTRATISTA", datos.get("obligaciones_contratista", ""))
+    _agregar_campo_tabla(
+        tabla, anchos, "i) OBLIGACIONES DE LA ENTIDAD CONTRATANTE", datos.get("obligaciones_entidad", "")
+    )
+    _agregar_campo_tabla(
+        tabla, anchos, "ii) OBLIGACIONES DE LA CONTRATISTA", datos.get("obligaciones_contratista", "")
+    )
 
-    _agregar_titulo_seccion(documento, "GARANTÍAS TÉCNICAS, EN EL CASO DE QUE APLIQUE")
-    _agregar_parrafo_legal(documento, datos.get("garantias_tecnicas", "") or "LLENAR")
+    _agregar_campo_tabla(
+        tabla, anchos, "GARANTÍAS TÉCNICAS, EN EL CASO DE QUE APLIQUE", datos.get("garantias_tecnicas", "")
+    )
 
-    _agregar_titulo_seccion(documento, "GARANTÍAS ADICIONALES, EN EL CASO DE QUE APLIQUE")
-    _agregar_parrafo_legal(documento, TEXTO_GARANTIA_FIEL_CUMPLIMIENTO)
-    documento.add_paragraph()
-    _agregar_parrafo_legal(documento, TEXTO_GARANTIA_BUEN_USO_ANTICIPO)
-    documento.add_paragraph()
+    celda_garantias = _iniciar_campo_tabla(tabla, anchos, "GARANTÍAS ADICIONALES, EN EL CASO DE QUE APLIQUE")
+    _agregar_parrafo_legal(celda_garantias, TEXTO_GARANTIA_FIEL_CUMPLIMIENTO)
+    _agregar_parrafo_legal(celda_garantias, TEXTO_GARANTIA_BUEN_USO_ANTICIPO)
     texto_responsabilidad_civil = TEXTO_GARANTIA_RESPONSABILIDAD_CIVIL_PLANTILLA.format(
         objeto=datos.get("objeto_contratacion", "") or "LLENAR",
         monto=datos.get("monto_garantia_responsabilidad_civil", "") or "LLENAR",
     )
-    _agregar_parrafo_legal(documento, texto_responsabilidad_civil)
+    _agregar_parrafo_legal(celda_garantias, texto_responsabilidad_civil)
 
-    _agregar_titulo_seccion(documento, "VIGENCIA DE LA OFERTA")
-    _agregar_parrafo_legal(
-        documento,
+    _agregar_campo_tabla(
+        tabla,
+        anchos,
+        "VIGENCIA DE LA OFERTA",
         TEXTO_VIGENCIA_OFERTA_PLANTILLA.format(dias=datos.get("vigencia_oferta_dias", "") or "LLENAR"),
     )
+    _agregar_campo_tabla(tabla, anchos, "REAJUSTE DE PRECIOS", TEXTO_REAJUSTE_PRECIOS)
+    _agregar_campo_tabla(tabla, anchos, "TIPO DE ADJUDICACIÓN", datos.get("tipo_adjudicacion", ""))
 
-    _agregar_titulo_seccion(documento, "REAJUSTE DE PRECIOS")
-    _agregar_parrafo_legal(documento, TEXTO_REAJUSTE_PRECIOS)
-
-    _agregar_campo_legal(documento, "TIPO DE ADJUDICACIÓN", datos.get("tipo_adjudicacion", ""))
-
-    _agregar_titulo_seccion(
-        documento, "INFORMACIÓN DE CONTACTO (FUNCIONARIO ENCARGADO)/ ADMINISTRADOR DE CONTRATO"
-    )
+    celda_administrador = _iniciar_campo_tabla(tabla, anchos, "ADMINISTRADOR DEL CONTRATO")
     _agregar_parrafo_legal(
-        documento,
+        celda_administrador,
         TEXTO_ADMINISTRADOR_INTRO_PLANTILLA.format(
             nombre=datos.get("administrador_nombre", "") or "LLENAR",
             cedula=datos.get("administrador_cedula", "") or "LLENAR",
             cargo=datos.get("administrador_cargo", "") or "LLENAR",
         ),
     )
-    _agregar_lista_numerada(documento, TEXTO_ATRIBUCIONES_ADMINISTRADOR)
-    _agregar_parrafo_legal(documento, TEXTO_ADMINISTRADOR_OBLIGACIONES_INTRO)
-    _agregar_lista_vinetas(documento, TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES)
-    _agregar_parrafo_legal(documento, TEXTO_ADMINISTRADOR_CIERRE)
+    _agregar_lista_numerada(celda_administrador, TEXTO_ATRIBUCIONES_ADMINISTRADOR)
+    _agregar_parrafo_legal(celda_administrador, TEXTO_ADMINISTRADOR_OBLIGACIONES_INTRO)
+    _agregar_lista_vinetas(celda_administrador, TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES)
+    _agregar_parrafo_legal(celda_administrador, TEXTO_ADMINISTRADOR_CIERRE)
 
-    _agregar_titulo_seccion(documento, "TÉCNICO QUE NO INTERVIENE EN LA CONTRATACIÓN")
-    _agregar_campo_legal(documento, "Funcionario", datos.get("tecnico_no_interviene_nombre", ""))
-    _agregar_campo_legal(documento, "Cargo", datos.get("tecnico_no_interviene_cargo", ""))
-    _agregar_campo_legal(documento, "Mail", datos.get("tecnico_no_interviene_correo", ""))
-    _agregar_campo_legal(documento, "Dirección", datos.get("direccion_contacto", ""))
-    _agregar_campo_legal(documento, "Teléfono", datos.get("telefono_contacto", ""))
-
-    _agregar_titulo_seccion(documento, "ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN")
-    _agregar_parrafo_legal(documento, TEXTO_ANALISIS_ESTRATEGIA_FIJO)
-    _agregar_campo_legal(documento, "Análisis específico de la contratación", datos.get("analisis_estrategia", ""))
-    _agregar_campo_legal(
-        documento, "PROCESO DE CONTRATACIÓN A APLICAR", datos.get("proceso_contratacion_aplicar", "")
+    celda_tecnico = _iniciar_campo_tabla(tabla, anchos, "TÉCNICO QUE NO INTERVIENE EN LA CONTRATACIÓN")
+    _agregar_parrafo_campo(
+        celda_tecnico, "Funcionario", datos.get("tecnico_no_interviene_nombre", ""), primero=True,
+        resaltar_si_vacio=True,
+    )
+    _agregar_parrafo_campo(
+        celda_tecnico, "Cargo", datos.get("tecnico_no_interviene_cargo", ""), resaltar_si_vacio=True
+    )
+    _agregar_parrafo_campo(
+        celda_tecnico, "Mail", datos.get("tecnico_no_interviene_correo", ""), resaltar_si_vacio=True
+    )
+    _agregar_parrafo_campo(
+        celda_tecnico, "Dirección", datos.get("direccion_contacto", ""), resaltar_si_vacio=True
+    )
+    _agregar_parrafo_campo(
+        celda_tecnico, "Teléfono", datos.get("telefono_contacto", ""), resaltar_si_vacio=True
     )
 
-    _agregar_titulo_seccion(documento, "PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN")
-    _agregar_parrafo_legal(documento, TEXTO_PARAMETROS_EVALUACION_INTRO)
+    celda_estrategia = _iniciar_campo_tabla(tabla, anchos, "ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN")
+    _agregar_parrafo_legal(celda_estrategia, TEXTO_ANALISIS_ESTRATEGIA_FIJO)
+    _agregar_parrafo_campo(
+        celda_estrategia,
+        "Análisis específico de la contratación",
+        datos.get("analisis_estrategia", ""),
+        resaltar_si_vacio=True,
+    )
+    _agregar_campo_tabla(
+        tabla, anchos, "PROCESO DE CONTRATACIÓN A APLICAR", datos.get("proceso_contratacion_aplicar", "")
+    )
 
-    _agregar_titulo_seccion(documento, "EXPERIENCIA GENERAL DEL OFERENTE")
-    _agregar_parrafo_legal(
-        documento,
+    _agregar_titulo_ancho_legal(tabla, anchos, "PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN")
+    celda_parametros_intro = _fila_legal_ancho_completo(tabla, anchos)
+    _agregar_parrafo_legal(celda_parametros_intro, TEXTO_PARAMETROS_EVALUACION_INTRO)
+
+    _agregar_campo_tabla(
+        tabla,
+        anchos,
+        "EXPERIENCIA GENERAL DEL OFERENTE",
         TEXTO_EXPERIENCIA_GENERAL_PLANTILLA.format(
             pct_general=datos.get("pct_experiencia_general", "") or "LLENAR"
         ),
     )
-
-    _agregar_titulo_seccion(documento, "EXPERIENCIA ESPECÍFICA DEL OFERENTE")
-    _agregar_parrafo_legal(
-        documento,
+    _agregar_campo_tabla(
+        tabla,
+        anchos,
+        "EXPERIENCIA ESPECÍFICA DEL OFERENTE",
         TEXTO_EXPERIENCIA_ESPECIFICA_PLANTILLA.format(
             pct_especifica=datos.get("pct_experiencia_especifica", "") or "LLENAR"
         ),
     )
-
-    _agregar_titulo_seccion(documento, "FORMACIÓN DEL PERSONAL TÉCNICO")
-    _agregar_parrafo_legal(
-        documento,
+    _agregar_campo_tabla(
+        tabla,
+        anchos,
+        "FORMACIÓN DEL PERSONAL TÉCNICO",
         TEXTO_FORMACION_PERSONAL_TECNICO_PLANTILLA.format(
             titulo_profesional=datos.get("titulo_profesional_personal_tecnico", "") or "LLENAR"
         ),
     )
-
-    _agregar_titulo_seccion(documento, "EXPERIENCIA DEL PERSONAL TÉCNICO")
-    _agregar_parrafo_legal(documento, TEXTO_EXPERIENCIA_PERSONAL_TECNICO)
-
-    _agregar_campo_legal(
-        documento, "EQUIPO DE TRABAJO/RECURSOS A EVALUAR", datos.get("equipo_trabajo_recursos_evaluar", "")
+    _agregar_campo_tabla(tabla, anchos, "EXPERIENCIA DEL PERSONAL TÉCNICO", TEXTO_EXPERIENCIA_PERSONAL_TECNICO)
+    _agregar_campo_tabla(
+        tabla, anchos, "EQUIPO DE TRABAJO/RECURSOS A EVALUAR", datos.get("equipo_trabajo_recursos_evaluar", "")
     )
 
-    _agregar_titulo_seccion(documento, "CERTIFICADO DE PROVEEDOR EXCLUSIVO O AUTORIZADO")
-    _agregar_parrafo_legal(documento, TEXTO_CERTIFICADO_PROVEEDOR_EXCLUSIVO_INTRO)
-    _agregar_campo_legal(documento, "¿Aplica?", datos.get("certificado_proveedor_exclusivo", "No"))
+    celda_certificado = _iniciar_campo_tabla(tabla, anchos, "CERTIFICADO DE PROVEEDOR EXCLUSIVO O AUTORIZADO")
+    _agregar_parrafo_legal(celda_certificado, TEXTO_CERTIFICADO_PROVEEDOR_EXCLUSIVO_INTRO)
+    _agregar_parrafo_campo(
+        celda_certificado, "¿Aplica?", datos.get("certificado_proveedor_exclusivo", "No"), resaltar_si_vacio=True
+    )
 
-    _agregar_titulo_seccion(documento, "PATRIMONIO")
     patrimonio_aplica = datos.get("patrimonio_aplica", "No")
-    _agregar_campo_legal(documento, "¿Aplica?", patrimonio_aplica)
+    celda_patrimonio = _iniciar_campo_tabla(tabla, anchos, "PATRIMONIO")
+    _agregar_parrafo_campo(celda_patrimonio, "¿Aplica?", patrimonio_aplica, primero=True, resaltar_si_vacio=True)
     if patrimonio_aplica == "Sí":
-        _agregar_parrafo_legal(documento, TEXTO_PATRIMONIO_INTRO)
-        _agregar_titulo_seccion(documento, "Bienes y/o Servicios")
-        _agregar_tabla_simple(documento, TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_BIENES_SERVICIOS)
-        documento.add_paragraph()
-        _agregar_titulo_seccion(documento, "Obras")
-        _agregar_tabla_simple(documento, TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_OBRAS)
+        _agregar_parrafo_legal(celda_patrimonio, TEXTO_PATRIMONIO_INTRO)
+        run_bienes = celda_patrimonio.add_paragraph().add_run("Bienes y/o Servicios")
+        _aplicar_fuente(run_bienes, TAMANO_LEGAL_PT)
+        _agregar_tabla_simple(celda_patrimonio, TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_BIENES_SERVICIOS)
+        run_obras = celda_patrimonio.add_paragraph().add_run("Obras")
+        _aplicar_fuente(run_obras, TAMANO_LEGAL_PT)
+        _agregar_tabla_simple(celda_patrimonio, TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_OBRAS)
 
-    _agregar_titulo_seccion(documento, "TIEMPO DE EXISTENCIA LEGAL DE PERSONAS JURÍDICAS")
-    _agregar_parrafo_legal(documento, TEXTO_TIEMPO_EXISTENCIA_LEGAL)
+    _agregar_campo_tabla(
+        tabla, anchos, "TIEMPO DE EXISTENCIA LEGAL DE PERSONAS JURÍDICAS", TEXTO_TIEMPO_EXISTENCIA_LEGAL
+    )
 
-    _agregar_titulo_seccion(documento, "METODOLOGÍA DE EVALUACIÓN DE OFERTA (CUMPLE/NO CUMPLE)")
+    celda_checklist = _iniciar_campo_tabla(tabla, anchos, "METODOLOGÍA DE EVALUACIÓN DE OFERTA (CUMPLE/NO CUMPLE)")
+    _agregar_parrafo_legal(celda_checklist, TEXTO_CHECKLIST_INTRO)
     _agregar_tabla_simple(
-        documento,
+        celda_checklist,
         TABLA_CHECKLIST_ENCABEZADO,
         [[criterio, "", "", ""] for criterio in TABLA_CHECKLIST_CRITERIOS_FIJOS],
     )
 
-    _agregar_campo_legal(
-        documento,
+    _agregar_campo_tabla(
+        tabla,
+        anchos,
         "EVALUACIÓN DEL ANÁLISIS DE ESTRATEGIA DE ADQUISICIÓN (MEJOR VALOR POR DINERO)",
         datos.get("evaluacion_estrategia_adquisicion", ""),
     )
-    _agregar_campo_legal(
-        documento, "OTROS PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN", datos.get("otros_parametros_evaluacion", "")
+    _agregar_campo_tabla(
+        tabla, anchos, "OTROS PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN", datos.get("otros_parametros_evaluacion", "")
     )
 
-    _agregar_titulo_seccion(documento, "METODOLOGÍA DE EVALUACIÓN DE OFERTA POR PUNTAJE")
-    _agregar_parrafo_legal(documento, TEXTO_PUNTAJE_INTRO)
-    _agregar_tabla_simple(documento, TABLA_PUNTAJE_ENCABEZADO, TABLA_PUNTAJE_FIJA)
+    celda_puntaje = _iniciar_campo_tabla(tabla, anchos, "METODOLOGÍA DE EVALUACIÓN DE OFERTA POR PUNTAJE")
+    _agregar_parrafo_legal(celda_puntaje, TEXTO_PUNTAJE_INTRO)
+    _agregar_tabla_simple(celda_puntaje, TABLA_PUNTAJE_ENCABEZADO, TABLA_PUNTAJE_FIJA)
 
+    # FECHA y FIRMAS DE RESPONSABILIDAD no existen en el modelo de
+    # referencia -- quedan fuera de la tabla continua, como parrafos
+    # sueltos, igual que antes.
+    documento.add_paragraph()
     _agregar_campo_legal(documento, "FECHA", datos.get("fecha_documento", ""))
-
     documento.add_paragraph()
     _agregar_tabla_firmas(documento, datos.get("firmas", {}))
 
@@ -1030,7 +1158,7 @@ def generar_anexo1(datos: dict, ruta_salida) -> Path:
         _agregar_fila_especificaciones_tecnicas(tabla, item, anchos)
         _agregar_fila_separacion_items(tabla, anchos)
 
-    _agregar_seccion_legal(documento, datos)
+    _agregar_seccion_legal(documento, datos, tabla, anchos)
 
     ruta_salida = Path(ruta_salida)
     documento.save(str(ruta_salida))
