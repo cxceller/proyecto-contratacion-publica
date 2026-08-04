@@ -2086,6 +2086,92 @@ def _render_vista_previa_anexo1(datos: dict) -> None:
     st.markdown("".join(partes), unsafe_allow_html=True)
 
 
+# Claves de los ~44 widgets "simples" (text_input/text_area/number_input/
+# selectbox) de las pestañas "1. Datos Generales" y "4. Condiciones
+# Legales y Descarga" que solo usan `key=` sin `value=` propio. Streamlit
+# borra la entrada de session_state de un widget con key en cualquier
+# rerun en el que ese widget NO se instancie (ver docs: "widget state
+# will be lost if the widget is removed from the app"), y aqui eso pasa
+# cada vez que el usuario cambia de sub-pestaña del Anexo 1 (las pestañas
+# son ramas `elif` condicionales, no todas se ejecutan en cada rerun) o
+# de pagina del sidebar: el campo se ve vacio al volver aunque el usuario
+# ya lo habia llenado. Los widgets de "2. Ítems y Valores" (data_editor)
+# y "3. Especificaciones Técnicas" (value=spec.get(...) desde la lista
+# persistente anexo1_specs) ya son inmunes a esto porque no dependen
+# unicamente del key -- este mismo patron (un valor guardado aparte,
+# reinyectado en el widget) es el que se replica aqui para el resto.
+_ANEXO1_CAMPOS_SIMPLES_PERSISTENTES = [
+    "anexo1_tab_activa",
+    "anexo1_objeto_contratacion",
+    "anexo1_presupuesto",
+    "anexo1_codigo_cpc_mayor_peso",
+    "anexo1_alcance",
+    "anexo1_plazo",
+    "anexo1_personal_tecnico_principal",
+    "anexo1_personal_tecnico_auxiliar",
+    "anexo1_equipo_trabajo",
+    "anexo1_recursos",
+    "anexo1_forma_pago",
+    "anexo1_lugar",
+    "anexo1_obligaciones_entidad",
+    "anexo1_obligaciones_contratista",
+    "anexo1_garantias_tecnicas",
+    "anexo1_monto_garantia_rc",
+    "anexo1_vigencia_oferta",
+    "anexo1_tipo_adjudicacion",
+    "anexo1_admin_nombre",
+    "anexo1_admin_cargo",
+    "anexo1_admin_cedula",
+    "anexo1_tecnico_nombre",
+    "anexo1_tecnico_cargo",
+    "anexo1_tecnico_correo",
+    "anexo1_direccion_contacto",
+    "anexo1_telefono_contacto",
+    "anexo1_proceso_aplicar",
+    "anexo1_analisis_estrategia",
+    "anexo1_pct_general",
+    "anexo1_pct_especifica",
+    "anexo1_titulo_profesional",
+    "anexo1_equipo_evaluar",
+    "anexo1_certificado_proveedor",
+    "anexo1_patrimonio_aplica",
+    "anexo1_evaluacion_estrategia",
+    "anexo1_otros_parametros",
+    "anexo1_fecha",
+    "anexo1_firma_elaborado_nombre",
+    "anexo1_firma_elaborado_cargo",
+    "anexo1_firma_elaborado_firmado",
+    "anexo1_firma_revisado_nombre",
+    "anexo1_firma_revisado_cargo",
+    "anexo1_firma_revisado_firmado",
+    "anexo1_firma_aprobado_nombre",
+    "anexo1_firma_aprobado_cargo",
+    "anexo1_firma_aprobado_firmado",
+]
+
+
+def _restaurar_campos_simples_anexo1() -> None:
+    """Repone en session_state, ANTES de crear ningun widget, los campos
+    que Streamlit haya borrado por no haberse instanciado en el rerun
+    anterior (otra sub-pestaña o otra pagina del sidebar), usando la
+    ultima copia guardada en el diccionario sombra."""
+    sombra = st.session_state.setdefault("_anexo1_sombra", {})
+    for clave in _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES:
+        if clave not in st.session_state and clave in sombra:
+            st.session_state[clave] = sombra[clave]
+
+
+def _guardar_campos_simples_anexo1() -> None:
+    """Copia al diccionario sombra el valor actual de cada campo que SI
+    se instancio en este rerun, para poder reponerlo la proxima vez que
+    Streamlit borre su entrada de session_state (ver
+    _restaurar_campos_simples_anexo1)."""
+    sombra = st.session_state.setdefault("_anexo1_sombra", {})
+    for clave in _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES:
+        if clave in st.session_state:
+            sombra[clave] = st.session_state[clave]
+
+
 def render_formularios_y_registro() -> None:
     """Subseccion "Formularios y Registro": genera el .docx (y la tabla
     de items en Excel) del Anexo 1 - Especificaciones Tecnicas para los
@@ -2113,6 +2199,8 @@ def render_formularios_y_registro() -> None:
         st.session_state.anexo1_specs = []
     if "anexo1_siguiente_param_id" not in st.session_state:
         st.session_state.anexo1_siguiente_param_id = 0
+
+    _restaurar_campos_simples_anexo1()
 
     # st.tabs() nativo no acepta key/session_state: su pestaña activa se
     # rastrea solo en el frontend, y se sabe que se resetea a la primera
@@ -2547,6 +2635,8 @@ def render_formularios_y_registro() -> None:
             'pestañas. Los campos vacíos se muestran como "LLENAR".'
         )
         _render_vista_previa_anexo1(_recolectar_datos_anexo1())
+
+    _guardar_campos_simples_anexo1()
 
 
 def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None:
