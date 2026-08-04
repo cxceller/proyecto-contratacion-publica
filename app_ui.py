@@ -64,6 +64,7 @@ from scripts.anexo1_generator import (
     generar_anexo1,
 )
 from scripts.formato_ec import formatear_moneda_ec, formatear_numero_ec
+from scripts.tinymce_editor import tinymce_editor
 
 load_dotenv()
 
@@ -1611,7 +1612,7 @@ def _recolectar_datos_anexo1() -> dict:
         ),
         "vigencia_oferta_dias": _formatear_numero_anexo1(st.session_state.get("anexo1_vigencia_oferta")),
         "tipo_adjudicacion": st.session_state.get("anexo1_tipo_adjudicacion", ""),
-        "analisis_estrategia": st.session_state.get("anexo1_analisis_estrategia", ""),
+        "analisis_estrategia_html": st.session_state.get("anexo1_analisis_estrategia_html", ""),
         "administrador_nombre": st.session_state.get("anexo1_admin_nombre", ""),
         "administrador_cargo": st.session_state.get("anexo1_admin_cargo", ""),
         "administrador_cedula": st.session_state.get("anexo1_admin_cedula", ""),
@@ -1667,6 +1668,20 @@ _BORDE = f"1px solid #{COLOR_BORDE_TABLA_ITEMS}"
 
 def _html_valor_o_llenar(valor: str) -> str:
     return html.escape(valor) if valor else _LLENAR
+
+
+_PATRON_ETIQUETAS_PELIGROSAS = re.compile(
+    r"<\s*(script|style|iframe|object|embed)\b.*?>.*?<\s*/\s*\1\s*>", re.IGNORECASE | re.DOTALL
+)
+
+
+def _sanitizar_html_enriquecido(html_enriquecido: str) -> str:
+    """El HTML del editor TinyMCE (pestaña 'Análisis para definir la
+    estrategia de adquisición') se inserta con unsafe_allow_html=True en
+    la Vista Previa -- se quitan aquí, por precaución, las etiquetas que
+    podrían ejecutar código o cargar contenido externo, aunque TinyMCE ya
+    no las genera desde su propia interfaz."""
+    return _PATRON_ETIQUETAS_PELIGROSAS.sub("", html_enriquecido)
 
 
 def _html_fila_campo(etiqueta: str, valor: str) -> str:
@@ -1960,9 +1975,12 @@ def _render_vista_previa_anexo1(datos: dict) -> None:
     partes.append(_html_fila_campo_fijo("TÉCNICO QUE NO INTERVIENE EN LA CONTRATACIÓN", contenido_tecnico))
 
     contenido_estrategia = _html_parrafos(TEXTO_ANALISIS_ESTRATEGIA_FIJO)
+    html_analisis = (datos.get("analisis_estrategia_html", "") or "").strip()
+    contenido_estrategia += '<p style="margin:4px 0 2px; font-size:11px;"><b>Análisis específico de la contratación:</b></p>'
     contenido_estrategia += (
-        f'<p style="margin:4px 0 2px; font-size:11px;"><b>Análisis específico de la contratación:</b> '
-        f'{_html_valor_o_llenar(datos.get("analisis_estrategia", ""))}</p>'
+        f'<div style="font-size:11px;">{_sanitizar_html_enriquecido(html_analisis)}</div>'
+        if html_analisis
+        else f'<p style="font-size:11px;">{_LLENAR}</p>'
     )
     partes.append(_html_fila_campo_fijo("ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN", contenido_estrategia))
     partes.append(
@@ -2128,7 +2146,6 @@ _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES = [
     "anexo1_direccion_contacto",
     "anexo1_telefono_contacto",
     "anexo1_proceso_aplicar",
-    "anexo1_analisis_estrategia",
     "anexo1_pct_general",
     "anexo1_pct_especifica",
     "anexo1_titulo_profesional",
@@ -2527,8 +2544,16 @@ def render_formularios_y_registro() -> None:
             col8.text_input("Teléfono de contacto", key="anexo1_telefono_contacto")
 
             st.text_input("Proceso de contratación a aplicar", key="anexo1_proceso_aplicar")
-            st.text_area(
-                "Análisis para definir la estrategia de adquisición", key="anexo1_analisis_estrategia"
+            st.markdown("**Análisis para definir la estrategia de adquisición**")
+            st.caption(
+                "Editor de texto enriquecido: puedes pegar tablas e imágenes copiadas "
+                "directamente desde Excel o Word y se insertan en el documento manteniendo "
+                "su estructura. Requiere conexión a internet (el editor se carga desde cdnjs)."
+            )
+            st.session_state["anexo1_analisis_estrategia_html"] = tinymce_editor(
+                value=st.session_state.get("anexo1_analisis_estrategia_html", ""),
+                height=350,
+                key="anexo1_analisis_estrategia_editor",
             )
 
         with st.expander("Evaluación y Calificación"):

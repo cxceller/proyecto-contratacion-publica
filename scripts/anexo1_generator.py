@@ -22,14 +22,20 @@ formato exacto de un modelo Word de referencia
   TABLA_*_FIJA mas abajo. Termina con la tabla de Firmas de
   Responsabilidad (Elaborado por/Revisado por/Aprobado por).
 """
+import base64
+import copy
+import re
+import tempfile
 from pathlib import Path
 
+from bs4 import BeautifulSoup
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Length, Pt
+from htmldocx import HtmlToDocx
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 IMAGEN_ENCABEZADO = ASSETS_DIR / "mimg_header.jpg"
@@ -928,6 +934,89 @@ def _agregar_tabla_firmas(documento: Document, firmas: dict) -> None:
             _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False)
 
 
+_PATRON_IMAGEN_BASE64 = re.compile(
+    r'src="data:image/(?P<ext>png|jpe?g|gif|bmp|webp);base64,(?P<datos>[^"]+)"', re.IGNORECASE
+)
+
+
+def _extraer_imagenes_base64_a_archivos(html_texto: str, directorio: Path) -> str:
+    """htmldocx no soporta URIs de datos (`data:image/...;base64,...`) --
+    solo rutas de archivo o URLs http(s); intentar insertarlas tal cual
+    falla en silencio y deja un parrafo "<image: ...>" en su lugar. El
+    editor TinyMCE (paste_data_images=True) SI incrusta las imagenes
+    pegadas como base64, asi que antes de convertir hay que decodificar
+    cada una a un archivo temporal real y reemplazar el `src` por esa
+    ruta."""
+    contador = 0
+
+    def _reemplazar(match: re.Match) -> str:
+        nonlocal contador
+        contador += 1
+        try:
+            contenido = base64.b64decode(match.group("datos"))
+        except Exception:
+            return match.group(0)
+        ruta_imagen = directorio / f"imagen_{contador}.{match.group('ext').lower()}"
+        ruta_imagen.write_bytes(contenido)
+        return f'src="{ruta_imagen.as_posix()}"'
+
+    return _PATRON_IMAGEN_BASE64.sub(_reemplazar, html_texto)
+
+
+def _aplicar_estilo_institucional_tabla_html(tabla) -> None:
+    """Las tablas pegadas desde Excel/Word (via el editor enriquecido) se
+    insertan sin ningun estilo -- se les aplica aqui el mismo azul marino
+    institucional y la misma fuente Arial que usa el resto del Anexo 1,
+    para que no se vean visualmente distintas del resto del documento."""
+    tabla._tbl.tblPr.append(_bordes_tabla(COLOR_BORDE_TABLA_ITEMS, GROSOR_BORDE_EXTERIOR, GROSOR_BORDE_INTERIOR))
+    for fila in tabla.rows:
+        for celda in fila.cells:
+            for parrafo in celda.paragraphs:
+                for run in parrafo.runs:
+                    _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=run.font.bold or False)
+
+
+def _insertar_html_en_celda(celda, html_texto: str) -> None:
+    """Inserta HTML enriquecido (con posibles tablas e imagenes pegadas
+    desde Excel/Word via el editor TinyMCE) en `celda`, usando htmldocx.
+    Si la conversion falla (listas anidadas u otras estructuras que
+    htmldocx no soporta), degrada de forma segura a texto plano en vez de
+    fallar la generacion completa del documento -- la conversion se
+    prueba primero en una celda de un documento temporal descartable, asi
+    la celda real nunca queda a medio transformar."""
+    html_texto = (html_texto or "").strip()
+    if not html_texto:
+        run = celda.add_paragraph().add_run("LLENAR")
+        _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False, resaltado=WD_COLOR_INDEX.YELLOW)
+        return
+
+    with tempfile.TemporaryDirectory(prefix="anexo1_html_") as directorio_temp:
+        html_local = _extraer_imagenes_base64_a_archivos(html_texto, Path(directorio_temp))
+
+        documento_prueba = Document()
+        celda_prueba = documento_prueba.add_table(rows=1, cols=1).cell(0, 0)
+        try:
+            HtmlToDocx().add_html_to_cell(html_local, celda_prueba)
+        except Exception:
+            texto_plano = BeautifulSoup(html_texto, "html.parser").get_text("\n").strip()
+            run = celda.add_paragraph().add_run(texto_plano or "LLENAR")
+            _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False)
+            return
+
+        # La celda de prueba SI se pudo convertir: se copian sus
+        # parrafos/tablas ya resueltos a la celda real, antes del parrafo
+        # final de esta (una celda siempre debe terminar en parrafo segun
+        # el esquema OOXML).
+        parrafo_final = celda.paragraphs[-1]._p
+        for elemento in list(celda_prueba._tc.iterchildren()):
+            if elemento.tag == qn("w:tcPr"):
+                continue
+            parrafo_final.addprevious(copy.deepcopy(elemento))
+
+    for tabla_insertada in celda.tables:
+        _aplicar_estilo_institucional_tabla_html(tabla_insertada)
+
+
 def _agregar_seccion_legal(documento: Document, datos: dict, tabla, anchos: list[Length]) -> None:
     """Continua la misma `tabla` de items -- la unica tabla continua del
     modelo real, con sus mismos bordes azul marino -- agregando la
@@ -1043,12 +1132,15 @@ def _agregar_seccion_legal(documento: Document, datos: dict, tabla, anchos: list
 
     celda_estrategia = _iniciar_campo_tabla(tabla, anchos, "ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN")
     _agregar_parrafo_legal(celda_estrategia, TEXTO_ANALISIS_ESTRATEGIA_FIJO)
-    _agregar_parrafo_campo(
-        celda_estrategia,
-        "Análisis específico de la contratación",
-        datos.get("analisis_estrategia", ""),
-        resaltar_si_vacio=True,
-    )
+    run_etiqueta_analisis = celda_estrategia.add_paragraph().add_run("Análisis específico de la contratación:")
+    _aplicar_fuente(run_etiqueta_analisis, TAMANO_SUBTITULO_PT, negrita=True)
+    # Parrafo final vacio: _insertar_html_en_celda inserta el HTML antes
+    # del ULTIMO parrafo de la celda (asi una celda siempre termina en
+    # parrafo, por el esquema OOXML) -- sin este, ese "ultimo parrafo"
+    # seria el de la etiqueta de arriba, y el HTML quedaria insertado
+    # antes de ella en vez de despues.
+    celda_estrategia.add_paragraph()
+    _insertar_html_en_celda(celda_estrategia, datos.get("analisis_estrategia_html", ""))
     _agregar_campo_tabla(
         tabla, anchos, "PROCESO DE CONTRATACIÓN A APLICAR", datos.get("proceso_contratacion_aplicar", "")
     )

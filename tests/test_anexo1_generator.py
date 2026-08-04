@@ -2,12 +2,14 @@
 .docx del Anexo 1 - Especificaciones Tecnicas directamente (sin pasar por
 la API ni por Streamlit), inspeccionando el documento resultante con
 python-docx."""
+import base64
+import io
 from pathlib import Path
 
 import pytest
 from docx import Document
 
-from scripts.anexo1_generator import generar_anexo1
+from scripts.anexo1_generator import _insertar_html_en_celda, generar_anexo1
 
 
 def _texto_de_celda(celda) -> str:
@@ -184,3 +186,90 @@ class TestGenerarAnexo1:
 
         assert isinstance(ruta, Path)
         assert ruta.exists()
+
+    def test_analisis_estrategia_html_con_tabla_e_imagen(self, tmp_path):
+        """Simula lo que el editor TinyMCE produce al pegar una tabla desde
+        Excel con una imagen en una celda (paste_data_images=True incrusta
+        la imagen como base64): debe convertirse en una tabla real del
+        .docx, con la imagen incrustada, y no como texto plano."""
+        from PIL import Image
+
+        buffer_imagen = io.BytesIO()
+        Image.new("RGB", (20, 10), color=(200, 30, 30)).save(buffer_imagen, format="PNG")
+        imagen_b64 = base64.b64encode(buffer_imagen.getvalue()).decode()
+
+        html_tabla = (
+            "<table><tbody>"
+            "<tr><td>A1</td><td>B1</td><td>C1</td></tr>"
+            f'<tr><td>A2</td><td><img src="data:image/png;base64,{imagen_b64}"></td><td>C2</td></tr>'
+            "<tr><td>A3</td><td>B3</td><td>C3</td></tr>"
+            "</tbody></table>"
+        )
+        datos = {"objeto_contratacion": "Prueba", "analisis_estrategia_html": html_tabla}
+        ruta = generar_anexo1(datos, tmp_path / "anexo1.docx")
+
+        documento = Document(str(ruta))
+        tabla_legal = documento.tables[1]
+
+        def _buscar_tabla_anidada(celda):
+            for t in celda.tables:
+                filas = [[c.text.strip() for c in f.cells] for f in t.rows]
+                if filas and filas[0] == ["A1", "B1", "C1"]:
+                    return t
+            return None
+
+        tabla_pegada = None
+        celda_con_imagen = None
+        for fila in tabla_legal.rows:
+            for celda in fila.cells:
+                encontrada = _buscar_tabla_anidada(celda)
+                if encontrada is not None:
+                    tabla_pegada = encontrada
+                    celda_con_imagen = celda
+                    break
+            if tabla_pegada:
+                break
+
+        assert tabla_pegada is not None, "la tabla pegada no se encontro en el documento"
+        assert [c.text.strip() for c in tabla_pegada.rows[1].cells][::2] == ["A2", "C2"]
+        assert "<pic:pic" in celda_con_imagen._tc.xml
+
+    def test_analisis_estrategia_html_vacio_muestra_llenar(self, tmp_path):
+        ruta = generar_anexo1({"objeto_contratacion": "Prueba"}, tmp_path / "anexo1.docx")
+
+        documento = Document(str(ruta))
+        texto = _texto_completo(documento)
+        assert "LLENAR" in texto
+
+
+class TestInsertarHtmlEnCelda:
+    """_insertar_html_en_celda es el punto de entrada de mas bajo nivel:
+    convierte HTML (potencialmente con tablas/imagenes pegadas desde
+    Excel/Word) a contenido real del .docx, con degradacion seguro a
+    texto plano si htmldocx no soporta alguna estructura."""
+
+    def _celda_vacia(self):
+        return Document().add_table(rows=1, cols=1).cell(0, 0)
+
+    def test_html_con_estructura_no_soportada_no_lanza_excepcion(self):
+        """Una tabla con colspan/rowspan irregulares (numero de celdas por
+        fila que no coincide con las dimensiones esperadas) es un caso
+        clasico que rompe conversores html->docx simples -- no debe
+        fallar la generacion del documento completo, sino degradar a
+        texto plano."""
+        html_irregular = (
+            "<table>"
+            '<tr><td colspan="3">Encabezado combinado</td></tr>'
+            '<tr><td rowspan="2">A</td><td>B</td></tr>'
+            "<tr><td>C</td><td>D</td><td>E</td><td>F</td></tr>"
+            "</table>"
+        )
+        celda = self._celda_vacia()
+        _insertar_html_en_celda(celda, html_irregular)  # no debe lanzar
+        assert celda.paragraphs or celda.tables
+
+    def test_html_vacio_resalta_llenar(self):
+        celda = self._celda_vacia()
+        _insertar_html_en_celda(celda, "")
+        texto = "\n".join(p.text for p in celda.paragraphs)
+        assert "LLENAR" in texto
