@@ -1535,6 +1535,17 @@ def _recalcular_items_anexo1(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _sumar_valor_total_items_anexo1(df_items: pd.DataFrame) -> float:
+    """Suma la columna "Valor Total" (ya recalculada por
+    _recalcular_items_anexo1) de todos los items del Anexo 1. Es la unica
+    fuente de la Sumatoria Total mostrada en "2. Ítems y Valores" Y del
+    Presupuesto Referencial (bloqueado) de "4. Condiciones Legales y
+    Descarga" -- ambos leen de aqui para no poder desincronizarse."""
+    if df_items.empty or "Valor Total" not in df_items.columns:
+        return 0.0
+    return float(df_items["Valor Total"].sum())
+
+
 def _formatear_numero_anexo1(valor) -> str:
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return ""
@@ -1685,7 +1696,13 @@ def _recolectar_datos_anexo1() -> dict:
     return {
         "objeto_contratacion": st.session_state.get("anexo1_objeto_contratacion", ""),
         "items": items_datos,
-        "presupuesto_referencial": formatear_moneda_ec(st.session_state.get("anexo1_presupuesto")),
+        # No se lee de session_state["anexo1_presupuesto"]: ese campo ahora
+        # es de solo lectura y se autocompleta con esta misma suma (ver
+        # "4. Condiciones Legales y Descarga"), pero calcularlo aqui de
+        # nuevo evita depender de que esa pestaña ya se haya renderizado
+        # en esta sesion -- el Word/Vista Previa siempre reflejan la suma
+        # actual de los items, se haya visitado esa pestaña o no.
+        "presupuesto_referencial": formatear_moneda_ec(_sumar_valor_total_items_anexo1(df_items)),
         "requerimientos_cpc": requerimientos_cpc,
         "codigo_cpc_mayor_peso": st.session_state.get("anexo1_codigo_cpc_mayor_peso", ""),
         "alcance": st.session_state.get("anexo1_alcance", ""),
@@ -2213,7 +2230,11 @@ def _render_vista_previa_anexo1(datos: dict) -> None:
 _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES = [
     "anexo1_tab_activa",
     "anexo1_objeto_contratacion",
-    "anexo1_presupuesto",
+    # "anexo1_presupuesto" NO esta aqui a proposito: ya no es un valor que
+    # el usuario escriba (esta `disabled=True`) sino que se recalcula y se
+    # reasigna en cada rerun de "4. Condiciones Legales y Descarga" desde
+    # _sumar_valor_total_items_anexo1 -- no necesita este respaldo porque
+    # nunca depende de lo que Streamlit haya borrado o no.
     "anexo1_codigo_cpc_mayor_peso",
     "anexo1_alcance",
     "anexo1_plazo",
@@ -2437,6 +2458,12 @@ def render_formularios_y_registro() -> None:
             hide_index=True,
         )
 
+        # Sumatoria Total: misma fuente (_sumar_valor_total_items_anexo1)
+        # que autocompleta el Presupuesto Referencial, bloqueado, de
+        # "4. Condiciones Legales y Descarga" -- los dos numeros siempre
+        # coinciden porque ambos se calculan de este mismo dataframe.
+        st.metric("Sumatoria Total", formatear_moneda_ec(_sumar_valor_total_items_anexo1(df_items_visible)))
+
         buffer_excel = io.BytesIO()
         df_items_visible.to_excel(buffer_excel, index=False, engine="openpyxl")
         st.download_button(
@@ -2603,13 +2630,28 @@ def render_formularios_y_registro() -> None:
 
     elif tab_activa == NOMBRES_TABS_ANEXO1[3]:
         with st.expander("Presupuesto y Alcance", expanded=True):
+            # Bloqueado y autocompletado con la Sumatoria Total de
+            # "2. Ítems y Valores" (_sumar_valor_total_items_anexo1): el
+            # usuario ya no puede escribir un presupuesto distinto al que
+            # resulta de sumar los items, para que ambos numeros nunca se
+            # desincronicen. Se recalcula del items_df en session_state en
+            # cada rerun de esta pestaña, no de un valor guardado, asi que
+            # siempre refleja el estado actual de los items aunque se
+            # hayan editado despues de la ultima visita a esta pestaña.
+            st.session_state.anexo1_presupuesto = _sumar_valor_total_items_anexo1(
+                _recalcular_items_anexo1(st.session_state.anexo1_items_df)
+            )
             st.number_input(
                 "Presupuesto Referencial (USD)",
                 min_value=0.0,
                 format="%.2f",
-                value=None,
                 key="anexo1_presupuesto",
-                help="Se muestra en el documento con formato ecuatoriano, ej. $ 9.106.285,46.",
+                disabled=True,
+                help=(
+                    "Se autocompleta con la Sumatoria Total de \"2. Ítems y Valores\" y no se "
+                    "puede editar aquí. Se muestra en el documento con formato ecuatoriano, "
+                    "ej. $ 9.106.285,46."
+                ),
             )
             st.markdown("**Requerimientos Adicionales Obligatorios**")
             st.session_state.anexo1_cpc_df = st.data_editor(
