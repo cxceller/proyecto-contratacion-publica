@@ -2153,6 +2153,7 @@ _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES = [
     "anexo1_certificado_proveedor",
     "anexo1_patrimonio_aplica",
     "anexo1_evaluacion_estrategia",
+    "anexo1_analisis_estrategia_html",
     "anexo1_otros_parametros",
     "anexo1_fecha",
     "anexo1_firma_elaborado_nombre",
@@ -2550,6 +2551,14 @@ def render_formularios_y_registro() -> None:
                 "directamente desde Excel o Word y se insertan en el documento manteniendo "
                 "su estructura. Requiere conexión a internet (el editor se carga desde cdnjs)."
             )
+            # value=... se reusa como `default` (ver tinymce_editor): si esta
+            # sub-pestaña no se instancio en el rerun anterior, Streamlit
+            # borra el estado del widget con key="anexo1_analisis_estrategia_editor"
+            # (mismo mecanismo que motivo _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES,
+            # aplicado tambien a componentes custom con key), y el componente
+            # cae de vuelta a `default` -- por eso "anexo1_analisis_estrategia_html"
+            # tambien esta en esa lista, aunque este widget no sea uno de los
+            # ~44 "simples": no quitar `value=` de aqui sin mantener ese respaldo.
             st.session_state["anexo1_analisis_estrategia_html"] = tinymce_editor(
                 value=st.session_state.get("anexo1_analisis_estrategia_html", ""),
                 height=350,
