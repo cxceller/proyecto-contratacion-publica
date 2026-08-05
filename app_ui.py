@@ -1560,6 +1560,98 @@ def _specs_vacias_anexo1(tipo: str) -> dict:
     return {"subtitulo_specs": "MODELO DE EJEMPLO", "descripcion_material": "", "parametros": []}
 
 
+def _celda_parametro_a_texto(valor) -> str:
+    """Normaliza una celda de pandas (NaN, float, str con saltos de linea
+    embebidos, etc.) al texto que se guarda en un parametro. Los saltos de
+    linea dentro de la celda (ej. una lista de viñetas pegada en Excel) se
+    preservan tal cual -- se muestran despues en un st.text_area, no en un
+    text_input de una sola linea."""
+    if pd.isna(valor):
+        return ""
+    if isinstance(valor, float) and valor.is_integer():
+        return str(int(valor))
+    return str(valor).lstrip("﻿").strip()
+
+
+def _parsear_texto_parametros_manual(texto: str, separador: str) -> pd.DataFrame:
+    """Reconstruye a mano (sin pd.read_csv) una tabla de 2 columnas
+    (Parametro, Valor) a partir del texto crudo de un .csv/.txt.
+
+    Los archivos reales de este flujo traen descripciones multilinea (ej.
+    una lista numerada del 1 al 9) SIN encerrarlas entre comillas -- para
+    un parser de CSV eso son lineas con menos campos de los que espera,
+    y pd.read_csv (con el engine C o el python) revienta con "Error
+    tokenizing data. C error: Expected N fields, saw M". Aqui, en cambio,
+    cada linea se procesa por su cuenta: si trae el separador es una fila
+    nueva (Parametro/Valor); si no lo trae y no esta vacia, se asume que
+    es la continuacion del Valor de la ULTIMA fila ya registrada y se le
+    concatena con un "\n" (una linea vacia no continua ni corta nada, se
+    ignora)."""
+    filas: list[list[str]] = []
+    for linea in texto.splitlines():
+        if separador in linea:
+            nombre, valor = linea.split(separador, 1)
+            filas.append([nombre.strip(), valor.strip()])
+        elif linea.strip() and filas:
+            filas[-1][1] = f"{filas[-1][1]}\n{linea.strip()}"
+        # una linea sin separador y sin ninguna fila previa (o vacia) no
+        # tiene donde continuar: se descarta sin romper el resto.
+    return pd.DataFrame(filas, columns=["Parámetro", "Valor"])
+
+
+def _leer_parametros_desde_archivo(archivo_subido) -> list[dict]:
+    """Lee un archivo .xlsx/.csv/.txt subido por el usuario y lo convierte
+    en una lista de {"nombre": ..., "valor": ...} listos para anexarse a
+    los parametros de un item. Solo usa las primeras 2 columnas del
+    archivo (columna 0 = Parametro, columna 1 = Valor/Descripcion) y
+    descarta filas sin nombre de parametro.
+
+    Lanza ValueError con un mensaje apto para mostrar en st.error si el
+    archivo no se puede leer o no tiene al menos 2 columnas."""
+    nombre_archivo = (archivo_subido.name or "").lower()
+    try:
+        if nombre_archivo.endswith(".xlsx"):
+            df = pd.read_excel(archivo_subido)
+        else:
+            # .csv/.txt: separador segun el tipo de archivo (tab en .txt,
+            # ";" en .csv -- el que usa Excel en configuracion regional
+            # Ecuador/es-ES al exportar, ya que "," esta reservado como
+            # separador decimal). Se procesa a mano (ver
+            # _parsear_texto_parametros_manual) en vez de pd.read_csv,
+            # porque las descripciones multilinea sin comillas de estos
+            # archivos rompen el parser de pandas.
+            separador = "\t" if nombre_archivo.endswith(".txt") else ";"
+            archivo_subido.seek(0)
+            crudo = archivo_subido.read()
+            try:
+                texto = crudo.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                texto = crudo.decode("utf-8", errors="ignore")
+            df = _parsear_texto_parametros_manual(texto, separador)
+    except Exception as exc:
+        raise ValueError(f"No se pudo leer el archivo: {exc}") from exc
+
+    if df.shape[1] < 2:
+        raise ValueError("El archivo debe tener al menos 2 columnas (Parámetro y Valor/Descripción).")
+
+    # Purifica el dataframe ANTES del bucle de inyeccion: las celdas
+    # vacias de la 2da columna llegan como NaN, y sin este fillna("") se
+    # terminaria inyectando el string "nan" en vez de un campo vacio.
+    df = df.fillna("")
+
+    df_columnas = df.iloc[:, :2]
+    parametros = []
+    for _, fila in df_columnas.iterrows():
+        nombre = _celda_parametro_a_texto(fila.iloc[0])
+        if not nombre:
+            continue
+        parametros.append({"nombre": nombre, "valor": _celda_parametro_a_texto(fila.iloc[1])})
+
+    if not parametros:
+        raise ValueError("El archivo no tiene filas válidas (la columna Parámetro está vacía).")
+    return parametros
+
+
 def _recolectar_datos_anexo1() -> dict:
     """Arma el mismo diccionario `datos` que consume generar_anexo1(), a
     partir de TODO lo que el usuario ya cargo en session_state. Se usa
@@ -2411,18 +2503,25 @@ def render_formularios_y_registro() -> None:
                                 key=f"anexo1_specs_param_nombre_{indice}_{param_id}",
                                 label_visibility=etiquetas,
                             )
-                            parametro["valor"] = col_valor.text_input(
+                            # text_area (no text_input): algunas descripciones tecnicas
+                            # traen listas en viñetas u otro texto multilinea, y un
+                            # text_input de una sola linea le borraria los saltos de
+                            # linea apenas el usuario/el archivo cargado los escribe.
+                            parametro["valor"] = col_valor.text_area(
                                 "Valor",
                                 value=parametro.get("valor", ""),
                                 key=f"anexo1_specs_param_valor_{indice}_{param_id}",
                                 label_visibility=etiquetas,
+                                height=68,
                             )
                             if col_quitar.button(
                                 "🗑️", key=f"anexo1_specs_param_quitar_{indice}_{param_id}"
                             ):
                                 parametros.pop(indice_param)
                                 st.rerun()
-                        if st.button("➕ Añadir parámetro", key=f"anexo1_specs_agregar_param_{indice}"):
+
+                        col_agregar, col_cargar_archivo = st.columns([1, 2])
+                        if col_agregar.button("➕ Añadir parámetro", key=f"anexo1_specs_agregar_param_{indice}"):
                             st.session_state.anexo1_siguiente_param_id += 1
                             parametros.append(
                                 {
@@ -2432,6 +2531,44 @@ def render_formularios_y_registro() -> None:
                                 }
                             )
                             st.rerun()
+
+                        # Carga masiva: un Excel/CSV/TXT de 2 columnas (Parametro,
+                        # Valor/Descripcion) se anexa a `parametros` -- nunca lo
+                        # reemplaza, igual que el boton manual de arriba. La clave
+                        # `anexo1_specs_param_archivo_procesado_{indice}` guarda el
+                        # file_id del ultimo archivo ya procesado para ESTE item:
+                        # sin ese control, como el archivo subido sigue "presente"
+                        # en el uploader en cada rerun posterior (Streamlit no lo
+                        # limpia solo), sus filas se volverian a anexar una y otra
+                        # vez en cualquier rerun futuro (ej. al tipear en otro campo).
+                        archivo_subido = col_cargar_archivo.file_uploader(
+                            "📎 Cargar parámetros desde archivo (Excel/CSV/TXT, 2 columnas)",
+                            type=["xlsx", "csv", "txt"],
+                            key=f"anexo1_specs_param_uploader_{indice}",
+                        )
+                        clave_procesado = f"anexo1_specs_param_archivo_procesado_{indice}"
+                        if archivo_subido is not None and st.session_state.get(clave_procesado) != archivo_subido.file_id:
+                            try:
+                                nuevos_parametros = _leer_parametros_desde_archivo(archivo_subido)
+                            except ValueError as exc:
+                                st.session_state[clave_procesado] = archivo_subido.file_id
+                                st.error(f"No se pudo procesar «{archivo_subido.name}»: {exc}")
+                            else:
+                                for nuevo in nuevos_parametros:
+                                    st.session_state.anexo1_siguiente_param_id += 1
+                                    parametros.append(
+                                        {
+                                            "id": st.session_state.anexo1_siguiente_param_id,
+                                            "nombre": nuevo["nombre"],
+                                            "valor": nuevo["valor"],
+                                        }
+                                    )
+                                st.session_state[clave_procesado] = archivo_subido.file_id
+                                st.success(
+                                    f"Se agregaron {len(nuevos_parametros)} parámetro(s) desde "
+                                    f"«{archivo_subido.name}»."
+                                )
+                                st.rerun()
                     else:
                         spec["procedimiento"] = st.text_area(
                             "Procedimiento (Desmontaje/Montaje)",
