@@ -7,7 +7,14 @@ from fastapi import Depends, FastAPI, HTTPException, Response, status
 from src import database
 from src.api_reportes import router as reportes_router
 from src.auth import verificar_api_key
-from src.models import ContratacionCreate, ContratacionOut, ContratacionUpdate
+from src.models import (
+    BorradorContratacionOut,
+    BorradorContratacionResumen,
+    BorradorContratacionUpsert,
+    ContratacionCreate,
+    ContratacionOut,
+    ContratacionUpdate,
+)
 
 
 @asynccontextmanager
@@ -114,4 +121,57 @@ def eliminar_contratacion(contratacion_id: int):
 )
 def eliminar_todas_las_contrataciones():
     database.delete_all_contrataciones()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/api/borradores", response_model=list[BorradorContratacionResumen])
+def listar_borradores():
+    rows = database.get_all_borradores()
+    return [BorradorContratacionResumen(**row) for row in rows]
+
+
+@app.get("/api/borradores/{borrador_id}", response_model=BorradorContratacionOut)
+def obtener_borrador(borrador_id: int):
+    row = database.get_borrador_by_id(borrador_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Borrador con id {borrador_id} no encontrado")
+    return BorradorContratacionOut(**row)
+
+
+@app.post(
+    "/api/borradores",
+    response_model=BorradorContratacionOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(verificar_api_key)],
+)
+def crear_borrador(payload: BorradorContratacionUpsert):
+    new_id = database.insert_borrador(payload.nombre_contratacion, payload.datos_json)
+    row = database.get_borrador_by_id(new_id)
+    return BorradorContratacionOut(**row)
+
+
+@app.put(
+    "/api/borradores/{borrador_id}",
+    response_model=BorradorContratacionOut,
+    dependencies=[Depends(verificar_api_key)],
+)
+def actualizar_borrador(borrador_id: int, payload: BorradorContratacionUpsert):
+    existing = database.get_borrador_by_id(borrador_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Borrador con id {borrador_id} no encontrado")
+    database.update_borrador(borrador_id, payload.nombre_contratacion, payload.datos_json)
+    row = database.get_borrador_by_id(borrador_id)
+    return BorradorContratacionOut(**row)
+
+
+@app.delete(
+    "/api/borradores/{borrador_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(verificar_api_key)],
+)
+def eliminar_borrador(borrador_id: int):
+    existing = database.get_borrador_by_id(borrador_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Borrador con id {borrador_id} no encontrado")
+    database.delete_borrador(borrador_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

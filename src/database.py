@@ -90,6 +90,28 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_contrataciones_palabra_clave ON contrataciones(palabra_clave)"
         )
+
+        # Borradores del Anexo 1 ("Formularios y Registro" en app_ui.py):
+        # antes esos formularios solo vivian en st.session_state y se
+        # perdian al cerrar el navegador/reiniciar Streamlit. datos_json
+        # guarda TODO el estado persistente del formulario (campos
+        # simples, items, especificaciones tecnicas, etc.) ya serializado
+        # a JSON puro por app_ui.py -- esta tabla no interpreta ese
+        # contenido, solo lo guarda y lo devuelve tal cual.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS borradores_contratacion (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nombre_contratacion TEXT NOT NULL,
+                datos_json TEXT NOT NULL,
+                fecha_actualizacion TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_borradores_fecha_actualizacion "
+            "ON borradores_contratacion(fecha_actualizacion)"
+        )
         conn.commit()
     finally:
         conn.close()
@@ -254,5 +276,74 @@ def delete_all_contrataciones() -> int:
         cursor = conn.execute("DELETE FROM contrataciones")
         conn.commit()
         return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def insert_borrador(nombre_contratacion: str, datos_json: str) -> int:
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO borradores_contratacion (nombre_contratacion, datos_json, fecha_actualizacion)
+            VALUES (?, ?, datetime('now'))
+            """,
+            (nombre_contratacion, datos_json),
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def update_borrador(borrador_id: int, nombre_contratacion: str, datos_json: str) -> bool:
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE borradores_contratacion
+            SET nombre_contratacion = ?, datos_json = ?, fecha_actualizacion = datetime('now')
+            WHERE id = ?
+            """,
+            (nombre_contratacion, datos_json, borrador_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_all_borradores() -> list[dict[str, Any]]:
+    """Solo id/nombre/fecha (sin datos_json): alcanza para listar el
+    selectbox de borradores guardados sin traer el JSON completo de cada
+    uno en cada rerun de Streamlit."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, nombre_contratacion, fecha_actualizacion FROM borradores_contratacion "
+            "ORDER BY fecha_actualizacion DESC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_borrador_by_id(borrador_id: int) -> dict[str, Any] | None:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM borradores_contratacion WHERE id = ?", (borrador_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def delete_borrador(borrador_id: int) -> bool:
+    conn = get_connection()
+    try:
+        cursor = conn.execute("DELETE FROM borradores_contratacion WHERE id = ?", (borrador_id,))
+        conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()

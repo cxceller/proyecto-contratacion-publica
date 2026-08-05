@@ -326,6 +326,58 @@ def obtener_contrataciones(status=None, fecha_inicio=None, fecha_fin=None, palab
     return response.json()
 
 
+# Sin @st.cache_data: a diferencia de obtener_contrataciones (datos del
+# portal, cambian poco), la lista de borradores debe reflejar de
+# inmediato cualquier guardado/eliminado hecho en el propio rerun
+# anterior -- un TTL, por corto que sea, mostraria el selectbox
+# desactualizado justo despues de guardar o borrar.
+def listar_borradores_anexo1() -> list[dict]:
+    response = api_request("GET", "/api/borradores")
+    if response is None:
+        return []
+    if response.status_code != 200:
+        st.error(f"Error al consultar los borradores guardados: {response.status_code}")
+        return []
+    return response.json()
+
+
+def obtener_borrador_anexo1(borrador_id: int) -> dict | None:
+    response = api_request("GET", f"/api/borradores/{borrador_id}")
+    if response is None:
+        return None
+    if response.status_code != 200:
+        st.error(f"Error al cargar el borrador: {response.status_code}")
+        return None
+    return response.json()
+
+
+def guardar_borrador_anexo1(borrador_id: int | None, nombre_contratacion: str, datos_json: str) -> dict | None:
+    """Crea (borrador_id is None) o reemplaza (borrador_id dado) un
+    borrador. Siempre manda el registro completo -- no hay actualizacion
+    parcial de un borrador, ver BorradorContratacionUpsert."""
+    payload = {"nombre_contratacion": nombre_contratacion, "datos_json": datos_json}
+    if borrador_id is None:
+        response = api_request("POST", "/api/borradores", json=payload)
+    else:
+        response = api_request("PUT", f"/api/borradores/{borrador_id}", json=payload)
+    if response is None:
+        return None
+    if response.status_code not in (200, 201):
+        st.error(f"Error al guardar el progreso: {response.status_code} {response.text}")
+        return None
+    return response.json()
+
+
+def eliminar_borrador_anexo1(borrador_id: int) -> bool:
+    response = api_request("DELETE", f"/api/borradores/{borrador_id}")
+    if response is None:
+        return False
+    if response.status_code != 204:
+        st.error(f"Error al eliminar la contratación: {response.status_code}")
+        return False
+    return True
+
+
 def extraer_tipo_compra(objeto_proceso: str) -> str:
     """Infiere un 'tipo de compra' a partir de la primera palabra del Objeto
     del Proceso (en el portal suele ser un verbo/sustantivo de accion, p.ej.
@@ -2303,6 +2355,251 @@ def _guardar_campos_simples_anexo1() -> None:
             sombra[clave] = st.session_state[clave]
 
 
+def _df_a_registros_json(df: pd.DataFrame) -> list[dict]:
+    """Convierte un DataFrame a una lista de dicts de tipos nativos de
+    Python (str/int/float/None), lista para json.dumps(allow_nan=False).
+    astype(object) ANTES de reemplazar NaN por None es necesario: sobre
+    una columna float64/Int64, asignar None con .where() se revierte solo
+    a NaN/pd.NA porque esos dtypes no pueden contener None -- solo una
+    columna "object" lo conserva tal cual."""
+    return df.astype(object).where(df.notna(), None).to_dict(orient="records")
+
+
+def _serializar_estado_anexo1() -> dict:
+    """Junta TODO el estado persistente del Anexo 1 (los ~44 campos
+    simples de _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES, la Estrategia de
+    Adquisicion en HTML, y los items/CPC/especificaciones tecnicas) en un
+    dict de tipos puros -- ni un DataFrame ni ningun objeto de Streamlit
+    -- listo para guardarse como datos_json de un borrador. Deliberadamente
+    NO incluye: "_anexo1_sombra" (cache interno, se reconstruye solo),
+    "anexo1_docx_bytes"/"anexo1_docx_nombre" (el .docx se regenera al
+    vuelo, no hace falta guardar el binario) ni las claves de los
+    file_uploader por item (un widget nativo no admite pre-rellenarse)."""
+    estado: dict = {}
+    for clave in _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES:
+        if clave in st.session_state:
+            estado[clave] = st.session_state[clave]
+    estado["anexo1_analisis_estrategia_html"] = st.session_state.get("anexo1_analisis_estrategia_html", "")
+    estado["anexo1_items_df"] = _df_a_registros_json(st.session_state.anexo1_items_df)
+    estado["anexo1_cpc_df"] = _df_a_registros_json(st.session_state.anexo1_cpc_df)
+    estado["anexo1_specs"] = st.session_state.anexo1_specs
+    estado["anexo1_items_editor_version"] = st.session_state.anexo1_items_editor_version
+    estado["anexo1_siguiente_fila_id"] = st.session_state.anexo1_siguiente_fila_id
+    estado["anexo1_siguiente_param_id"] = st.session_state.anexo1_siguiente_param_id
+    return estado
+
+
+def _restaurar_estado_anexo1(estado: dict) -> None:
+    """Inversa de _serializar_estado_anexo1: repone en session_state TODO
+    el estado guardado de un borrador. Los DataFrames se reconstruyen
+    desde sus registros (una lista vacia usa los constructores _vacio
+    para no perder las columnas esperadas -- pd.DataFrame([]) no tiene
+    columnas). anexo1_items_editor_version se incrementa (no se copia tal
+    cual) para forzar un key nuevo en el data_editor de items y que el
+    grid se remonte limpio con el dataframe cargado, en vez de intentar
+    reconciliar un diff incremental sobre el grid que ya tenia montado
+    (mismo motivo que al guardar items, ver "Guardar Ítems")."""
+    for clave in _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES:
+        if clave in estado:
+            st.session_state[clave] = estado[clave]
+    st.session_state["anexo1_analisis_estrategia_html"] = estado.get("anexo1_analisis_estrategia_html", "")
+
+    registros_items = estado.get("anexo1_items_df") or []
+    st.session_state.anexo1_items_df = (
+        pd.DataFrame(registros_items) if registros_items else _dataframe_items_anexo1_vacio()
+    )
+    registros_cpc = estado.get("anexo1_cpc_df") or []
+    st.session_state.anexo1_cpc_df = (
+        pd.DataFrame(registros_cpc) if registros_cpc else _dataframe_cpc_anexo1_vacio()
+    )
+    st.session_state.anexo1_specs = estado.get("anexo1_specs") or []
+    st.session_state.anexo1_items_editor_version = st.session_state.get("anexo1_items_editor_version", 0) + 1
+    st.session_state.anexo1_siguiente_fila_id = estado.get("anexo1_siguiente_fila_id", 0)
+    st.session_state.anexo1_siguiente_param_id = estado.get("anexo1_siguiente_param_id", 0)
+    # La sombra vieja puede tener valores de OTRA contratacion que ya no
+    # aplican; se descarta y _guardar_campos_simples_anexo1 la reconstruye
+    # con los valores recien cargados al final de este mismo rerun.
+    st.session_state.pop("_anexo1_sombra", None)
+
+
+def _reiniciar_estado_anexo1() -> None:
+    """Vacia todo el estado del Anexo 1 (usado por "Nueva contratación" y
+    tras "Eliminar contratación"), dejando el formulario como una sesion
+    recien abierta -- misma lista de claves que _restaurar_estado_anexo1,
+    pero con los valores vacios de cada widget en vez de los de un
+    borrador."""
+    for clave in _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES:
+        st.session_state.pop(clave, None)
+    st.session_state.pop("anexo1_analisis_estrategia_html", None)
+    st.session_state.pop("_anexo1_sombra", None)
+    st.session_state.pop("anexo1_docx_bytes", None)
+    st.session_state.pop("anexo1_docx_nombre", None)
+    st.session_state.anexo1_items_df = _dataframe_items_anexo1_vacio()
+    st.session_state.anexo1_cpc_df = _dataframe_cpc_anexo1_vacio()
+    st.session_state.anexo1_specs = []
+    st.session_state.anexo1_items_editor_version = st.session_state.get("anexo1_items_editor_version", 0) + 1
+    st.session_state.anexo1_siguiente_fila_id = 0
+    st.session_state.anexo1_siguiente_param_id = 0
+    st.session_state.anexo1_borrador_id = None
+    # NO se puede escribir directo a st.session_state["anexo1_borrador_selector"]
+    # aqui: esta funcion se llama desde botones que se instancian DESPUES
+    # del selectbox en el mismo rerun, y Streamlit prohibe modificar la
+    # key de un widget ya instanciado en ese mismo rerun. En cambio, se
+    # deja esta "orden pendiente" en una key comun y corriente (no atada a
+    # ningun widget) que _render_panel_borradores_anexo1 aplica al
+    # selectbox, pero ANTES de crearlo, en el rerun siguiente -- si no se
+    # tocara nada, el selectbox conservaria la etiqueta de la contratacion
+    # anterior y la recargaria sola.
+    st.session_state["anexo1_borrador_selector_pendiente"] = None
+
+
+def _render_panel_borradores_anexo1() -> None:
+    """Panel de control (arriba del todo de "Formularios y Registro") para
+    guardar/cargar/eliminar contrataciones completas como filas de
+    borradores_contratacion (ver src/database.py), asi el trabajo
+    sobrevive a cerrar el navegador o reiniciar Streamlit -- hasta ahora
+    todo el formulario vivia solo en session_state.
+
+    El selectbox usa el id numerico del borrador como VALOR real del
+    widget (no el texto visible, vía format_func): la etiqueta incluye la
+    fecha de actualizacion, que cambia en cada guardado, y si esa fecha
+    fuera el valor del widget, tras guardar Streamlit podria encontrarse
+    con que el valor que tenia guardado en session_state ya no esta entre
+    las opciones actuales -- eso es un error duro en Streamlit, no un
+    detalle cosmetico. Con el id como valor eso no puede pasar: el mismo
+    id sigue siendo valido aunque su etiqueta visible cambie."""
+    if "anexo1_borrador_id" not in st.session_state:
+        st.session_state.anexo1_borrador_id = None
+
+    borradores = listar_borradores_anexo1()
+    etiqueta_por_id = {None: "— Nueva contratación (sin guardar) —"}
+    for borrador in borradores:
+        etiqueta_por_id[borrador["id"]] = (
+            f"{borrador['nombre_contratacion']} (act. {borrador['fecha_actualizacion']})"
+        )
+    ids_disponibles = list(etiqueta_por_id.keys())
+
+    # Aplica una orden pendiente de otro boton (Guardar/Nueva/Eliminar, ver
+    # sus comentarios: ellos no pueden tocar la key del selectbox porque
+    # se instancian despues de el en su propio rerun) ANTES de crear el
+    # widget, que es el unico momento en que Streamlit permite fijar su
+    # valor. Sin una orden pendiente, si el id que el selectbox tenia
+    # guardado ya no existe entre las opciones actuales (primera carga, o
+    # el borrador se elimino desde otra sesion), se resetea a "Nueva
+    # contratación" para no reventar el selectbox con un valor invalido.
+    if "anexo1_borrador_selector_pendiente" in st.session_state:
+        st.session_state["anexo1_borrador_selector"] = st.session_state.pop("anexo1_borrador_selector_pendiente")
+    elif st.session_state.get("anexo1_borrador_selector") not in ids_disponibles:
+        st.session_state["anexo1_borrador_selector"] = (
+            st.session_state.anexo1_borrador_id if st.session_state.anexo1_borrador_id in ids_disponibles else None
+        )
+
+    st.markdown("**📁 Gestor de Contrataciones** (guardado persistente en la base de datos)")
+    col_selector, col_guardar, col_nuevo, col_eliminar = st.columns([3, 1, 1, 1])
+
+    id_seleccionado = col_selector.selectbox(
+        "Cargar contratación guardada",
+        ids_disponibles,
+        format_func=lambda id_: etiqueta_por_id.get(id_, "— Nueva contratación (sin guardar) —"),
+        key="anexo1_borrador_selector",
+        label_visibility="collapsed",
+    )
+    # Cargar: solo cuando el usuario ACABA de elegir un id distinto al que
+    # ya esta activo (si fueran iguales, se re-cargaria en cada rerun
+    # posterior sin que el usuario haya vuelto a tocar el selector).
+    if id_seleccionado is not None and id_seleccionado != st.session_state.anexo1_borrador_id:
+        borrador = obtener_borrador_anexo1(id_seleccionado)
+        if borrador is not None:
+            try:
+                estado = json.loads(borrador["datos_json"])
+            except json.JSONDecodeError:
+                st.error("El borrador guardado tiene un JSON inválido y no se pudo cargar.")
+            else:
+                # No se aplica _restaurar_estado_anexo1(estado) aqui mismo:
+                # este script termina en el rerun() de abajo sin llegar a
+                # instanciar ningun widget de ninguna pestaña (el despacho
+                # de pestañas viene mas abajo), y se comprobo
+                # empiricamente que Streamlit puede reinicializar esas
+                # keys "huerfanas" a su valor vacio de widget ANTES de que
+                # el rerun automatico vuelva a correr el script -- como la
+                # key sigue *presente* (vacia, no ausente), el respaldo de
+                # sombra en _restaurar_campos_simples_anexo1 no la detecta
+                # (esa funcion solo repone claves AUSENTES) y el campo se
+                # ve vacio pese a haberse cargado bien. La solucion real
+                # es no tocar session_state todavia: se deja el estado a
+                # aplicar en una key comun (no atada a ningun widget) y
+                # render_formularios_y_registro la aplica en su primerisima
+                # linea del rerun siguiente, antes de que exista chance de
+                # que cualquier widget la pise.
+                st.session_state["anexo1_estado_pendiente_restaurar"] = estado
+                st.session_state.anexo1_borrador_id = id_seleccionado
+                st.success(f"Contratación «{borrador['nombre_contratacion']}» cargada.")
+                st.rerun()
+
+    if col_guardar.button("💾 Guardar progreso", key="anexo1_guardar_borrador", use_container_width=True):
+        nombre_contratacion = (st.session_state.get("anexo1_objeto_contratacion") or "").strip()
+        if not nombre_contratacion:
+            st.error(
+                'Completa "Objeto de contratación" en la pestaña "1. Datos Generales" antes de guardar.'
+            )
+        else:
+            datos_json = json.dumps(_serializar_estado_anexo1(), ensure_ascii=False, allow_nan=False)
+            resultado = guardar_borrador_anexo1(
+                st.session_state.anexo1_borrador_id, nombre_contratacion, datos_json
+            )
+            if resultado is not None:
+                st.session_state.anexo1_borrador_id = resultado["id"]
+                # anexo1_borrador_selector no se puede tocar aqui (el
+                # selectbox ya se instancio arriba en este mismo rerun) --
+                # se deja la orden pendiente para el proximo rerun, ver el
+                # comentario en _render_panel_borradores_anexo1.
+                st.session_state["anexo1_borrador_selector_pendiente"] = resultado["id"]
+                st.success(f"Progreso guardado como «{nombre_contratacion}».")
+                st.rerun()
+
+    if col_nuevo.button("🆕 Nueva contratación", key="anexo1_nueva_contratacion", use_container_width=True):
+        _reiniciar_estado_anexo1()
+        st.success("Formulario en blanco: lista para una nueva contratación.")
+        st.rerun()
+
+    if "anexo1_confirmar_eliminar_borrador" not in st.session_state:
+        st.session_state.anexo1_confirmar_eliminar_borrador = False
+
+    if col_eliminar.button(
+        "🗑️ Eliminar contratación",
+        key="anexo1_eliminar_borrador",
+        use_container_width=True,
+        disabled=st.session_state.anexo1_borrador_id is None,
+    ):
+        st.session_state.anexo1_confirmar_eliminar_borrador = True
+        st.rerun()
+
+    if st.session_state.anexo1_confirmar_eliminar_borrador:
+        # Misma logica de doble clic que "Vaciar la base de datos" en
+        # Configuracion: una eliminacion no se puede deshacer, asi que un
+        # solo clic accidental no debe bastar para perder una
+        # contratacion guardada. Fuera de las 4 columnas de arriba (no
+        # anida columnas dentro de columnas) para que la confirmacion se
+        # vea a todo lo ancho, no apretada en col_eliminar.
+        st.warning("¿Eliminar esta contratación guardada? No se puede deshacer.")
+        col_confirmar, col_cancelar = st.columns(2)
+        if col_confirmar.button("Sí, eliminar", key="anexo1_confirmar_eliminar_borrador_btn", type="primary"):
+            borrador_id = st.session_state.anexo1_borrador_id
+            st.session_state.anexo1_confirmar_eliminar_borrador = False
+            if borrador_id is not None and eliminar_borrador_anexo1(borrador_id):
+                _reiniciar_estado_anexo1()
+                st.success("Contratación eliminada.")
+            st.rerun()
+        if col_cancelar.button("Cancelar", key="anexo1_cancelar_eliminar_borrador_btn"):
+            st.session_state.anexo1_confirmar_eliminar_borrador = False
+            st.rerun()
+
+    if st.session_state.anexo1_borrador_id is not None:
+        st.caption(f"Editando la contratación guardada #{st.session_state.anexo1_borrador_id}.")
+    else:
+        st.caption("Contratación nueva: aún no se ha guardado.")
+
+
 def render_formularios_y_registro() -> None:
     """Subseccion "Formularios y Registro": genera el .docx (y la tabla
     de items en Excel) del Anexo 1 - Especificaciones Tecnicas para los
@@ -2312,6 +2609,30 @@ def render_formularios_y_registro() -> None:
     ITEM, las especificaciones tecnicas condicionales, ~30 campos de
     condiciones legales (organizados en expanders) y una vista previa en
     vivo se organizan en pestañas para no ser un formulario gigante."""
+    # Aplica un borrador recien elegido en el selectbox del panel de
+    # borradores ANTES que cualquier otra cosa en esta funcion, incluidos
+    # los defaults de mas abajo: es el primerisimo punto del rerun donde
+    # todavia no se instancio ningun widget de ninguna pestaña, que es
+    # justamente lo que garantiza que Streamlit no le pise el valor
+    # despues (ver el comentario en _render_panel_borradores_anexo1, rama
+    # "Cargar contratación guardada", sobre por que la restauracion no se
+    # puede hacer en el mismo rerun en que se detecta la seleccion).
+    if "anexo1_estado_pendiente_restaurar" in st.session_state:
+        _restaurar_estado_anexo1(st.session_state.pop("anexo1_estado_pendiente_restaurar"))
+        # _guardar_campos_simples_anexo1() AHORA MISMO, no al final de la
+        # funcion: los campos de una pestaña que no sea la activa (la que
+        # se restauro junto con todo lo demas) no van a pasar por ningun
+        # widget en ESTE rerun, asi que van a quedar "huerfanos" otra vez
+        # de cara al proximo rerun -- la sombra es lo unico que los trae
+        # de vuelta (ver _restaurar_campos_simples_anexo1), y si Streamlit
+        # interrumpe este rerun a medio camino porque el usuario ya
+        # disparo otra interaccion (ej. cambiar de pestaña) antes de que
+        # este termine solo, un `_guardar_campos_simples_anexo1()` al
+        # final de la funcion nunca llegaria a ejecutarse. Guardando la
+        # sombra aqui, en la primera linea posible, esto ya quedo hecho
+        # pase lo que pase con el resto del rerun.
+        _guardar_campos_simples_anexo1()
+
     st.subheader("📝 Formularios y Registro")
     st.caption(
         "Genera el Anexo 1 - Especificaciones Técnicas para los Procesos de Bienes, "
@@ -2332,6 +2653,9 @@ def render_formularios_y_registro() -> None:
         st.session_state.anexo1_siguiente_param_id = 0
 
     _restaurar_campos_simples_anexo1()
+
+    _render_panel_borradores_anexo1()
+    st.divider()
 
     # st.tabs() nativo no acepta key/session_state: su pestaña activa se
     # rastrea solo en el frontend, y se sabe que se resetea a la primera

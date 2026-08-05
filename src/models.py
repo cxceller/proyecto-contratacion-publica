@@ -65,3 +65,29 @@ class ContratacionOut(ContratacionCreate):
 
     id: int
     created_at: str
+
+
+class BorradorContratacionUpsert(BaseModel):
+    """Se usa tanto para crear como para actualizar un borrador: siempre
+    se reemplaza el registro completo (nombre + datos_json), no hay
+    actualizacion parcial de un borrador."""
+
+    model_config = _CONFIG_STRIP_WHITESPACE
+
+    nombre_contratacion: str = Field(..., min_length=1, max_length=500)
+    datos_json: str = Field(..., min_length=1, description="Estado del formulario del Anexo 1, ya serializado a JSON")
+
+
+class BorradorContratacionResumen(BaseModel):
+    """Version liviana (sin datos_json) para listar los borradores
+    guardados, ej. en el selectbox de app_ui.py."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    nombre_contratacion: str
+    fecha_actualizacion: str
+
+
+class BorradorContratacionOut(BorradorContratacionResumen):
+    datos_json: str
