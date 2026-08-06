@@ -1590,9 +1590,9 @@ def _recalcular_items_anexo1(df: pd.DataFrame) -> pd.DataFrame:
 def _sumar_valor_total_items_anexo1(df_items: pd.DataFrame) -> float:
     """Suma la columna "Valor Total" (ya recalculada por
     _recalcular_items_anexo1) de todos los items del Anexo 1. Es la unica
-    fuente de la Sumatoria Total mostrada en "2. Ítems y Valores" Y del
-    Presupuesto Referencial (bloqueado) de "4. Condiciones Legales y
-    Descarga" -- ambos leen de aqui para no poder desincronizarse."""
+    fuente de la Sumatoria Total Y del Presupuesto Referencial (bloqueado),
+    ambos mostrados en la seccion "Ítems y Presupuesto" -- ambos leen de
+    aqui para no poder desincronizarse."""
     if df_items.empty or "Valor Total" not in df_items.columns:
         return 0.0
     return float(df_items["Valor Total"].sum())
@@ -1750,10 +1750,10 @@ def _recolectar_datos_anexo1() -> dict:
         "items": items_datos,
         # No se lee de session_state["anexo1_presupuesto"]: ese campo ahora
         # es de solo lectura y se autocompleta con esta misma suma (ver
-        # "4. Condiciones Legales y Descarga"), pero calcularlo aqui de
-        # nuevo evita depender de que esa pestaña ya se haya renderizado
-        # en esta sesion -- el Word/Vista Previa siempre reflejan la suma
-        # actual de los items, se haya visitado esa pestaña o no.
+        # seccion "Ítems y Presupuesto"), pero calcularlo aqui de nuevo
+        # evita depender de que esa seccion ya se haya renderizado en esta
+        # sesion -- el Word/Vista Previa siempre reflejan la suma actual
+        # de los items, se haya visitado esa seccion o no.
         "presupuesto_referencial": formatear_moneda_ec(_sumar_valor_total_items_anexo1(df_items)),
         "requerimientos_cpc": requerimientos_cpc,
         "codigo_cpc_mayor_peso": st.session_state.get("anexo1_codigo_cpc_mayor_peso", ""),
@@ -2030,7 +2030,7 @@ def _render_vista_previa_anexo1(datos: dict) -> None:
     if not items:
         partes.append(
             '<tr><td colspan="2" style="padding:6px; color:#999;">'
-            '(sin ítems agregados todavía en la pestaña "2. Ítems y Valores")</td></tr>'
+            '(sin ítems agregados todavía en la sección "Ítems y Presupuesto")</td></tr>'
         )
     for numero, item in enumerate(items, start=1):
         partes.append(_html_filas_item(numero, item))
@@ -2266,16 +2266,16 @@ def _render_vista_previa_anexo1(datos: dict) -> None:
 
 
 # Claves de los ~44 widgets "simples" (text_input/text_area/number_input/
-# selectbox) de las pestañas "1. Datos Generales" y "4. Condiciones
-# Legales y Descarga" que solo usan `key=` sin `value=` propio. Streamlit
-# borra la entrada de session_state de un widget con key en cualquier
-# rerun en el que ese widget NO se instancie (ver docs: "widget state
-# will be lost if the widget is removed from the app"), y aqui eso pasa
-# cada vez que el usuario cambia de sub-pestaña del Anexo 1 (las pestañas
-# son ramas `elif` condicionales, no todas se ejecutan en cada rerun) o
-# de pagina del sidebar: el campo se ve vacio al volver aunque el usuario
-# ya lo habia llenado. Los widgets de "2. Ítems y Valores" (data_editor)
-# y "3. Especificaciones Técnicas" (value=spec.get(...) desde la lista
+# selectbox) de las secciones "Formulario y Parámetros" y "Generación y
+# Vista Previa del Anexo" que solo usan `key=` sin `value=` propio.
+# Streamlit borra la entrada de session_state de un widget con key en
+# cualquier rerun en el que ese widget NO se instancie (ver docs: "widget
+# state will be lost if the widget is removed from the app"), y aqui eso
+# pasa cada vez que el usuario cambia de seccion del Anexo 1 (las
+# secciones son ramas `elif` condicionales, no todas se ejecutan en cada
+# rerun) o de pagina del sidebar: el campo se ve vacio al volver aunque
+# el usuario ya lo habia llenado. Los widgets de items (data_editor) y
+# especificaciones tecnicas (value=spec.get(...) desde la lista
 # persistente anexo1_specs) ya son inmunes a esto porque no dependen
 # unicamente del key -- este mismo patron (un valor guardado aparte,
 # reinyectado en el widget) es el que se replica aqui para el resto.
@@ -2284,7 +2284,7 @@ _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES = [
     "anexo1_objeto_contratacion",
     # "anexo1_presupuesto" NO esta aqui a proposito: ya no es un valor que
     # el usuario escriba (esta `disabled=True`) sino que se recalcula y se
-    # reasigna en cada rerun de "4. Condiciones Legales y Descarga" desde
+    # reasigna en cada rerun de la seccion "Ítems y Presupuesto" desde
     # _sumar_valor_total_items_anexo1 -- no necesita este respaldo porque
     # nunca depende de lo que Streamlit haya borrado o no.
     "anexo1_codigo_cpc_mayor_peso",
@@ -2487,10 +2487,39 @@ def _render_panel_borradores_anexo1() -> None:
     # guardado ya no existe entre las opciones actuales (primera carga, o
     # el borrador se elimino desde otra sesion), se resetea a "Nueva
     # contratación" para no reventar el selectbox con un valor invalido.
+    #
+    # OJO: nunca se asigna `None` explicitamente a session_state["anexo1_borrador_selector"]
+    # (se hace `pop` en su lugar) -- se comprobo empiricamente que un
+    # st.selectbox recien creado (key todavia ausente de session_state)
+    # muestra el placeholder "Choose an option" en vez de la etiqueta
+    # mapeada de None ("Nueva contratación") si ese None se escribe a mano
+    # ANTES de que el widget exista por primera vez, aunque None sea una
+    # opcion valida de la lista. Dejando la key ausente en ese caso,
+    # Streamlit cae solo, correctamente, en su propio default (indice 0,
+    # que en `ids_disponibles` siempre es None) -- ese default SI se
+    # renderiza bien.
+    def _fijar_selector_borrador(id_objetivo: int | None) -> None:
+        if id_objetivo is None:
+            st.session_state.pop("anexo1_borrador_selector", None)
+        else:
+            st.session_state["anexo1_borrador_selector"] = id_objetivo
+
     if "anexo1_borrador_selector_pendiente" in st.session_state:
-        st.session_state["anexo1_borrador_selector"] = st.session_state.pop("anexo1_borrador_selector_pendiente")
-    elif st.session_state.get("anexo1_borrador_selector") not in ids_disponibles:
-        st.session_state["anexo1_borrador_selector"] = (
+        _fijar_selector_borrador(st.session_state.pop("anexo1_borrador_selector_pendiente"))
+    elif (
+        "anexo1_borrador_selector" not in st.session_state
+        or st.session_state.get("anexo1_borrador_selector") not in ids_disponibles
+    ):
+        # "not in st.session_state" (ademas del chequeo de valor invalido
+        # de antes) porque este panel ahora es una seccion mas del menu
+        # lateral (ver _render_navegacion_anexo1_sidebar): al navegar a
+        # otra seccion y volver, Streamlit borra este selectbox por no
+        # haberse instanciado mientras tanto -- y como None (la opcion
+        # "Nueva contratación") SIEMPRE es un valor valido de la lista,
+        # el chequeo anterior (que solo miraba "esta en ids_disponibles")
+        # no detectaba la key ausente y mostraba "Nueva contratación" aun
+        # con un borrador ya cargado.
+        _fijar_selector_borrador(
             st.session_state.anexo1_borrador_id if st.session_state.anexo1_borrador_id in ids_disponibles else None
         )
 
@@ -2540,7 +2569,7 @@ def _render_panel_borradores_anexo1() -> None:
         nombre_contratacion = (st.session_state.get("anexo1_objeto_contratacion") or "").strip()
         if not nombre_contratacion:
             st.error(
-                'Completa "Objeto de contratación" en la pestaña "1. Datos Generales" antes de guardar.'
+                'Completa "Objeto de contratación" en la sección "Formulario y Parámetros" antes de guardar.'
             )
         else:
             datos_json = json.dumps(_serializar_estado_anexo1(), ensure_ascii=False, allow_nan=False)
@@ -2600,6 +2629,82 @@ def _render_panel_borradores_anexo1() -> None:
         st.caption("Contratación nueva: aún no se ha guardado.")
 
 
+def _inyectar_estilos_anexo1_cards() -> None:
+    """CSS liviano de "Formularios y Registro": botones redondeados,
+    sombra sutil sobre el wrapper nativo de st.container(border=True)
+    (look de tarjeta), el sub-menu lateral de secciones del Anexo 1
+    distinguido de los 5 botones de pagina de arriba (ver
+    _render_navegacion_anexo1_sidebar), y las metricas financieras
+    (Sumatoria Total, Presupuesto Referencial) resaltadas -- mismo patron
+    de st.container(key=...) -> ".st-key-<key>" ya usado en la zona de
+    peligro de render_vaciar_base_datos (linea ~1176)."""
+    st.markdown(
+        f"""
+        <style>
+        .stButton > button {{
+            border-radius: 10px;
+        }}
+        [data-testid="stVerticalBlockBorderWrapper"] {{
+            box-shadow: 0 1px 4px rgba(15, 23, 42, 0.10);
+        }}
+        .st-key-anexo1_sidebar_subnav {{
+            border-left: 2px solid rgba(255, 255, 255, 0.15);
+            margin-left: 0.35rem;
+            padding-left: 0.5rem;
+        }}
+        .st-key-anexo1_sidebar_subnav .stButton > button {{
+            font-size: 0.85rem;
+            font-weight: 500;
+            padding: 0.45rem 0.7rem;
+        }}
+        .st-key-anexo1_metrica_sumatoria,
+        .st-key-anexo1_metrica_presupuesto {{
+            border-color: {COLOR_SIDEBAR_ACENTO} !important;
+            background-color: #FFF7ED;
+        }}
+        .st-key-anexo1_metrica_sumatoria [data-testid="stMetricValue"] {{
+            color: {COLOR_SIDEBAR_ACENTO};
+            font-size: 1.6rem;
+        }}
+        .st-key-anexo1_metrica_presupuesto input {{
+            color: {COLOR_SIDEBAR_ACENTO} !important;
+            font-weight: 700;
+            font-size: 1.05rem;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_navegacion_anexo1_sidebar(nombres_secciones: list[str]) -> None:
+    """Menu lateral de las secciones del Anexo 1, anidado DENTRO del
+    sidebar principal (debajo de los 5 botones de pagina de
+    render_navegacion_sidebar, ver el st.divider()+st.caption() que lo
+    preceden) -- no reemplaza esa navegacion, la extiende solo mientras
+    se esta en "Municipalidad de Guayaquil". Mismo patron ya probado ahi:
+    un st.button por opcion (no st.tabs()/st.radio, ver el comentario en
+    render_formularios_y_registro sobre por que) que fija
+    anexo1_tab_activa en session_state y dispara st.rerun(). Envuelto en
+    st.container(key="anexo1_sidebar_subnav") para poder distinguirlo con
+    CSS propio (ver _inyectar_estilos_anexo1_cards) sin tocar la regla
+    compartida que estiliza los botones de pagina de arriba."""
+    with st.sidebar:
+        st.divider()
+        st.caption("ANEXO 1")
+        with st.container(key="anexo1_sidebar_subnav"):
+            for nombre in nombres_secciones:
+                activo = st.session_state.anexo1_tab_activa == nombre
+                if st.button(
+                    nombre,
+                    key=f"anexo1_nav_{nombre}",
+                    use_container_width=True,
+                    type="primary" if activo else "secondary",
+                ):
+                    st.session_state.anexo1_tab_activa = nombre
+                    st.rerun()
+
+
 def render_formularios_y_registro() -> None:
     """Subseccion "Formularios y Registro": genera el .docx (y la tabla
     de items en Excel) del Anexo 1 - Especificaciones Tecnicas para los
@@ -2608,11 +2713,13 @@ def render_formularios_y_registro() -> None:
     la tabla de items con calculo automatico y su tipo Bien/Servicio POR
     ITEM, las especificaciones tecnicas condicionales, ~30 campos de
     condiciones legales (organizados en expanders) y una vista previa en
-    vivo se organizan en pestañas para no ser un formulario gigante."""
+    vivo se organizan en 4 secciones navegables desde un menu lateral
+    (ver _render_navegacion_anexo1_sidebar) para no ser un formulario
+    gigante."""
     # Aplica un borrador recien elegido en el selectbox del panel de
     # borradores ANTES que cualquier otra cosa en esta funcion, incluidos
     # los defaults de mas abajo: es el primerisimo punto del rerun donde
-    # todavia no se instancio ningun widget de ninguna pestaña, que es
+    # todavia no se instancio ningun widget de ninguna seccion, que es
     # justamente lo que garantiza que Streamlit no le pise el valor
     # despues (ver el comentario en _render_panel_borradores_anexo1, rama
     # "Cargar contratación guardada", sobre por que la restauracion no se
@@ -2620,18 +2727,20 @@ def render_formularios_y_registro() -> None:
     if "anexo1_estado_pendiente_restaurar" in st.session_state:
         _restaurar_estado_anexo1(st.session_state.pop("anexo1_estado_pendiente_restaurar"))
         # _guardar_campos_simples_anexo1() AHORA MISMO, no al final de la
-        # funcion: los campos de una pestaña que no sea la activa (la que
+        # funcion: los campos de una seccion que no sea la activa (la que
         # se restauro junto con todo lo demas) no van a pasar por ningun
         # widget en ESTE rerun, asi que van a quedar "huerfanos" otra vez
         # de cara al proximo rerun -- la sombra es lo unico que los trae
         # de vuelta (ver _restaurar_campos_simples_anexo1), y si Streamlit
         # interrumpe este rerun a medio camino porque el usuario ya
-        # disparo otra interaccion (ej. cambiar de pestaña) antes de que
+        # disparo otra interaccion (ej. cambiar de seccion) antes de que
         # este termine solo, un `_guardar_campos_simples_anexo1()` al
         # final de la funcion nunca llegaria a ejecutarse. Guardando la
         # sombra aqui, en la primera linea posible, esto ya quedo hecho
         # pase lo que pase con el resto del rerun.
         _guardar_campos_simples_anexo1()
+
+    _inyectar_estilos_anexo1_cards()
 
     st.subheader("📝 Formularios y Registro")
     st.caption(
@@ -2654,151 +2763,55 @@ def render_formularios_y_registro() -> None:
 
     _restaurar_campos_simples_anexo1()
 
-    _render_panel_borradores_anexo1()
-    st.divider()
-
-    # st.tabs() nativo no acepta key/session_state: su pestaña activa se
+    # st.tabs() nativo no acepta key/session_state: su seccion activa se
     # rastrea solo en el frontend, y se sabe que se resetea a la primera
-    # pestaña cuando el script hace st.rerun() manual (como los botones
+    # cuando el script hace st.rerun() manual (como los botones
     # "Añadir/Quitar item"/"Añadir/Quitar parametro" mas abajo) en vez de
     # un rerun nativo disparado por el propio widget editado. Un selector
     # respaldado en session_state (mismo patron ya probado en
-    # render_navegacion_sidebar) elimina ese reseteo de forma
+    # render_navegacion_sidebar, reutilizado tal cual en
+    # _render_navegacion_anexo1_sidebar) elimina ese reseteo de forma
     # deterministica, sin depender de como Streamlit maneje cada rerun.
-    NOMBRES_TABS_ANEXO1 = [
-        "1. Datos Generales",
-        "2. Ítems y Valores",
-        "3. Especificaciones Técnicas",
-        "4. Condiciones Legales y Descarga",
-        "5. Vista Previa",
+    NOMBRES_SECCIONES_ANEXO1 = [
+        "Gestor de Borradores / Contrataciones",
+        "Formulario y Parámetros",
+        "Ítems y Presupuesto",
+        "Generación y Vista Previa del Anexo",
     ]
     if "anexo1_tab_activa" not in st.session_state:
-        st.session_state.anexo1_tab_activa = NOMBRES_TABS_ANEXO1[0]
-    tab_activa = st.radio(
-        "Sección",
-        NOMBRES_TABS_ANEXO1,
-        key="anexo1_tab_activa",
-        horizontal=True,
-        label_visibility="collapsed",
-    )
+        st.session_state.anexo1_tab_activa = NOMBRES_SECCIONES_ANEXO1[0]
+    elif st.session_state.anexo1_tab_activa not in NOMBRES_SECCIONES_ANEXO1:
+        # Puede pasar al cargar un borrador guardado ANTES de este cambio
+        # (tenia nombres de pestaña viejos, ej. "4. Condiciones Legales y
+        # Descarga") -- a diferencia del st.radio() de antes (que hubiera
+        # tirado un StreamlitAPIException, un error duro y visible ante
+        # un valor fuera de lista), el selector por botones no valida
+        # nada: un valor no reconocido simplemente no hace matchear
+        # ningun `elif` de mas abajo y deja la seccion en blanco sin
+        # ningun aviso. Se aterriza en "Formulario y Parámetros" (no en
+        # la primera de la lista) porque quien esta en este caso
+        # probablemente acaba de cargar un borrador viejo y quiere ver
+        # sus datos, no la pantalla de borradores.
+        st.session_state.anexo1_tab_activa = NOMBRES_SECCIONES_ANEXO1[1]
 
-    if tab_activa == NOMBRES_TABS_ANEXO1[0]:
-        st.markdown("**Encabezado fijo del documento**")
-        st.info(f"{TITULO_ANEXO_FIJO}\n\n{TITULO_PROCESO_FIJO}\n\n{COORDINACION_FIJA}")
-        st.text_area(
-            'Objeto de contratación (se resalta en amarillo en el documento generado)',
-            placeholder="Ej: SUMINISTRO, INSTALACIÓN, MANTENIMIENTO PREVENTIVO Y REPOTENCIACIÓN DE...",
-            key="anexo1_objeto_contratacion",
-        )
+    _render_navegacion_anexo1_sidebar(NOMBRES_SECCIONES_ANEXO1)
+    tab_activa = st.session_state.anexo1_tab_activa
 
-    elif tab_activa == NOMBRES_TABS_ANEXO1[1]:
-        st.markdown("**Ítems**")
-        st.caption(
-            'Cada ítem tiene su propio selector "Tipo" (Bien/Servicio): distintos ítems del '
-            'mismo proceso pueden ser de distinto tipo. La columna "Valor Total" se calcula '
-            'automáticamente (Cantidad Solicitada × Valor Unitario) y no es editable. Presiona '
-            '"Guardar Ítems" para aplicar los cambios.'
-        )
-        # La edicion vive dentro de un st.form: sin esto, CADA tecla/celda
-        # confirmada dispara un rerun completo de todo el script mientras
-        # el usuario sigue escribiendo, lo que puede chocar con el propio
-        # render en curso del data_editor y competir con el resto de la
-        # app por cada pulsacion. Dentro de un formulario, Streamlit NO
-        # reejecuta el script hasta que se presiona el boton de submit:
-        # todas las ediciones de celda se acumulan en el propio grid
-        # (estado del navegador) y se entregan de una sola vez.
-        #
-        # La columna "Ítem" es NumberColumn(disabled=True): el usuario no
-        # puede escribir en ella, asi que una fila nueva (num_rows are
-        # "dynamic") queda con ese valor en None hasta que se recalcula.
-        # Si esa fila con None se guarda tal cual en session_state y se
-        # vuelve a pasar como `data=` al MISMO key de data_editor, el
-        # dtype de la columna cambia de una corrida a otra (numpy "int"
-        # no admite None, así que pandas lo sube silenciosamente a
-        # float/object): el grid del frontend (glide-data-grid) recibe un
-        # esquema de columnas distinto al que ya tenia montado para ese
-        # key y su reconciliacion de React falla con "NotFoundError:
-        # Failed to execute 'removeChild'", tipicamente ocultando o
-        # perdiendo filas incompletas en el proceso. La solucion no es
-        # solo evitar recalcular -- es no reutilizar el mismo key con un
-        # dataframe de forma/dtype distinta: version = un key nuevo cada
-        # vez que se guarda, forzando un remount limpio del grid en vez
-        # de un diff incremental sobre un esquema que ya no coincide.
-        with st.form("anexo1_form_items", clear_on_submit=False):
-            df_editado = st.data_editor(
-                st.session_state.anexo1_items_df,
-                num_rows="dynamic",
-                use_container_width=True,
-                key=f"anexo1_data_editor_{st.session_state.anexo1_items_editor_version}",
-                column_order=COLUMNAS_VISIBLES_ITEMS_ANEXO1,
-                column_config={
-                    "Ítem": st.column_config.NumberColumn("Ítem", disabled=True, default=0),
-                    "Tipo": st.column_config.SelectboxColumn(
-                        "Tipo", options=["Bien", "Servicio"], required=True, default="Bien"
-                    ),
-                    "Cantidad Solicitada": st.column_config.NumberColumn(
-                        "Cantidad Solicitada", min_value=0.0, step=1.0, default=0.0
-                    ),
-                    "Valor Unitario": st.column_config.NumberColumn(
-                        "Valor Unitario", min_value=0.0, format="%.2f", default=0.0
-                    ),
-                    "Valor Total": st.column_config.NumberColumn("Valor Total", disabled=True, format="%.2f"),
-                },
+    if tab_activa == NOMBRES_SECCIONES_ANEXO1[0]:
+        with st.container(border=True):
+            _render_panel_borradores_anexo1()
+
+    elif tab_activa == NOMBRES_SECCIONES_ANEXO1[1]:
+        with st.container(border=True):
+            st.markdown("**Encabezado fijo del documento**")
+            st.info(f"{TITULO_ANEXO_FIJO}\n\n{TITULO_PROCESO_FIJO}\n\n{COORDINACION_FIJA}")
+            st.text_area(
+                'Objeto de contratación (se resalta en amarillo en el documento generado)',
+                placeholder="Ej: SUMINISTRO, INSTALACIÓN, MANTENIMIENTO PREVENTIVO Y REPOTENCIACIÓN DE...",
+                key="anexo1_objeto_contratacion",
             )
-            guardar_items = st.form_submit_button("💾 Guardar Ítems", type="primary")
 
-        if guardar_items:
-            # Al guardar SI se recalcula (a diferencia de antes): "Ítem"
-            # y "Valor Total" quedan bien formados (sin None) antes de
-            # persistir a session_state, y el key con version bumped
-            # fuerza al grid a remontarse desde cero con ese dataframe ya
-            # limpio en el siguiente rerun -- no hay diff incremental que
-            # pueda desincronizarse. _asignar_fila_ids_anexo1 (identidad
-            # estable por fila) y el autocompletado de "Descripción CPC"
-            # corren ANTES de ese recalculo/remount, por la misma razon:
-            # nunca se reintroduce un dataframe a medio transformar en el
-            # mismo key.
-            df_con_ids = _asignar_fila_ids_anexo1(df_editado)
-            df_autocompletado, cpc_no_encontrados = _autocompletar_descripcion_cpc(
-                df_con_ids, st.session_state.anexo1_items_df, _cargar_catalogo_cpc()
-            )
-            st.session_state.anexo1_items_df = _recalcular_items_anexo1(df_autocompletado)
-            st.session_state.anexo1_items_editor_version += 1
-            if cpc_no_encontrados:
-                codigos_unicos = ", ".join(sorted(set(cpc_no_encontrados)))
-                st.warning(f"Código(s) CPC no encontrado(s) en el catálogo: {codigos_unicos}")
-            st.success("Ítems guardados.")
-            st.rerun()
-
-        # "_fila_id" es un detalle interno (identidad estable entre
-        # guardados, ver _asignar_fila_ids_anexo1): se excluye de la
-        # vista de solo lectura y del Excel exportado, igual que ya se
-        # excluye del data_editor via column_order.
-        df_items_calculado = _recalcular_items_anexo1(st.session_state.anexo1_items_df)
-        df_items_visible = df_items_calculado.drop(columns=["_fila_id"], errors="ignore")
-        st.dataframe(
-            df_items_visible.style.format({"Valor Unitario": formatear_moneda_ec, "Valor Total": formatear_moneda_ec}),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        # Sumatoria Total: misma fuente (_sumar_valor_total_items_anexo1)
-        # que autocompleta el Presupuesto Referencial, bloqueado, de
-        # "4. Condiciones Legales y Descarga" -- los dos numeros siempre
-        # coinciden porque ambos se calculan de este mismo dataframe.
-        st.metric("Sumatoria Total", formatear_moneda_ec(_sumar_valor_total_items_anexo1(df_items_visible)))
-
-        buffer_excel = io.BytesIO()
-        df_items_visible.to_excel(buffer_excel, index=False, engine="openpyxl")
-        st.download_button(
-            "📊 Descargar Tabla de Ítems en Excel",
-            data=buffer_excel.getvalue(),
-            file_name="Anexo1_items.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="anexo1_descargar_excel",
-        )
-
-    elif tab_activa == NOMBRES_TABS_ANEXO1[2]:
+        st.markdown("**Especificaciones Técnicas por Ítem**")
         df_items = _recalcular_items_anexo1(st.session_state.anexo1_items_df)
         cantidad_items = len(df_items)
         specs = st.session_state.anexo1_specs
@@ -2808,17 +2821,17 @@ def render_formularios_y_registro() -> None:
             specs.append(_specs_vacias_anexo1(tipos_por_fila[len(specs)]))
         del specs[cantidad_items:]
         for indice, tipo_fila in enumerate(tipos_por_fila):
-            # si el usuario cambio el Tipo de ESE item en la pestaña
-            # anterior, la spec ya cargada tiene la forma equivocada y
-            # hay que reiniciarla (no se puede mezclar, ej., parametros
-            # de Bien con campos de Servicio).
+            # si el usuario cambio el Tipo de ESE item en la seccion de
+            # Items, la spec ya cargada tiene la forma equivocada y hay
+            # que reiniciarla (no se puede mezclar, ej., parametros de
+            # Bien con campos de Servicio).
             es_spec_de_servicio = "procedimiento" in specs[indice]
             if es_spec_de_servicio != (tipo_fila == "Servicio"):
                 specs[indice] = _specs_vacias_anexo1(tipo_fila)
 
         if cantidad_items == 0:
             st.info(
-                'Agrega ítems en la pestaña "2. Ítems y Valores" para poder '
+                'Agrega ítems en la sección "Ítems y Presupuesto" para poder '
                 "describir sus especificaciones técnicas."
             )
         else:
@@ -2952,31 +2965,143 @@ def render_formularios_y_registro() -> None:
                             key=f"anexo1_specs_obligaciones_{indice}",
                         )
 
-    elif tab_activa == NOMBRES_TABS_ANEXO1[3]:
+    elif tab_activa == NOMBRES_SECCIONES_ANEXO1[2]:
+        with st.container(border=True):
+            st.markdown("**Ítems**")
+            st.caption(
+                'Cada ítem tiene su propio selector "Tipo" (Bien/Servicio): distintos ítems del '
+                'mismo proceso pueden ser de distinto tipo. La columna "Valor Total" se calcula '
+                'automáticamente (Cantidad Solicitada × Valor Unitario) y no es editable. Presiona '
+                '"Guardar Ítems" para aplicar los cambios.'
+            )
+            # La edicion vive dentro de un st.form: sin esto, CADA tecla/celda
+            # confirmada dispara un rerun completo de todo el script mientras
+            # el usuario sigue escribiendo, lo que puede chocar con el propio
+            # render en curso del data_editor y competir con el resto de la
+            # app por cada pulsacion. Dentro de un formulario, Streamlit NO
+            # reejecuta el script hasta que se presiona el boton de submit:
+            # todas las ediciones de celda se acumulan en el propio grid
+            # (estado del navegador) y se entregan de una sola vez.
+            #
+            # La columna "Ítem" es NumberColumn(disabled=True): el usuario no
+            # puede escribir en ella, asi que una fila nueva (num_rows are
+            # "dynamic") queda con ese valor en None hasta que se recalcula.
+            # Si esa fila con None se guarda tal cual en session_state y se
+            # vuelve a pasar como `data=` al MISMO key de data_editor, el
+            # dtype de la columna cambia de una corrida a otra (numpy "int"
+            # no admite None, así que pandas lo sube silenciosamente a
+            # float/object): el grid del frontend (glide-data-grid) recibe un
+            # esquema de columnas distinto al que ya tenia montado para ese
+            # key y su reconciliacion de React falla con "NotFoundError:
+            # Failed to execute 'removeChild'", tipicamente ocultando o
+            # perdiendo filas incompletas en el proceso. La solucion no es
+            # solo evitar recalcular -- es no reutilizar el mismo key con un
+            # dataframe de forma/dtype distinta: version = un key nuevo cada
+            # vez que se guarda, forzando un remount limpio del grid en vez
+            # de un diff incremental sobre un esquema que ya no coincide.
+            with st.form("anexo1_form_items", clear_on_submit=False):
+                df_editado = st.data_editor(
+                    st.session_state.anexo1_items_df,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key=f"anexo1_data_editor_{st.session_state.anexo1_items_editor_version}",
+                    column_order=COLUMNAS_VISIBLES_ITEMS_ANEXO1,
+                    column_config={
+                        "Ítem": st.column_config.NumberColumn("Ítem", disabled=True, default=0),
+                        "Tipo": st.column_config.SelectboxColumn(
+                            "Tipo", options=["Bien", "Servicio"], required=True, default="Bien"
+                        ),
+                        "Cantidad Solicitada": st.column_config.NumberColumn(
+                            "Cantidad Solicitada", min_value=0.0, step=1.0, default=0.0
+                        ),
+                        "Valor Unitario": st.column_config.NumberColumn(
+                            "Valor Unitario", min_value=0.0, format="%.2f", default=0.0
+                        ),
+                        "Valor Total": st.column_config.NumberColumn("Valor Total", disabled=True, format="%.2f"),
+                    },
+                )
+                guardar_items = st.form_submit_button("💾 Guardar Ítems", type="primary")
+
+            if guardar_items:
+                # Al guardar SI se recalcula (a diferencia de antes): "Ítem"
+                # y "Valor Total" quedan bien formados (sin None) antes de
+                # persistir a session_state, y el key con version bumped
+                # fuerza al grid a remontarse desde cero con ese dataframe ya
+                # limpio en el siguiente rerun -- no hay diff incremental que
+                # pueda desincronizarse. _asignar_fila_ids_anexo1 (identidad
+                # estable por fila) y el autocompletado de "Descripción CPC"
+                # corren ANTES de ese recalculo/remount, por la misma razon:
+                # nunca se reintroduce un dataframe a medio transformar en el
+                # mismo key.
+                df_con_ids = _asignar_fila_ids_anexo1(df_editado)
+                df_autocompletado, cpc_no_encontrados = _autocompletar_descripcion_cpc(
+                    df_con_ids, st.session_state.anexo1_items_df, _cargar_catalogo_cpc()
+                )
+                st.session_state.anexo1_items_df = _recalcular_items_anexo1(df_autocompletado)
+                st.session_state.anexo1_items_editor_version += 1
+                if cpc_no_encontrados:
+                    codigos_unicos = ", ".join(sorted(set(cpc_no_encontrados)))
+                    st.warning(f"Código(s) CPC no encontrado(s) en el catálogo: {codigos_unicos}")
+                st.success("Ítems guardados.")
+                st.rerun()
+
+            # "_fila_id" es un detalle interno (identidad estable entre
+            # guardados, ver _asignar_fila_ids_anexo1): se excluye de la
+            # vista de solo lectura y del Excel exportado, igual que ya se
+            # excluye del data_editor via column_order.
+            df_items_calculado = _recalcular_items_anexo1(st.session_state.anexo1_items_df)
+            df_items_visible = df_items_calculado.drop(columns=["_fila_id"], errors="ignore")
+            st.dataframe(
+                df_items_visible.style.format(
+                    {"Valor Unitario": formatear_moneda_ec, "Valor Total": formatear_moneda_ec}
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # Sumatoria Total: misma fuente (_sumar_valor_total_items_anexo1)
+            # que autocompleta el Presupuesto Referencial de mas abajo -- los
+            # dos numeros siempre coinciden porque ambos se calculan de este
+            # mismo dataframe. Contenedor con key propio para el resalte
+            # visual de metricas financieras (ver _inyectar_estilos_anexo1_cards).
+            with st.container(key="anexo1_metrica_sumatoria", border=True):
+                st.metric("Sumatoria Total", formatear_moneda_ec(_sumar_valor_total_items_anexo1(df_items_visible)))
+
+            buffer_excel = io.BytesIO()
+            df_items_visible.to_excel(buffer_excel, index=False, engine="openpyxl")
+            st.download_button(
+                "📊 Descargar Tabla de Ítems en Excel",
+                data=buffer_excel.getvalue(),
+                file_name="Anexo1_items.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="anexo1_descargar_excel",
+            )
+
         with st.expander("Presupuesto y Alcance", expanded=True):
-            # Bloqueado y autocompletado con la Sumatoria Total de
-            # "2. Ítems y Valores" (_sumar_valor_total_items_anexo1): el
-            # usuario ya no puede escribir un presupuesto distinto al que
-            # resulta de sumar los items, para que ambos numeros nunca se
-            # desincronicen. Se recalcula del items_df en session_state en
-            # cada rerun de esta pestaña, no de un valor guardado, asi que
-            # siempre refleja el estado actual de los items aunque se
-            # hayan editado despues de la ultima visita a esta pestaña.
+            # Bloqueado y autocompletado con la Sumatoria Total de arriba
+            # (_sumar_valor_total_items_anexo1): el usuario ya no puede
+            # escribir un presupuesto distinto al que resulta de sumar los
+            # items, para que ambos numeros nunca se desincronicen. Se
+            # recalcula del items_df en session_state en cada rerun de esta
+            # seccion, no de un valor guardado, asi que siempre refleja el
+            # estado actual de los items aunque se hayan editado despues de
+            # la ultima vez que se vio esta seccion.
             st.session_state.anexo1_presupuesto = _sumar_valor_total_items_anexo1(
                 _recalcular_items_anexo1(st.session_state.anexo1_items_df)
             )
-            st.number_input(
-                "Presupuesto Referencial (USD)",
-                min_value=0.0,
-                format="%.2f",
-                key="anexo1_presupuesto",
-                disabled=True,
-                help=(
-                    "Se autocompleta con la Sumatoria Total de \"2. Ítems y Valores\" y no se "
-                    "puede editar aquí. Se muestra en el documento con formato ecuatoriano, "
-                    "ej. $ 9.106.285,46."
-                ),
-            )
+            with st.container(key="anexo1_metrica_presupuesto"):
+                st.number_input(
+                    "Presupuesto Referencial (USD)",
+                    min_value=0.0,
+                    format="%.2f",
+                    key="anexo1_presupuesto",
+                    disabled=True,
+                    help=(
+                        "Se autocompleta con la Sumatoria Total de los ítems y no se puede editar "
+                        "aquí. Se muestra en el documento con formato ecuatoriano, ej. "
+                        "$ 9.106.285,46."
+                    ),
+                )
             st.markdown("**Requerimientos Adicionales Obligatorios**")
             st.session_state.anexo1_cpc_df = st.data_editor(
                 st.session_state.anexo1_cpc_df,
@@ -3000,6 +3125,7 @@ def render_formularios_y_registro() -> None:
             st.text_area("Forma y condiciones de pago", key="anexo1_forma_pago")
             st.text_input("Lugar y dirección de entrega/ejecución", key="anexo1_lugar")
 
+    elif tab_activa == NOMBRES_SECCIONES_ANEXO1[3]:
         with st.expander("Obligaciones y Garantías"):
             st.text_area("Obligaciones de la Entidad Contratante", key="anexo1_obligaciones_entidad")
             st.text_area("Obligaciones de la Contratista", key="anexo1_obligaciones_contratista")
@@ -3055,7 +3181,7 @@ def render_formularios_y_registro() -> None:
                 "su estructura. Requiere conexión a internet (el editor se carga desde cdnjs)."
             )
             # value=... se reusa como `default` (ver tinymce_editor): si esta
-            # sub-pestaña no se instancio en el rerun anterior, Streamlit
+            # seccion no se instancio en el rerun anterior, Streamlit
             # borra el estado del widget con key="anexo1_analisis_estrategia_editor"
             # (mismo mecanismo que motivo _ANEXO1_CAMPOS_SIMPLES_PERSISTENTES,
             # aplicado tambien a componentes custom con key), y el componente
@@ -3144,7 +3270,7 @@ def render_formularios_y_registro() -> None:
         if st.button("📄 Descargar Anexo 1 en Word", key="anexo1_generar", type="primary"):
             if st.session_state.anexo1_items_df.empty:
                 st.warning(
-                    'Agrega al menos un ítem en la pestaña "2. Ítems y Valores" '
+                    'Agrega al menos un ítem en la sección "Ítems y Presupuesto" '
                     "antes de generar el documento."
                 )
             else:
@@ -3166,10 +3292,11 @@ def render_formularios_y_registro() -> None:
                 key="anexo1_descargar_docx",
             )
 
-    elif tab_activa == NOMBRES_TABS_ANEXO1[4]:
+        st.divider()
+        st.markdown("**Vista Previa**")
         st.caption(
             "Se actualiza automáticamente a medida que completas los datos en las otras "
-            'pestañas. Los campos vacíos se muestran como "LLENAR".'
+            'secciones. Los campos vacíos se muestran como "LLENAR".'
         )
         _render_vista_previa_anexo1(_recolectar_datos_anexo1())
 
