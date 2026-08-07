@@ -62,6 +62,10 @@ from scripts.especificaciones_tecnicas_generator import (
     TITULO_PROCESO_FIJO,
     generar_especificaciones_tecnicas,
 )
+from scripts.dashboard_analitico import (
+    construir_datos_gantt_procesos,
+    construir_datos_treemap_presupuesto,
+)
 from scripts.formato_ec import formatear_moneda_ec, formatear_numero_ec
 from scripts.tinymce_editor import tinymce_editor
 
@@ -835,6 +839,83 @@ def render_treemap_provincia_estado(df: pd.DataFrame):
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+def render_treemap_presupuesto_tipo(df: pd.DataFrame):
+    """Treemap jerarquico Tipo de Compra -> Estado del Proceso, con el
+    Presupuesto Referencial (suma) como area de cada rectangulo: a
+    diferencia de `render_treemap_provincia_estado` (conteo de procesos
+    por provincia), este pondera por dinero -- conecta directo con la
+    misma columna `presupuesto_referencial` que ya suman los KPIs y las
+    tablas resumen (`render_kpis_dashboard`, `render_tablas_resumen`)."""
+    st.markdown("**Distribución del Presupuesto por Tipo de Compra → Estado (treemap)**")
+    resumen = construir_datos_treemap_presupuesto(df)
+    if resumen.empty:
+        st.info("No hay datos de presupuesto para graficar con los filtros actuales.")
+        return
+
+    fig = px.treemap(
+        resumen,
+        path=["tipo_compra", "estado"],
+        values="presupuesto_referencial",
+        color="tipo_compra",
+        color_discrete_sequence=PALETA_VIVA,
+    )
+    fig.update_traces(
+        texttemplate="<b>%{label}</b><br>$ %{value:,.2f}",
+        textfont=dict(size=13, color="#FFFFFF"),
+        marker=dict(line=dict(width=2, color=COLOR_LIENZO)),
+        hovertemplate=(
+            "<b>%{label}</b><br>Presupuesto: $ %{value:,.2f}<br>"
+            "%{percentParent:.0%} de %{parent}<extra></extra>"
+        ),
+        root_color=COLOR_LIENZO,
+    )
+    _aplicar_estilo_base(fig, altura=560)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_gantt_procesos(df: pd.DataFrame, limite: int = 25):
+    """Gantt (linea de tiempo horizontal) de los procesos con fecha de
+    publicacion mas reciente: cada barra va de su `fecha_publicacion` hasta
+    hoy, coloreada por estado. El portal de Compras Publicas no expone una
+    fecha de cierre/ejecucion real por proceso (el "Plazo de Ejecución" de
+    Especificaciones Técnicas es un texto libre en dias, capturado por documento al momento
+    de redactar el pliego, no un dato historico por proceso), asi que esto
+    muestra dias transcurridos desde la publicacion -- no un cronograma de
+    hitos con fecha de fin real. Ver `construir_datos_gantt_procesos`."""
+    st.markdown(f"**Cronograma de Procesos: días transcurridos desde su publicación (últimos {limite})**")
+    st.caption(
+        "El portal no expone una fecha de cierre de ejecución por proceso, así que cada "
+        "barra corre desde la Fecha de Publicación hasta hoy — no representa hitos de "
+        "cronograma con fecha de fin real."
+    )
+    datos = construir_datos_gantt_procesos(df, limite=limite)
+    if datos.empty:
+        st.info("No hay procesos con fecha de publicación válida para graficar con los filtros actuales.")
+        return
+
+    fig = px.timeline(
+        datos,
+        x_start="inicio",
+        x_end="fin",
+        y="etiqueta",
+        color="estado",
+        color_discrete_sequence=PALETA_VIVA,
+        custom_data=["dias_transcurridos", "entidad_contratante"],
+    )
+    fig.update_traces(
+        marker=dict(line=dict(width=1, color=COLOR_LIENZO)),
+        hovertemplate=(
+            "<b>%{y}</b><br>Entidad: %{customdata[1]}<br>"
+            "Días transcurridos: %{customdata[0]}<extra></extra>"
+        ),
+    )
+    fig.update_yaxes(autorange="reversed", title=None, tickfont=dict(color=COLOR_TEXTO_EJE))
+    fig.update_xaxes(title=None, tickfont=dict(color=COLOR_TEXTO_EJE))
+    _aplicar_estilo_base(fig, altura=max(360, 32 * len(datos)))
+    fig.update_layout(showlegend=True, legend_title_text="Estado")
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
 def _tabla_estatica(df_mostrar: pd.DataFrame) -> pd.DataFrame:
     """Prepara un DataFrame para `st.table`: sin indice visible (imita el
     `hide_index=True` que tenian estas tablas con `st.dataframe`)."""
@@ -1361,12 +1442,14 @@ def render_pagina_dashboard(registros_totales: list[dict]) -> None:
     df_filtrado = render_filtros_dashboard(df_totales)
     render_kpis_dashboard(df_filtrado)
 
-    tab_mensual, tab_provincia, tab_treemap, tab_resumen = st.tabs(
+    tab_mensual, tab_provincia, tab_treemap, tab_resumen, tab_presupuesto, tab_gantt = st.tabs(
         [
             "📅 Ver detalle por mes",
             "📍 Ver detalle por provincia",
             "🌳 Ver Provincia → Estado",
             "🧾 Ver resumen por estado y tipo de compra",
+            "🧱 Presupuesto por Tipo (Treemap)",
+            "🗓️ Cronograma de Procesos (Gantt)",
         ]
     )
     with tab_mensual:
@@ -1378,6 +1461,10 @@ def render_pagina_dashboard(registros_totales: list[dict]) -> None:
         render_treemap_provincia_estado(df_filtrado)
     with tab_resumen:
         render_tablas_resumen(df_filtrado)
+    with tab_presupuesto:
+        render_treemap_presupuesto_tipo(df_filtrado)
+    with tab_gantt:
+        render_gantt_procesos(df_filtrado)
 
 
 CLAVES_FILTRO_PROCESOS = [
