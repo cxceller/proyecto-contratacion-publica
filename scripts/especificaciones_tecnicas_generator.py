@@ -1,4 +1,4 @@
-"""Genera el documento "ANEXO 1 - ESPECIFICACIONES TECNICAS PARA LOS
+"""Genera el documento "ESPECIFICACIONES TECNICAS PARA LOS
 PROCESOS DE BIENES" de la M.I. Municipalidad de Guayaquil, replicando el
 formato exacto de un modelo Word de referencia
 (docs/Especificaciones_tecnicas_modelo.docx, documento completo):
@@ -6,7 +6,7 @@ formato exacto de un modelo Word de referencia
 - Encabezado y pie de pagina institucionales fijos (banner con el logo y
   la barra tricolor decorativa, y la barra de contacto), como imagenes
   ancladas -- no editables por el usuario.
-- Caja de titulo (4 lineas, Arial 13 negrita, centrada): "ANEXO 1",
+- Caja de titulo (3 lineas, Arial 13 negrita, centrada):
   "ESPECIFICACIONES TECNICAS PARA LOS PROCESOS DE BIENES" y la
   coordinacion responsable son fijos; solo el "Objeto de contratacion"
   (ultima linea, resaltada en amarillo) es variable.
@@ -70,8 +70,7 @@ COLOR_BORDE_TABLA_PARAMETROS = "C0C0C0"
 GROSOR_BORDE_TABLA_PARAMETROS = "6"
 
 # Lineas fijas de la caja de titulo (solo "objeto_contratacion" es
-# variable -- ver generar_anexo1).
-TITULO_ANEXO_FIJO = "ANEXO 1"
+# variable -- ver generar_especificaciones_tecnicas).
 TITULO_PROCESO_FIJO = "ESPECIFICACIONES TÉCNICAS PARA LOS PROCESOS DE BIENES"
 COORDINACION_FIJA = "COORDINACION DE OBRAS ELÉCTRICAS, TELECOMUNICACIONES Y MANTENIMIENTO DE TÚNELES"
 
@@ -113,7 +112,7 @@ ALINEACIONES_COLUMNAS = [
 
 # --- Bloques de texto/tabla fijos, copiados literal del modelo real
 # (clausulas genericas de la LOSNCP/RGLOSNCP, reutilizables tal cual en
-# cualquier Anexo 1, a diferencia de los datos propios de UN contrato
+# cualquier documento de Especificaciones Técnicas, a diferencia de los datos propios de UN contrato
 # puntual, que son los campos variables del formulario). ---
 
 TEXTO_MULTAS = (
@@ -615,7 +614,7 @@ def _configurar_encabezado_pie(documento: Document) -> None:
 
 
 def _agregar_caja_titulo(documento: Document, objeto_contratacion: str) -> None:
-    tabla = documento.add_table(rows=4, cols=1)
+    tabla = documento.add_table(rows=3, cols=1)
     tabla.style = "Table Grid"
     tabla.alignment = WD_TABLE_ALIGNMENT.CENTER
     tbl_w = OxmlElement("w:tblW")
@@ -623,8 +622,8 @@ def _agregar_caja_titulo(documento: Document, objeto_contratacion: str) -> None:
     tbl_w.set(qn("w:w"), str(Cm(ANCHO_TABLA_CM).twips))
     tabla._tbl.tblPr.append(tbl_w)
 
-    textos_fijos = [TITULO_ANEXO_FIJO, TITULO_PROCESO_FIJO, COORDINACION_FIJA]
-    for fila, texto in zip(tabla.rows[:3], textos_fijos):
+    textos_fijos = [TITULO_PROCESO_FIJO, COORDINACION_FIJA]
+    for fila, texto in zip(tabla.rows[:2], textos_fijos):
         celda = fila.cells[0]
         celda.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         parrafo = celda.paragraphs[0]
@@ -632,11 +631,11 @@ def _agregar_caja_titulo(documento: Document, objeto_contratacion: str) -> None:
         run = parrafo.add_run(texto)
         _aplicar_fuente(run, TAMANO_TITULO_PT)
 
-    celda_libre = tabla.rows[3].cells[0]
+    celda_libre = tabla.rows[2].cells[0]
     celda_libre.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     parrafo_libre = celda_libre.paragraphs[0]
     parrafo_libre.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run_libre = parrafo_libre.add_run(objeto_contratacion or "LLENAR")
+    run_libre = parrafo_libre.add_run(objeto_contratacion or "")
     _aplicar_fuente(run_libre, TAMANO_TITULO_PT, resaltado=WD_COLOR_INDEX.YELLOW)
 
 
@@ -693,7 +692,7 @@ def _agregar_parrafo_campo(
     parrafo = celda.paragraphs[0] if primero else celda.add_paragraph()
     run_etiqueta = parrafo.add_run(f"{etiqueta}: ")
     _aplicar_fuente(run_etiqueta, TAMANO_SUBTITULO_PT, negrita=True)
-    run_valor = parrafo.add_run(valor or "LLENAR")
+    run_valor = parrafo.add_run(valor or "")
     resaltado = WD_COLOR_INDEX.YELLOW if (resaltar_si_vacio and not valor) else None
     _aplicar_fuente(run_valor, TAMANO_SUBTITULO_PT, negrita=False, resaltado=resaltado)
 
@@ -787,7 +786,7 @@ def _agregar_campo_legal(documento: Document, etiqueta: str, valor: str) -> None
     parrafo = documento.add_paragraph()
     run_etiqueta = parrafo.add_run(f"{etiqueta}: ")
     _aplicar_fuente(run_etiqueta, TAMANO_LEGAL_PT, negrita=True)
-    run_valor = parrafo.add_run(valor or "LLENAR")
+    run_valor = parrafo.add_run(valor or "")
     _aplicar_fuente(run_valor, TAMANO_LEGAL_PT, resaltado=WD_COLOR_INDEX.YELLOW if not valor else None, negrita=False)
 
 
@@ -845,7 +844,7 @@ def _agregar_campo_tabla(tabla, anchos: list[Length], etiqueta: str, valor: str)
 
     parrafo_valor = celda_valor.paragraphs[0]
     parrafo_valor.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    run_valor = parrafo_valor.add_run(valor or "LLENAR")
+    run_valor = parrafo_valor.add_run(valor or "")
     _aplicar_fuente(run_valor, TAMANO_LEGAL_PT, resaltado=WD_COLOR_INDEX.YELLOW if not valor else None, negrita=False)
     return celda_valor
 
@@ -966,7 +965,7 @@ def _extraer_imagenes_base64_a_archivos(html_texto: str, directorio: Path) -> st
 def _aplicar_estilo_institucional_tabla_html(tabla) -> None:
     """Las tablas pegadas desde Excel/Word (via el editor enriquecido) se
     insertan sin ningun estilo -- se les aplica aqui el mismo azul marino
-    institucional y la misma fuente Arial que usa el resto del Anexo 1,
+    institucional y la misma fuente Arial que usa el resto del documento,
     para que no se vean visualmente distintas del resto del documento."""
     tabla._tbl.tblPr.append(_bordes_tabla(COLOR_BORDE_TABLA_ITEMS, GROSOR_BORDE_EXTERIOR, GROSOR_BORDE_INTERIOR))
     for fila in tabla.rows:
@@ -986,11 +985,9 @@ def _insertar_html_en_celda(celda, html_texto: str) -> None:
     la celda real nunca queda a medio transformar."""
     html_texto = (html_texto or "").strip()
     if not html_texto:
-        run = celda.add_paragraph().add_run("LLENAR")
-        _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False, resaltado=WD_COLOR_INDEX.YELLOW)
         return
 
-    with tempfile.TemporaryDirectory(prefix="anexo1_html_") as directorio_temp:
+    with tempfile.TemporaryDirectory(prefix="especificaciones_tecnicas_html_") as directorio_temp:
         html_local = _extraer_imagenes_base64_a_archivos(html_texto, Path(directorio_temp))
 
         documento_prueba = Document()
@@ -999,7 +996,7 @@ def _insertar_html_en_celda(celda, html_texto: str) -> None:
             HtmlToDocx().add_html_to_cell(html_local, celda_prueba)
         except Exception:
             texto_plano = BeautifulSoup(html_texto, "html.parser").get_text("\n").strip()
-            run = celda.add_paragraph().add_run(texto_plano or "LLENAR")
+            run = celda.add_paragraph().add_run(texto_plano or "")
             _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False)
             return
 
@@ -1038,7 +1035,7 @@ def _agregar_seccion_legal(documento: Document, datos: dict, tabla, anchos: list
     _agregar_tabla_simple(
         celda_cpc,
         ["CPC", "DESCRIPCIÓN DEL CPC"],
-        [[r.get("cpc", "") or "LLENAR", r.get("descripcion", "") or "LLENAR"] for r in requerimientos_cpc],
+        [[r.get("cpc", "") or "", r.get("descripcion", "") or ""] for r in requerimientos_cpc],
     )
 
     _agregar_campo_tabla(
@@ -1084,8 +1081,8 @@ def _agregar_seccion_legal(documento: Document, datos: dict, tabla, anchos: list
     _agregar_parrafo_legal(celda_garantias, TEXTO_GARANTIA_FIEL_CUMPLIMIENTO)
     _agregar_parrafo_legal(celda_garantias, TEXTO_GARANTIA_BUEN_USO_ANTICIPO)
     texto_responsabilidad_civil = TEXTO_GARANTIA_RESPONSABILIDAD_CIVIL_PLANTILLA.format(
-        objeto=datos.get("objeto_contratacion", "") or "LLENAR",
-        monto=datos.get("monto_garantia_responsabilidad_civil", "") or "LLENAR",
+        objeto=datos.get("objeto_contratacion", "") or "",
+        monto=datos.get("monto_garantia_responsabilidad_civil", "") or "",
     )
     _agregar_parrafo_legal(celda_garantias, texto_responsabilidad_civil)
 
@@ -1093,7 +1090,7 @@ def _agregar_seccion_legal(documento: Document, datos: dict, tabla, anchos: list
         tabla,
         anchos,
         "VIGENCIA DE LA OFERTA",
-        TEXTO_VIGENCIA_OFERTA_PLANTILLA.format(dias=datos.get("vigencia_oferta_dias", "") or "LLENAR"),
+        TEXTO_VIGENCIA_OFERTA_PLANTILLA.format(dias=datos.get("vigencia_oferta_dias", "") or ""),
     )
     _agregar_campo_tabla(tabla, anchos, "REAJUSTE DE PRECIOS", TEXTO_REAJUSTE_PRECIOS)
     _agregar_campo_tabla(tabla, anchos, "TIPO DE ADJUDICACIÓN", datos.get("tipo_adjudicacion", ""))
@@ -1102,9 +1099,9 @@ def _agregar_seccion_legal(documento: Document, datos: dict, tabla, anchos: list
     _agregar_parrafo_legal(
         celda_administrador,
         TEXTO_ADMINISTRADOR_INTRO_PLANTILLA.format(
-            nombre=datos.get("administrador_nombre", "") or "LLENAR",
-            cedula=datos.get("administrador_cedula", "") or "LLENAR",
-            cargo=datos.get("administrador_cargo", "") or "LLENAR",
+            nombre=datos.get("administrador_nombre", "") or "",
+            cedula=datos.get("administrador_cedula", "") or "",
+            cargo=datos.get("administrador_cargo", "") or "",
         ),
     )
     _agregar_lista_numerada(celda_administrador, TEXTO_ATRIBUCIONES_ADMINISTRADOR)
@@ -1154,7 +1151,7 @@ def _agregar_seccion_legal(documento: Document, datos: dict, tabla, anchos: list
         anchos,
         "EXPERIENCIA GENERAL DEL OFERENTE",
         TEXTO_EXPERIENCIA_GENERAL_PLANTILLA.format(
-            pct_general=datos.get("pct_experiencia_general", "") or "LLENAR"
+            pct_general=datos.get("pct_experiencia_general", "") or ""
         ),
     )
     _agregar_campo_tabla(
@@ -1162,7 +1159,7 @@ def _agregar_seccion_legal(documento: Document, datos: dict, tabla, anchos: list
         anchos,
         "EXPERIENCIA ESPECÍFICA DEL OFERENTE",
         TEXTO_EXPERIENCIA_ESPECIFICA_PLANTILLA.format(
-            pct_especifica=datos.get("pct_experiencia_especifica", "") or "LLENAR"
+            pct_especifica=datos.get("pct_experiencia_especifica", "") or ""
         ),
     )
     _agregar_campo_tabla(
@@ -1170,7 +1167,7 @@ def _agregar_seccion_legal(documento: Document, datos: dict, tabla, anchos: list
         anchos,
         "FORMACIÓN DEL PERSONAL TÉCNICO",
         TEXTO_FORMACION_PERSONAL_TECNICO_PLANTILLA.format(
-            titulo_profesional=datos.get("titulo_profesional_personal_tecnico", "") or "LLENAR"
+            titulo_profesional=datos.get("titulo_profesional_personal_tecnico", "") or ""
         ),
     )
     _agregar_campo_tabla(tabla, anchos, "EXPERIENCIA DEL PERSONAL TÉCNICO", TEXTO_EXPERIENCIA_PERSONAL_TECNICO)
@@ -1231,7 +1228,7 @@ def _agregar_seccion_legal(documento: Document, datos: dict, tabla, anchos: list
     _agregar_tabla_firmas(documento, datos.get("firmas", {}))
 
 
-def generar_anexo1(datos: dict, ruta_salida) -> Path:
+def generar_especificaciones_tecnicas(datos: dict, ruta_salida) -> Path:
     documento = Document()
     _configurar_encabezado_pie(documento)
     _agregar_caja_titulo(documento, datos.get("objeto_contratacion", ""))

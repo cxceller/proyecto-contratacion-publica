@@ -75,7 +75,9 @@ class BorradorContratacionUpsert(BaseModel):
     model_config = _CONFIG_STRIP_WHITESPACE
 
     nombre_contratacion: str = Field(..., min_length=1, max_length=500)
-    datos_json: str = Field(..., min_length=1, description="Estado del formulario del Anexo 1, ya serializado a JSON")
+    datos_json: str = Field(
+        ..., min_length=1, description="Estado del formulario de Especificaciones Técnicas, ya serializado a JSON"
+    )
 
 
 class BorradorContratacionResumen(BaseModel):

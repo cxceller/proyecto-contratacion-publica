@@ -12,7 +12,7 @@ import pytest
 def borrador_payload():
     return {
         "nombre_contratacion": "Adquisición de Luminarias",
-        "datos_json": json.dumps({"anexo1_objeto_contratacion": "Adquisición de Luminarias"}),
+        "datos_json": json.dumps({"especificaciones_tecnicas_objeto_contratacion": "Adquisición de Luminarias"}),
     }
 
 
@@ -73,7 +73,7 @@ class TestPut:
         creado = crear_borrador(client, borrador_payload)
         nuevo_payload = {
             "nombre_contratacion": "Adquisición de Luminarias LED",
-            "datos_json": json.dumps({"anexo1_objeto_contratacion": "Adquisición de Luminarias LED"}),
+            "datos_json": json.dumps({"especificaciones_tecnicas_objeto_contratacion": "Adquisición de Luminarias LED"}),
         }
         response = client.put(f"/api/borradores/{creado['id']}", json=nuevo_payload)
         assert response.status_code == 200

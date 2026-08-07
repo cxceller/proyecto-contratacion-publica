@@ -18,8 +18,9 @@ siempre muestren los numeros con la misma convencion."""
 def formatear_numero_ec(valor, decimales: int | None = None) -> str:
     """1234567.89 -> "1.234.567,89". Si `decimales` es None, usa 0
     decimales para valores enteros y 2 para valores con parte
-    fraccionaria (mismo criterio que antes usaba _formatear_numero_anexo1
-    para cantidades, pero ahora con separador de miles)."""
+    fraccionaria (mismo criterio que antes usaba
+    _formatear_numero_especificaciones_tecnicas para cantidades, pero
+    ahora con separador de miles)."""
     if valor is None or valor == "":
         return ""
     try:

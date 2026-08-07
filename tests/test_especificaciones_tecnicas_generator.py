@@ -1,5 +1,5 @@
-"""Tests de generar_anexo1() (scripts/anexo1_generator.py): arma el
-.docx del Anexo 1 - Especificaciones Tecnicas directamente (sin pasar por
+"""Tests de generar_especificaciones_tecnicas() (scripts/especificaciones_tecnicas_generator.py):
+arma el .docx de Especificaciones Tecnicas directamente (sin pasar por
 la API ni por Streamlit), inspeccionando el documento resultante con
 python-docx."""
 import base64
@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from docx import Document
 
-from scripts.anexo1_generator import _insertar_html_en_celda, generar_anexo1
+from scripts.especificaciones_tecnicas_generator import _insertar_html_en_celda, generar_especificaciones_tecnicas
 
 
 def _texto_de_celda(celda) -> str:
@@ -73,14 +73,14 @@ def item_servicio():
     }
 
 
-class TestGenerarAnexo1:
+class TestGenerarEspecificacionesTecnicas:
     def test_genera_documento_con_items_bien_y_servicio(self, tmp_path, item_bien, item_servicio):
         datos = {
             "objeto_contratacion": "Adquisicion y mantenimiento de luminarias LED",
             "items": [item_bien, item_servicio],
         }
 
-        ruta = generar_anexo1(datos, tmp_path / "anexo1.docx")
+        ruta = generar_especificaciones_tecnicas(datos, tmp_path / "especificaciones_tecnicas.docx")
 
         assert ruta.exists()
         documento = Document(str(ruta))
@@ -90,7 +90,7 @@ class TestGenerarAnexo1:
         assert "Mantenimiento de luminarias" in texto
 
     def test_item_bien_incluye_tabla_de_parametros(self, tmp_path, item_bien):
-        ruta = generar_anexo1({"objeto_contratacion": "Prueba", "items": [item_bien]}, tmp_path / "anexo1.docx")
+        ruta = generar_especificaciones_tecnicas({"objeto_contratacion": "Prueba", "items": [item_bien]}, tmp_path / "especificaciones_tecnicas.docx")
 
         documento = Document(str(ruta))
         texto = _texto_completo(documento)
@@ -100,8 +100,8 @@ class TestGenerarAnexo1:
         assert "Voltaje" in texto and "110V" in texto
 
     def test_item_servicio_incluye_bloques_de_texto_libre(self, tmp_path, item_servicio):
-        ruta = generar_anexo1(
-            {"objeto_contratacion": "Prueba", "items": [item_servicio]}, tmp_path / "anexo1.docx"
+        ruta = generar_especificaciones_tecnicas(
+            {"objeto_contratacion": "Prueba", "items": [item_servicio]}, tmp_path / "especificaciones_tecnicas.docx"
         )
 
         documento = Document(str(ruta))
@@ -115,7 +115,7 @@ class TestGenerarAnexo1:
         assert "Entregar informe tecnico" in texto
 
     def test_sin_items_genera_documento_valido_solo_con_seccion_legal(self, tmp_path):
-        ruta = generar_anexo1({"objeto_contratacion": "Sin items"}, tmp_path / "anexo1.docx")
+        ruta = generar_especificaciones_tecnicas({"objeto_contratacion": "Sin items"}, tmp_path / "especificaciones_tecnicas.docx")
 
         assert ruta.exists()
         documento = Document(str(ruta))
@@ -124,16 +124,16 @@ class TestGenerarAnexo1:
         assert "PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN" in texto
         assert "FIRMAS DE RESPONSABILIDAD" in texto
 
-    def test_campos_legales_vacios_muestran_placeholder_llenar(self, tmp_path):
-        ruta = generar_anexo1({}, tmp_path / "anexo1.docx")
+    def test_campos_legales_vacios_no_muestran_placeholder(self, tmp_path):
+        ruta = generar_especificaciones_tecnicas({}, tmp_path / "especificaciones_tecnicas.docx")
 
         documento = Document(str(ruta))
         texto = _texto_completo(documento)
-        assert "LLENAR" in texto
+        assert "LLENAR" not in texto
 
     def test_patrimonio_si_incluye_tablas_de_rangos(self, tmp_path):
         datos = {"objeto_contratacion": "Prueba", "patrimonio_aplica": "Sí"}
-        ruta = generar_anexo1(datos, tmp_path / "anexo1.docx")
+        ruta = generar_especificaciones_tecnicas(datos, tmp_path / "especificaciones_tecnicas.docx")
 
         documento = Document(str(ruta))
         texto = _texto_completo(documento)
@@ -142,7 +142,7 @@ class TestGenerarAnexo1:
 
     def test_patrimonio_no_omite_tablas_de_rangos(self, tmp_path):
         datos = {"objeto_contratacion": "Prueba", "patrimonio_aplica": "No"}
-        ruta = generar_anexo1(datos, tmp_path / "anexo1.docx")
+        ruta = generar_especificaciones_tecnicas(datos, tmp_path / "especificaciones_tecnicas.docx")
 
         documento = Document(str(ruta))
         texto = _texto_completo(documento)
@@ -157,7 +157,7 @@ class TestGenerarAnexo1:
                 "aprobado": {"nombre": "Carlos Ruiz", "cargo": "Director", "firmado_por": "CR"},
             },
         }
-        ruta = generar_anexo1(datos, tmp_path / "anexo1.docx")
+        ruta = generar_especificaciones_tecnicas(datos, tmp_path / "especificaciones_tecnicas.docx")
 
         documento = Document(str(ruta))
         texto = _texto_completo(documento)
@@ -173,7 +173,7 @@ class TestGenerarAnexo1:
                 {"cpc": "85111600", "descripcion": "Servicios de mantenimiento"},
             ],
         }
-        ruta = generar_anexo1(datos, tmp_path / "anexo1.docx")
+        ruta = generar_especificaciones_tecnicas(datos, tmp_path / "especificaciones_tecnicas.docx")
 
         documento = Document(str(ruta))
         texto = _texto_completo(documento)
@@ -181,8 +181,8 @@ class TestGenerarAnexo1:
         assert "85111600" in texto and "Servicios de mantenimiento" in texto
 
     def test_ruta_salida_acepta_string(self, tmp_path):
-        ruta_str = str(tmp_path / "anexo1_como_string.docx")
-        ruta = generar_anexo1({"objeto_contratacion": "Prueba"}, ruta_str)
+        ruta_str = str(tmp_path / "especificaciones_tecnicas_como_string.docx")
+        ruta = generar_especificaciones_tecnicas({"objeto_contratacion": "Prueba"}, ruta_str)
 
         assert isinstance(ruta, Path)
         assert ruta.exists()
@@ -206,7 +206,7 @@ class TestGenerarAnexo1:
             "</tbody></table>"
         )
         datos = {"objeto_contratacion": "Prueba", "analisis_estrategia_html": html_tabla}
-        ruta = generar_anexo1(datos, tmp_path / "anexo1.docx")
+        ruta = generar_especificaciones_tecnicas(datos, tmp_path / "especificaciones_tecnicas.docx")
 
         documento = Document(str(ruta))
         tabla_legal = documento.tables[1]
@@ -234,12 +234,12 @@ class TestGenerarAnexo1:
         assert [c.text.strip() for c in tabla_pegada.rows[1].cells][::2] == ["A2", "C2"]
         assert "<pic:pic" in celda_con_imagen._tc.xml
 
-    def test_analisis_estrategia_html_vacio_muestra_llenar(self, tmp_path):
-        ruta = generar_anexo1({"objeto_contratacion": "Prueba"}, tmp_path / "anexo1.docx")
+    def test_analisis_estrategia_html_vacio_no_muestra_placeholder(self, tmp_path):
+        ruta = generar_especificaciones_tecnicas({"objeto_contratacion": "Prueba"}, tmp_path / "especificaciones_tecnicas.docx")
 
         documento = Document(str(ruta))
         texto = _texto_completo(documento)
-        assert "LLENAR" in texto
+        assert "LLENAR" not in texto
 
 
 class TestInsertarHtmlEnCelda:
@@ -268,8 +268,9 @@ class TestInsertarHtmlEnCelda:
         _insertar_html_en_celda(celda, html_irregular)  # no debe lanzar
         assert celda.paragraphs or celda.tables
 
-    def test_html_vacio_resalta_llenar(self):
+    def test_html_vacio_no_agrega_placeholder(self):
         celda = self._celda_vacia()
         _insertar_html_en_celda(celda, "")
         texto = "\n".join(p.text for p in celda.paragraphs)
-        assert "LLENAR" in texto
+        assert "LLENAR" not in texto
+        assert texto.strip() == ""

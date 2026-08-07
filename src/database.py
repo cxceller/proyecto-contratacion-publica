@@ -91,7 +91,7 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_contrataciones_palabra_clave ON contrataciones(palabra_clave)"
         )
 
-        # Borradores del Anexo 1 ("Formularios y Registro" en app_ui.py):
+        # Borradores de Especificaciones Técnicas ("Formularios y Registro" en app_ui.py):
         # antes esos formularios solo vivian en st.session_state y se
         # perdian al cerrar el navegador/reiniciar Streamlit. datos_json
         # guarda TODO el estado persistente del formulario (campos

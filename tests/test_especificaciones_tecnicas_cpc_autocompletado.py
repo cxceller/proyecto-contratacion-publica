@@ -1,12 +1,12 @@
 """Tests del autocompletado de "Descripcion CPC" en la pestana "Items y
-Valores" del Anexo 1 (app_ui.py): al guardar, si el "Numero CPC" de una
+Valores" del Especificaciones Técnicas (app_ui.py): al guardar, si el "Numero CPC" de una
 fila cambio respecto al guardado anterior y el codigo existe en el
 catalogo oficial (data/cpc_n9.csv, SERCOP), se autocompleta la
 descripcion; si no cambio o el codigo no existe, se respeta lo que el
 usuario haya dejado.
 
 La identidad de "la misma fila" entre un guardado y el siguiente se
-rastrea con "_fila_id" (ver _asignar_fila_ids_anexo1), NO con la
+rastrea con "_fila_id" (ver _asignar_fila_ids_especificaciones_tecnicas), NO con la
 posicion/indice: num_rows="dynamic" permite borrar una fila de la mitad
 de la tabla, lo que corre de posicion a todas las filas siguientes sin
 que hayan cambiado en nada -- una primera version de este autocompletado
@@ -14,7 +14,7 @@ comparaba por posicion y por eso sobreescribia mal la descripcion en ese
 escenario (test_borrar_fila_del_medio_no_reescribe_las_que_no_cambiaron)."""
 import pandas as pd
 
-from app_ui import _asignar_fila_ids_anexo1, _autocompletar_descripcion_cpc, _cargar_catalogo_cpc
+from app_ui import _asignar_fila_ids_especificaciones_tecnicas, _autocompletar_descripcion_cpc, _cargar_catalogo_cpc
 
 
 def _df_items(filas: list[dict]) -> pd.DataFrame:
@@ -25,7 +25,7 @@ def _df_items(filas: list[dict]) -> pd.DataFrame:
 class _SessionStateFalso(dict):
     """st.session_state real soporta tanto acceso tipo dict como tipo
     atributo; un dict comun no soporta lo segundo, asi que estas pruebas
-    de _asignar_fila_ids_anexo1 (que usa `st.session_state.x += 1`)
+    de _asignar_fila_ids_especificaciones_tecnicas (que usa `st.session_state.x += 1`)
     necesitan un doble minimo que soporte ambos."""
 
     def __getattr__(self, nombre):
@@ -50,7 +50,7 @@ class TestAsignarFilaIds:
     def test_filas_sin_id_reciben_uno_nuevo_y_no_se_repiten(self, monkeypatch):
         import streamlit as st
 
-        monkeypatch.setattr(st, "session_state", _SessionStateFalso(anexo1_siguiente_fila_id=0), raising=False)
+        monkeypatch.setattr(st, "session_state", _SessionStateFalso(especificaciones_tecnicas_siguiente_fila_id=0), raising=False)
         df = _df_items(
             [
                 {"Ítem": 1, "Tipo": "Bien", "Descripción": "A", "Número CPC": "", "Descripción CPC": "", "_fila_id": pd.NA},
@@ -58,7 +58,7 @@ class TestAsignarFilaIds:
             ]
         )
 
-        resultado = _asignar_fila_ids_anexo1(df)
+        resultado = _asignar_fila_ids_especificaciones_tecnicas(df)
 
         assert resultado["_fila_id"].notna().all()
         assert resultado["_fila_id"].nunique() == 2
@@ -66,10 +66,10 @@ class TestAsignarFilaIds:
     def test_filas_con_id_existente_lo_conservan(self, monkeypatch):
         import streamlit as st
 
-        monkeypatch.setattr(st, "session_state", _SessionStateFalso(anexo1_siguiente_fila_id=5), raising=False)
+        monkeypatch.setattr(st, "session_state", _SessionStateFalso(especificaciones_tecnicas_siguiente_fila_id=5), raising=False)
         df = _df_items([{"Ítem": 1, "Tipo": "Bien", "Descripción": "A", "Número CPC": "", "Descripción CPC": "", "_fila_id": 3}])
 
-        resultado = _asignar_fila_ids_anexo1(df)
+        resultado = _asignar_fila_ids_especificaciones_tecnicas(df)
 
         assert resultado.loc[0, "_fila_id"] == 3
 
