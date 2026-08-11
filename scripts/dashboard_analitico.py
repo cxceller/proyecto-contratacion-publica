@@ -18,6 +18,7 @@ COLUMNAS_TREEMAP_PRESUPUESTO = ["tipo_compra", "estado", "presupuesto_referencia
 COLUMNAS_GANTT_PROCESOS = [
     "codigo", "entidad_contratante", "objeto_proceso", "estado", "etiqueta", "inicio", "fin", "dias_transcurridos",
 ]
+COLUMNAS_TREEMAP_ITEMS = ["descripcion", "valor_total"]
 
 
 def construir_datos_treemap_presupuesto(df: pd.DataFrame) -> pd.DataFrame:
@@ -45,6 +46,31 @@ def construir_datos_treemap_presupuesto(df: pd.DataFrame) -> pd.DataFrame:
     # treemap -- Plotly lo descarta con un warning en consola.
     resumen = resumen[resumen["presupuesto_referencial"] > 0].reset_index(drop=True)
     return resumen
+
+
+def construir_datos_treemap_items(df_items: pd.DataFrame) -> pd.DataFrame:
+    """Agrupa los items de Especificaciones Técnicas (columnas "Descripción"/"Valor Total" de
+    `st.session_state.especificaciones_tecnicas_items_df`, ya con "Valor Total" recalculado --
+    ver `_recalcular_items_especificaciones_tecnicas` en app_ui.py) por descripcion, para el
+    treemap de distribucion del presupuesto DENTRO de un unico documento
+    de Especificaciones Técnicas (a diferencia de `construir_datos_treemap_presupuesto`, que
+    agrega presupuesto entre procesos ya guardados). Requiere las columnas
+    "Descripción" y "Valor Total"; si faltan o el DataFrame esta vacio,
+    devuelve un DataFrame vacio con las columnas esperadas."""
+    if df_items is None or df_items.empty:
+        return pd.DataFrame(columns=COLUMNAS_TREEMAP_ITEMS)
+    if not {"Descripción", "Valor Total"}.issubset(df_items.columns):
+        return pd.DataFrame(columns=COLUMNAS_TREEMAP_ITEMS)
+
+    datos = pd.DataFrame(
+        {
+            "descripcion": df_items["Descripción"].fillna("").astype(str).str.strip(),
+            "valor_total": pd.to_numeric(df_items["Valor Total"], errors="coerce").fillna(0),
+        }
+    )
+    datos = datos[(datos["descripcion"] != "") & (datos["valor_total"] > 0)]
+    resumen = datos.groupby("descripcion", as_index=False).agg(valor_total=("valor_total", "sum"))
+    return resumen.reset_index(drop=True)
 
 
 def _etiqueta_gantt(codigo: str, objeto_proceso: str, longitud: int = 40) -> str:

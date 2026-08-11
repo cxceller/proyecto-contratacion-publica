@@ -19,6 +19,9 @@ page_dump.png
 # Capturas de pantalla por pagina generadas por scripts/scrape_portal.py
 capturas/
 
+# Logs de cada corrida de Importación SERCOP (ver _iniciar_importacion_sercop en app_ui.py)
+logs/
+
 # Documentos Word generados manualmente al probar la app (reportes, Anexo 1)
 /*.docx
 

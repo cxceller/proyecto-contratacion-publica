@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 from datetime import date, datetime
 from pathlib import Path
@@ -66,6 +67,7 @@ from scripts.especificaciones_tecnicas_generator import (
 )
 from scripts.dashboard_analitico import (
     construir_datos_gantt_procesos,
+    construir_datos_treemap_items,
     construir_datos_treemap_presupuesto,
 )
 from scripts.formato_ec import formatear_moneda_ec, formatear_numero_ec
@@ -101,6 +103,41 @@ NAV_ITEMS = [
     ("Municipalidad de Guayaquil", ":material/location_city:"),
     ("Configuración", ":material/settings:"),
 ]
+
+# Nombre de pagina para la vista dedicada de Importación SERCOP -- vive
+# fuera de NAV_ITEMS (se renderiza aparte, debajo de un st.divider() propio
+# en el sidebar, ver render_importacion_sercop_sidebar) pero participa del
+# mismo mecanismo de enrutado session_state.pagina_activa + st.rerun() que
+# usa render_navegacion_sidebar para el resto de items.
+PAGINA_IMPORTACION_SERCOP = "Importación SERCOP"
+
+# Carpeta donde _iniciar_importacion_sercop() redirige el stdout/stderr de
+# scripts/scrape_portal.py: es la unica forma de que la UI sepa despues
+# cuantos registros se importaron o si el proceso fallo, ya que corre
+# desacoplado (subprocess.Popen) del hilo de Streamlit.
+DIRECTORIO_LOGS_IMPORTACION_SERCOP = Path(__file__).resolve().parent / "logs"
+
+# Umbral, en segundos, a partir del cual render_pagina_importacion_sercop
+# avisa que la importacion esta tardando de mas -- NO mata el proceso
+# automaticamente (el usuario puede seguir interactuando con el CAPTCHA en
+# la ventana de Chromium), solo hace visible que algo puede haberse
+# atascado. 10 minutos es holgado frente al caso normal (ESPERA_POR_DEFECTO_S
+# = 90s de espera al captcha en scrape_portal.py + tiempo de paginar hasta
+# MAX_PAGINAS=50 resultados).
+TIMEOUT_AVISO_IMPORTACION_SERCOP_S = 600
+
+# Cada cuantos segundos la vista de Importación SERCOP se refresca sola
+# (time.sleep + st.rerun()) mientras el proceso sigue corriendo, para no
+# depender de que el usuario haga clic manualmente en "Actualizar estado".
+INTERVALO_AUTOREFRESCO_IMPORTACION_SERCOP_S = 3
+
+# Coincide con la linea final que imprime scripts/scrape_portal.py al
+# terminar sin errores (ver la funcion main() de ese script) -- SIN tildes,
+# tal como la imprime el script real.
+PATRON_RESUMEN_IMPORTACION_SERCOP = re.compile(
+    r"Busqueda completa: (\d+) registro\(s\) insertado\(s\) en (\d+) pagina\(s\) de resultados, "
+    r"(\d+) omitido\(s\) por error de validacion"
+)
 
 # Nombre exacto de la Entidad Contratante para la seccion "Municipalidad
 # de Guayaquil" (verificado contra la base real: un unico valor de
@@ -888,6 +925,83 @@ def render_treemap_presupuesto_tipo(df: pd.DataFrame):
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+@st.cache_data(show_spinner=False)
+def _construir_datos_treemap_items_cacheado(df_items: pd.DataFrame) -> pd.DataFrame:
+    """Wrapper cacheado (@st.cache_data) sobre `construir_datos_treemap_items`
+    (scripts/dashboard_analitico.py, sin Streamlit -- mismo motivo que
+    _recalcular_items_especificaciones_tecnicas): el treemap se vuelve a dibujar en cada
+    rerun del Dashboard Analítico sobre el mismo
+    st.session_state.especificaciones_tecnicas_items_df, asi que sin cache se reagruparia
+    identico varias veces por script run."""
+    return construir_datos_treemap_items(df_items)
+
+
+def render_treemap_items_especificaciones_tecnicas(df_items: pd.DataFrame) -> None:
+    """Treemap de la distribucion del presupuesto DENTRO del documento de
+    Especificaciones Técnicas actualmente cargado en el formulario (columna "Descripción"
+    para las cajas, "Valor Total" como area/tamaño de cada una -- el color
+    se asigna por Descripción, no por escala continua de Valor Total: ver
+    el comentario junto a root_color en el cuerpo de la funcion) -- a
+    diferencia de `render_treemap_presupuesto_tipo`, que agrega presupuesto
+    entre procesos ya guardados, este lee directo de
+    st.session_state.especificaciones_tecnicas_items_df (el mismo dataframe editable en
+    la seccion "Ítems y Presupuesto"), asi que refleja los items que se
+    esten cargando en ese momento, incluso antes de guardar el borrador.
+
+    Fondo transparente (paper_bgcolor/plot_bgcolor="rgba(0,0,0,0)") en vez
+    del lienzo blanco solido de `_aplicar_estilo_base`: la app fuerza tema
+    claro con fondo blanco (.streamlit/config.toml), asi que el resultado
+    visual es identico a un lienzo blanco, pero deja que el rectangulo se
+    integre con el fondo real del contenedor (tarjeta neumorfista) en vez
+    de dibujar un bloque blanco propio encima."""
+    st.markdown("**Presupuesto por Ítem del documento actual de Especificaciones Técnicas (treemap)**")
+    st.caption(
+        "Se arma en vivo con los ítems cargados ahora mismo en la sección "
+        "'Ítems y Presupuesto' de Especificaciones Técnicas (Municipalidad de Guayaquil) -- "
+        "no depende de haber guardado el borrador."
+    )
+    resumen = _construir_datos_treemap_items_cacheado(df_items)
+    if resumen.empty:
+        st.info(
+            "No hay ítems con Descripción y Valor Total cargados todavía en "
+            "Especificaciones Técnicas para graficar."
+        )
+        return
+
+    fig = px.treemap(
+        resumen,
+        path=["descripcion"],
+        values="valor_total",
+        color="descripcion",
+        color_discrete_sequence=PALETA_VIVA,
+    )
+    fig.update_traces(
+        texttemplate="<b>%{label}</b><br>$ %{value:,.2f}",
+        textfont=dict(size=13, color="#FFFFFF"),
+        marker=dict(line=dict(width=0)),  # sin bordes duros entre cajas
+        hovertemplate="<b>%{label}</b><br>Valor Total: $ %{value:,.2f}<extra></extra>",
+        # root_color es un no-op con color_continuous_scale (el tile raiz
+        # queda en el gris rgb(68,68,68) por defecto de Plotly pase lo que
+        # pase -- comportamiento documentado, no un bug de esta app), asi
+        # que el color se asigna por categoria (color_discrete_sequence,
+        # mismo patron que render_treemap_provincia_estado/
+        # render_treemap_presupuesto_tipo) en vez de por escala continua de
+        # Valor Total; el tamaño de cada caja SI sigue siendo Valor Total
+        # (values="valor_total"). Con color discreto, root_color si aplica.
+        root_color=COLOR_LIENZO,
+    )
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),
+        margin=dict(l=10, r=10, t=20, b=10),
+        height=480,
+        showlegend=False,
+        separators=",.",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
 def render_gantt_procesos(df: pd.DataFrame, limite: int = 25):
     """Gantt (linea de tiempo horizontal) de los procesos con fecha de
     publicacion mas reciente: cada barra va de su `fecha_publicacion` hasta
@@ -1397,6 +1511,24 @@ def _inyectar_estilos_sidebar() -> None:
         [data-testid="stSidebar"] hr {{
             border-color: rgba(255, 255, 255, 0.12);
         }}
+        /* Mitiga el flash de texto crudo del nombre del icono (ej.
+        "travel_explore") pegado a la etiqueta del boton en la carga
+        inicial: la fuente de iconos (Material Symbols) ya se carga con
+        font-display:block (invisible mientras carga), pero ese periodo
+        "block" dura ~3s segun especificacion -- pasado ese tiempo sin
+        cargar, el navegador cae a una fuente de reemplazo que SI muestra
+        el nombre del icono como texto. Retrasar la aparicion de todo el
+        contenido del sidebar unos milisegundos (fade-in con
+        animation-delay, sin JS) le da a esa fuente, servida por el propio
+        Streamlit (mismo origen, sin dependencia de un CDN externo), tiempo
+        de sobra para llegar antes de que se pinte cualquier texto. */
+        @keyframes sercop-sidebar-fade-in {{
+            from {{ opacity: 0; }}
+            to {{ opacity: 1; }}
+        }}
+        [data-testid="stSidebarUserContent"] {{
+            animation: sercop-sidebar-fade-in 0.2s ease-in 0.3s both;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -1444,23 +1576,212 @@ def render_navegacion_sidebar() -> None:
         render_importacion_sercop_sidebar()
 
 
-def render_importacion_sercop_sidebar() -> None:
-    """Seccion "Importación SERCOP" del menu lateral: lanza
-    scripts/scrape_portal.py (ventana visible de Chromium, CAPTCHA resuelto
-    a mano por el usuario -- ver el modelo hibrido local documentado en el
-    propio script) en un proceso aparte con subprocess.Popen, para no
+def _iniciar_importacion_sercop() -> None:
+    """Lanza scripts/scrape_portal.py (ventana visible de Chromium, CAPTCHA
+    resuelto a mano por el usuario -- modelo hibrido local documentado en
+    el propio script) en un proceso aparte con subprocess.Popen, para no
     bloquear el hilo principal de Streamlit mientras el usuario completa la
-    busqueda en el portal."""
+    busqueda en el portal. A diferencia de la version anterior (que lanzaba
+    el proceso "a ciegas", sin redirigir su salida), aca el stdout/stderr
+    se redirige a un archivo en DIRECTORIO_LOGS_IMPORTACION_SERCOP: es la
+    unica forma de que render_pagina_importacion_sercop sepa despues cuantos
+    registros se importaron o si el script fallo, ya que el proceso corre
+    desacoplado de este hilo. El Popen y la ruta del log quedan en
+    session_state para que esa vista pueda consultarlos en cada rerun."""
+    DIRECTORIO_LOGS_IMPORTACION_SERCOP.mkdir(parents=True, exist_ok=True)
+    marca_tiempo = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = DIRECTORIO_LOGS_IMPORTACION_SERCOP / f"importacion_{marca_tiempo}.log"
+    # Cerrar nuestro extremo del archivo apenas se lanza el proceso es
+    # seguro: subprocess.Popen duplica el descriptor/handle para el
+    # proceso hijo (tanto en Windows como en POSIX), asi que scrape_portal.py
+    # sigue escribiendo en el mismo archivo aunque este bloque `with` ya
+    # haya cerrado nuestra copia del handle.
+    with open(log_path, "w", encoding="utf-8") as log_file:
+        proceso = subprocess.Popen(
+            [sys.executable, "scripts/scrape_portal.py"],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+    st.session_state.sercop_import_proceso = proceso
+    st.session_state.sercop_import_log_path = str(log_path)
+    st.session_state.sercop_import_inicio = time.time()
+
+
+def _leer_resumen_log_importacion_sercop(log_path: str) -> tuple[int, int, int] | None:
+    """Busca en el log de la corrida la linea final que imprime
+    scripts/scrape_portal.py al terminar sin errores ("Busqueda completa: N
+    registro(s)...", ver PATRON_RESUMEN_IMPORTACION_SERCOP) y devuelve
+    (importados, paginas, con_error). Devuelve None si el proceso todavia
+    no llego a esa linea -- aun corriendo, o termino (con o sin error) sin
+    imprimirla, por ejemplo si la ventana de Chromium se cerro manualmente
+    antes de tiempo."""
+    try:
+        contenido = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return None
+    coincidencia = PATRON_RESUMEN_IMPORTACION_SERCOP.search(contenido)
+    if not coincidencia:
+        return None
+    importados, paginas, con_error = (int(grupo) for grupo in coincidencia.groups())
+    return importados, paginas, con_error
+
+
+def _leer_cola_log_importacion_sercop(log_path: str, lineas: int = 40) -> str:
+    """Ultimas `lineas` del log de la corrida, para el expander de
+    diagnostico que se muestra mientras corre, si tarda de mas, o si
+    termina con error o sin el resumen esperado."""
+    try:
+        contenido = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return "(el archivo de log todavía no existe)"
+    return "\n".join(contenido.splitlines()[-lineas:]) or "(el log está vacío por ahora)"
+
+
+def _formatear_duracion_es(segundos: float) -> str:
+    segundos = max(0, int(segundos))
+    minutos, resto = divmod(segundos, 60)
+    if minutos == 0:
+        return f"{resto} s"
+    return f"{minutos} min {resto} s"
+
+
+def render_importacion_sercop_sidebar() -> None:
+    """Seccion "Importación SERCOP" del menu lateral: dispara
+    _iniciar_importacion_sercop() y navega a la vista dedicada
+    (render_pagina_importacion_sercop), con el mismo patron
+    session_state.pagina_activa + st.rerun() que usa render_navegacion_sidebar
+    para el resto de items. Antes, este boton solo lanzaba el proceso "a
+    ciegas" y mostraba un st.toast que desaparecia solo a los pocos
+    segundos, sin cambiar de pagina ni dejar ningun rastro visible del
+    resultado (exito, cuantos registros, o si fallo)."""
     with st.sidebar:
         st.divider()
         st.caption("IMPORTACIÓN SERCOP")
+        activo = st.session_state.pagina_activa == PAGINA_IMPORTACION_SERCOP
         if st.button(
             ":material/travel_explore: Importar desde Portal SERCOP",
             key="sercop_importar_boton",
             use_container_width=True,
+            type="primary" if activo else "secondary",
         ):
-            subprocess.Popen([sys.executable, "scripts/scrape_portal.py"])
-            st.toast("Se abrió una ventana de Chromium para completar la búsqueda.")
+            _iniciar_importacion_sercop()
+            st.session_state.pagina_activa = PAGINA_IMPORTACION_SERCOP
+            st.rerun()
+
+
+def render_pagina_importacion_sercop() -> None:
+    """Vista dedicada de la Importación SERCOP: estado del proceso lanzado
+    por _iniciar_importacion_sercop() (cargando / éxito / advertencia /
+    error), con el resumen final que imprime scripts/scrape_portal.py y la
+    cola del log para diagnostico. Antes de esto no existia ninguna vista
+    para este proceso -- el boton del sidebar lanzaba el scraper pero el
+    panel principal se quedaba en la pagina anterior (Dashboard/Procesos)
+    sin ningun indicio de que algo estaba corriendo."""
+    st.header(":material/travel_explore: Importación SERCOP")
+    st.caption(
+        "Abre una ventana de Chromium contra el buscador de procesos del portal SERCOP. "
+        "Completa los filtros, resuelve el CAPTCHA y presiona 'Buscar' en la propia ventana -- "
+        "esta página no interviene en eso, solo importa los resultados una vez que aparecen."
+    )
+
+    proceso = st.session_state.get("sercop_import_proceso")
+    if proceso is None:
+        st.info(
+            "Todavía no se ha iniciado ninguna importación en esta sesión. Usa el botón "
+            "'Importar desde Portal SERCOP' del menú lateral, o el botón de abajo, para empezar."
+        )
+        if st.button(":material/play_arrow: Iniciar importación", key="sercop_import_iniciar_pagina"):
+            _iniciar_importacion_sercop()
+            st.rerun()
+        return
+
+    log_path: str = st.session_state.sercop_import_log_path
+    inicio: float = st.session_state.sercop_import_inicio
+    transcurrido_s = time.time() - inicio
+    codigo_salida = proceso.poll()  # None mientras el proceso sigue vivo
+
+    if codigo_salida is None:
+        st.info(
+            f":material/hourglass_top: Importación en curso desde hace "
+            f"{_formatear_duracion_es(transcurrido_s)}. Completa el CAPTCHA y la búsqueda en la "
+            "ventana de Chromium que se abrió -- esta vista se actualiza sola."
+        )
+        if transcurrido_s > TIMEOUT_AVISO_IMPORTACION_SERCOP_S:
+            st.warning(
+                f":material/warning: Lleva más de {TIMEOUT_AVISO_IMPORTACION_SERCOP_S // 60} minutos "
+                "corriendo -- revisa si la ventana de Chromium sigue esperando una acción tuya "
+                "(CAPTCHA, botón 'Buscar') o si quedó bloqueada. Puedes detener el proceso abajo "
+                "y volver a intentarlo; el proceso NO se cancela solo."
+            )
+
+        col_actualizar, col_detener = st.columns(2)
+        with col_actualizar:
+            if st.button(
+                ":material/refresh: Actualizar estado", key="sercop_import_actualizar", use_container_width=True
+            ):
+                st.rerun()
+        with col_detener:
+            if st.button(
+                ":material/stop_circle: Detener proceso", key="sercop_import_detener", use_container_width=True
+            ):
+                proceso.terminate()
+                st.warning(
+                    "Se envió la señal de detener el proceso -- puede tardar unos segundos en "
+                    "cerrarse. Si la ventana de Chromium sigue abierta, ciérrala manualmente."
+                )
+                st.rerun()
+
+        with st.expander("Ver log de la importación"):
+            st.code(_leer_cola_log_importacion_sercop(log_path), language=None)
+
+        # Auto-refresco: mientras el proceso siga corriendo, esta vista se
+        # vuelve a ejecutar sola cada INTERVALO_AUTOREFRESCO_IMPORTACION_SERCOP_S
+        # segundos, sin depender de que el usuario haga clic manualmente en
+        # "Actualizar estado". st.rerun() interrumpe la ejecucion con una
+        # excepcion, asi que nada despues de esta linea llega a correr; si
+        # el usuario interactua con otro elemento (ej. navega a otra
+        # pagina) mientras tanto, Streamlit cancela este rerun en curso y
+        # atiende esa interaccion primero -- la espera de aca no bloquea la
+        # navegacion mas que el intervalo configurado.
+        time.sleep(INTERVALO_AUTOREFRESCO_IMPORTACION_SERCOP_S)
+        st.rerun()
+
+    resumen = _leer_resumen_log_importacion_sercop(log_path)
+
+    if codigo_salida == 0 and resumen is not None:
+        importados, paginas, con_error = resumen
+        if importados > 0:
+            st.success(
+                f":material/check_circle: Importación completa en "
+                f"{_formatear_duracion_es(transcurrido_s)}: {importados} registro(s) insertado(s) en "
+                f"{paginas} página(s) de resultados."
+            )
+        else:
+            st.warning(
+                ":material/info: La importación terminó sin errores, pero no se insertó ningún "
+                "registro -- revisa si la búsqueda en el portal llegó a mostrar resultados antes "
+                "de que el proceso terminara."
+            )
+        if con_error:
+            st.caption(f"{con_error} registro(s) se omitieron por error de validación (ver log).")
+    elif codigo_salida == 0:
+        st.warning(
+            ":material/info: El proceso terminó sin errores, pero no se encontró el resumen "
+            "esperado en el log -- puede que la ventana se haya cerrado manualmente antes de "
+            "tiempo. Revisa el log de abajo para más detalle."
+        )
+    else:
+        st.error(
+            f":material/error: La importación falló (el proceso terminó con código de salida "
+            f"{codigo_salida}). Revisa el log de abajo para ver el error exacto."
+        )
+
+    with st.expander("Ver log de la importación", expanded=codigo_salida != 0):
+        st.code(_leer_cola_log_importacion_sercop(log_path), language=None)
+
+    if st.button(":material/refresh: Iniciar nueva importación", key="sercop_import_reiniciar"):
+        _iniciar_importacion_sercop()
+        st.rerun()
 
 
 def render_pagina_dashboard(registros_totales: list[dict]) -> None:
@@ -1476,13 +1797,14 @@ def render_pagina_dashboard(registros_totales: list[dict]) -> None:
     df_filtrado = render_filtros_dashboard(df_totales)
     render_kpis_dashboard(df_filtrado)
 
-    tab_mensual, tab_provincia, tab_treemap, tab_resumen, tab_presupuesto, tab_gantt = st.tabs(
+    tab_mensual, tab_provincia, tab_treemap, tab_resumen, tab_presupuesto, tab_items, tab_gantt = st.tabs(
         [
             ":material/calendar_month: Ver detalle por mes",
             ":material/location_on: Ver detalle por provincia",
             ":material/account_tree: Ver Provincia → Estado",
             ":material/receipt_long: Ver resumen por estado y tipo de compra",
             ":material/payments: Presupuesto por Tipo (Treemap)",
+            ":material/inventory_2: Presupuesto por Ítem (Especificaciones Técnicas)",
             ":material/timeline: Cronograma de Procesos (Gantt)",
         ]
     )
@@ -1497,6 +1819,10 @@ def render_pagina_dashboard(registros_totales: list[dict]) -> None:
         render_tablas_resumen(df_filtrado)
     with tab_presupuesto:
         render_treemap_presupuesto_tipo(df_filtrado)
+    with tab_items:
+        render_treemap_items_especificaciones_tecnicas(
+            st.session_state.get("especificaciones_tecnicas_items_df", _dataframe_items_especificaciones_tecnicas_vacio())
+        )
     with tab_gantt:
         render_gantt_procesos(df_filtrado)
 
@@ -3500,6 +3826,8 @@ def main():
         render_pagina_municipalidad_guayaquil(registros)
     elif pagina == "Configuración":
         render_pagina_configuracion()
+    elif pagina == PAGINA_IMPORTACION_SERCOP:
+        render_pagina_importacion_sercop()
 
 
 if __name__ == "__main__":

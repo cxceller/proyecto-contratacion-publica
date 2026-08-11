@@ -10,8 +10,10 @@ import pytest
 
 from scripts.dashboard_analitico import (
     COLUMNAS_GANTT_PROCESOS,
+    COLUMNAS_TREEMAP_ITEMS,
     COLUMNAS_TREEMAP_PRESUPUESTO,
     construir_datos_gantt_procesos,
+    construir_datos_treemap_items,
     construir_datos_treemap_presupuesto,
 )
 
@@ -93,6 +95,56 @@ class TestConstruirDatosTreemapPresupuesto:
         df["presupuesto_referencial"] = df["presupuesto_referencial"].astype(object)
         df.loc[0, "presupuesto_referencial"] = "no-es-un-numero"
         resultado = construir_datos_treemap_presupuesto(df)
+        assert resultado is not None  # no debe lanzar excepcion
+
+
+def _df_items_especificaciones_tecnicas() -> pd.DataFrame:
+    """DataFrame como st.session_state.especificaciones_tecnicas_items_df tras
+    _recalcular_items_especificaciones_tecnicas() en app_ui.py."""
+    return pd.DataFrame(
+        [
+            {"Ítem": 1, "Descripción": "Laptop core i7", "Valor Total": 1200.0},
+            {"Ítem": 2, "Descripción": "Laptop core i7", "Valor Total": 800.0},
+            {"Ítem": 3, "Descripción": "Mouse inalámbrico", "Valor Total": 50.0},
+            {"Ítem": 4, "Descripción": "", "Valor Total": 0.0},
+        ]
+    )
+
+
+class TestConstruirDatosTreemapItems:
+    def test_dataframe_vacio_devuelve_dataframe_vacio_con_columnas(self):
+        resultado = construir_datos_treemap_items(pd.DataFrame())
+        assert resultado is not None
+        assert resultado.empty
+        assert list(resultado.columns) == COLUMNAS_TREEMAP_ITEMS
+
+    def test_none_devuelve_dataframe_vacio_con_columnas(self):
+        resultado = construir_datos_treemap_items(None)
+        assert resultado is not None
+        assert resultado.empty
+        assert list(resultado.columns) == COLUMNAS_TREEMAP_ITEMS
+
+    def test_columnas_faltantes_devuelve_dataframe_vacio(self):
+        resultado = construir_datos_treemap_items(pd.DataFrame({"otra_columna": [1, 2]}))
+        assert resultado is not None
+        assert resultado.empty
+        assert list(resultado.columns) == COLUMNAS_TREEMAP_ITEMS
+
+    def test_agrupa_por_descripcion_sumando_valor_total(self):
+        resultado = construir_datos_treemap_items(_df_items_especificaciones_tecnicas())
+        fila = resultado[resultado["descripcion"] == "Laptop core i7"].iloc[0]
+        assert fila["valor_total"] == 2000.0
+
+    def test_excluye_filas_con_descripcion_o_valor_vacio(self):
+        resultado = construir_datos_treemap_items(_df_items_especificaciones_tecnicas())
+        assert "" not in resultado["descripcion"].tolist()
+        assert not (resultado["valor_total"] <= 0).any()
+
+    def test_valor_total_no_numerico_no_rompe_y_se_trata_como_cero(self):
+        df = _df_items_especificaciones_tecnicas()
+        df["Valor Total"] = df["Valor Total"].astype(object)
+        df.loc[0, "Valor Total"] = "no-es-un-numero"
+        resultado = construir_datos_treemap_items(df)
         assert resultado is not None  # no debe lanzar excepcion
 
 
