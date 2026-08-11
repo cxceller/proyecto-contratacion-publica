@@ -11,6 +11,8 @@ import io
 import json
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import unicodedata
 from datetime import date, datetime
@@ -93,11 +95,11 @@ COLOR_NEUTRO_BORDE = "#E2E8F0"
 COLOR_NEUTRO_TEXTO_SUAVE = "#64748B"
 
 NAV_ITEMS = [
-    ("Dashboard", "📊"),
-    ("Procesos", "📋"),
-    ("Reportes", "📄"),
-    ("Municipalidad de Guayaquil", "🏙️"),
-    ("Configuración", "⚙️"),
+    ("Dashboard", ":material/monitoring:"),
+    ("Procesos", ":material/assignment:"),
+    ("Reportes", ":material/description:"),
+    ("Municipalidad de Guayaquil", ":material/location_city:"),
+    ("Configuración", ":material/settings:"),
 ]
 
 # Nombre exacto de la Entidad Contratante para la seccion "Municipalidad
@@ -234,8 +236,12 @@ CAPITALES_PROVINCIA = {
 GEOJSON_PROVINCIAS_PATH = Path(__file__).resolve().parent / "data" / "provincias_ecuador.geojson"
 
 
-@st.cache_data
+@st.cache_data(ttl=86400, show_spinner=False)
 def cargar_geojson_provincias() -> dict:
+    """Archivo geografico estatico (limites provinciales, no cambia en
+    tiempo de ejecucion): ttl=86400 igual que _cargar_catalogo_cpc.
+    show_spinner=False porque se llama dentro de la pestaña "Ver detalle
+    por provincia" del dashboard, a mitad de pagina ya renderizada."""
     with open(GEOJSON_PROVINCIAS_PATH, encoding="utf-8") as f:
         return json.load(f)
 
@@ -401,9 +407,18 @@ def extraer_tipo_compra(objeto_proceso: str) -> str:
     return _normalizar_texto_provincia(primera_palabra).capitalize()
 
 
+@st.cache_data(show_spinner=False)
 def preparar_dataframe(registros: list[dict]) -> pd.DataFrame:
     """Construye el DataFrame base del dashboard analitico: parsea fecha de
-    publicacion en año/mes y deriva el 'tipo de compra' del objeto."""
+    publicacion en año/mes y deriva el 'tipo de compra' del objeto.
+
+    Cacheada (@st.cache_data): funcion pura sobre `registros` (misma
+    lista -> mismo DataFrame), pero re-ejecuta el parseo de fechas y el
+    .apply() de extraer_tipo_compra/extraer_provincia sobre TODOS los
+    registros en cada rerun del dashboard (ej. al cambiar el filtro de
+    Año/Mes/Provincia, que no cambia `registros` en si). show_spinner=False
+    porque se llama a mitad de render_pagina_dashboard, despues de los
+    contadores ya visibles."""
     df = pd.DataFrame(registros)
     if df.empty:
         return df
@@ -452,7 +467,7 @@ def render_filtros_dashboard(df: pd.DataFrame) -> pd.DataFrame:
 
     with col4:
         st.write("")  # alinea verticalmente el boton con los selectbox de arriba
-        if st.button("🧹 Limpiar filtros", key="dashboard_limpiar_filtros", use_container_width=True):
+        if st.button(":material/filter_alt_off: Limpiar filtros", key="dashboard_limpiar_filtros", use_container_width=True):
             for clave in CLAVES_FILTRO_DASHBOARD:
                 st.session_state.pop(clave, None)
             st.rerun()
@@ -1061,7 +1076,7 @@ def render_tabla_con_color(registros: list[dict]):
     }
 
     st.caption(
-        "💡 Las celdas con texto largo (ej. Objeto del Proceso) se truncan con "
+        ":material/lightbulb: Las celdas con texto largo (ej. Objeto del Proceso) se truncan con "
         "\"…\": pasa el cursor sobre la celda o haz clic para ver el texto completo."
     )
     st.dataframe(
@@ -1073,7 +1088,7 @@ def render_tabla_con_color(registros: list[dict]):
     )
 
     st.download_button(
-        label="⬇ Descargar tabla (CSV)",
+        label=":material/download: Descargar tabla (CSV)",
         data=csv_bytes,
         file_name=f"contrataciones_{date.today().isoformat()}.csv",
         mime="text/csv",
@@ -1116,7 +1131,7 @@ def render_generador_reportes():
     """Seccion 'Generación de Reportes Automáticos': arma el payload y
     llama a POST /api/generar-reporte (src/api_reportes.py), que devuelve
     el .docx generado por scripts/report_generator.py."""
-    st.subheader("📄 Generación de Reportes Automáticos")
+    st.subheader(":material/description: Generación de Reportes Automáticos")
     st.caption(
         "Genera un informe Word (.docx) con las capturas de pantalla y la "
         "tabla de procesos de una o varias palabras clave."
@@ -1131,7 +1146,7 @@ def render_generador_reportes():
         "reportes_fecha_fin",
         "reportes_lote_id",
     ]
-    if st.button("🧹 Limpiar filtros", key="reportes_limpiar_filtros"):
+    if st.button(":material/filter_alt_off: Limpiar filtros", key="reportes_limpiar_filtros"):
         for clave in claves_filtro_reportes:
             st.session_state.pop(clave, None)
         st.rerun()
@@ -1162,7 +1177,7 @@ def render_generador_reportes():
                     "scraping/importación en vez de todo el rango de fechas."
                 ),
             )
-        enviado = st.form_submit_button("📝 Generar Reporte Word", type="primary", use_container_width=True)
+        enviado = st.form_submit_button(":material/edit_document: Generar Reporte Word", type="primary", use_container_width=True)
 
     if enviado:
         palabras_clave = [p.strip() for p in palabras_clave_texto.split(",") if p.strip()]
@@ -1209,7 +1224,7 @@ def render_generador_reportes():
 
     if st.session_state.reporte_docx_bytes:
         st.download_button(
-            label="⬇ Descargar Reporte_SERCOP.docx",
+            label=":material/download: Descargar Reporte_SERCOP.docx",
             data=st.session_state.reporte_docx_bytes,
             file_name="Reporte_SERCOP.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1242,7 +1257,7 @@ def render_contadores(registros_totales: list[dict]):
 
 def render_vaciar_base_datos():
     st.divider()
-    st.subheader("⚠️ Zona de peligro")
+    st.subheader(":material/warning: Zona de peligro")
 
     if "confirmar_vaciado" not in st.session_state:
         st.session_state.confirmar_vaciado = False
@@ -1256,7 +1271,7 @@ def render_vaciar_base_datos():
     with st.container(key="zona_peligro_vaciar_bd", border=True):
         if not st.session_state.confirmar_vaciado:
             st.caption("Elimina **todos** los procesos de contratación de forma permanente.")
-            if st.button("⚠️ Vaciar Base de Datos", use_container_width=True):
+            if st.button(":material/delete_forever: Vaciar Base de Datos", use_container_width=True):
                 st.session_state.confirmar_vaciado = True
                 st.rerun()
         else:
@@ -1268,7 +1283,7 @@ def render_vaciar_base_datos():
 
             col_confirmar, col_cancelar = st.columns(2)
             if col_confirmar.button(
-                "🗑️ Confirmar vaciado definitivo",
+                ":material/delete_forever: Confirmar vaciado definitivo",
                 type="primary",
                 disabled=not confirmado,
                 use_container_width=True,
@@ -1280,7 +1295,7 @@ def render_vaciar_base_datos():
                 if response.status_code == 204:
                     st.session_state.confirmar_vaciado = False
                     st.session_state.resultados = None
-                    st.session_state.mensaje_vaciado = "✅ Base de datos vaciada por completo."
+                    st.session_state.mensaje_vaciado = ":material/check_circle: Base de datos vaciada por completo."
                     st.rerun()
                 else:
                     st.error(f"Error al vaciar la base de datos: {response.status_code}")
@@ -1326,17 +1341,20 @@ def _inyectar_estilos_sidebar() -> None:
         [data-testid="stSidebar"] * {{
             color: {COLOR_SIDEBAR_TEXTO};
         }}
-        .sercop-brand {{
+        .st-key-sercop_brand {{
+            padding: 0.25rem 0 1.5rem 0;
+        }}
+        .st-key-sercop_brand p {{
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            padding: 0.25rem 0 1.5rem 0;
             font-size: 1.05rem;
             font-weight: 700;
             color: {COLOR_SIDEBAR_TEXTO_ACTIVO} !important;
             letter-spacing: 0.02em;
+            margin: 0;
         }}
-        .sercop-brand-icon {{
+        .st-key-sercop_brand [role="img"] {{
             font-size: 1.3rem;
         }}
         .sercop-nav-label {{
@@ -1387,13 +1405,8 @@ def _inyectar_estilos_sidebar() -> None:
 
 def render_navegacion_sidebar() -> None:
     with st.sidebar:
-        st.markdown(
-            '<div class="sercop-brand">'
-            '<span class="sercop-brand-icon">🏛️</span>'
-            '<span>SERCOP ANALYTICS</span>'
-            "</div>",
-            unsafe_allow_html=True,
-        )
+        with st.container(key="sercop_brand"):
+            st.markdown(":material/account_balance: **SERCOP ANALYTICS**")
         st.markdown('<div class="sercop-nav-label">MÓDULO DE GESTIÓN</div>', unsafe_allow_html=True)
 
         for nombre, icono in NAV_ITEMS:
@@ -1428,6 +1441,27 @@ def render_navegacion_sidebar() -> None:
                 st.session_state.pagina_activa = nombre
                 st.rerun()
 
+        render_importacion_sercop_sidebar()
+
+
+def render_importacion_sercop_sidebar() -> None:
+    """Seccion "Importación SERCOP" del menu lateral: lanza
+    scripts/scrape_portal.py (ventana visible de Chromium, CAPTCHA resuelto
+    a mano por el usuario -- ver el modelo hibrido local documentado en el
+    propio script) en un proceso aparte con subprocess.Popen, para no
+    bloquear el hilo principal de Streamlit mientras el usuario completa la
+    busqueda en el portal."""
+    with st.sidebar:
+        st.divider()
+        st.caption("IMPORTACIÓN SERCOP")
+        if st.button(
+            ":material/travel_explore: Importar desde Portal SERCOP",
+            key="sercop_importar_boton",
+            use_container_width=True,
+        ):
+            subprocess.Popen([sys.executable, "scripts/scrape_portal.py"])
+            st.toast("Se abrió una ventana de Chromium para completar la búsqueda.")
+
 
 def render_pagina_dashboard(registros_totales: list[dict]) -> None:
     """Revelacion progresiva: por defecto solo se ven los contadores y los
@@ -1437,19 +1471,19 @@ def render_pagina_dashboard(registros_totales: list[dict]) -> None:
     una sola vez."""
     render_contadores(registros_totales)
     st.divider()
-    st.header("📊 Dashboard Analítico")
+    st.header(":material/analytics: Dashboard Analítico")
     df_totales = preparar_dataframe(registros_totales)
     df_filtrado = render_filtros_dashboard(df_totales)
     render_kpis_dashboard(df_filtrado)
 
     tab_mensual, tab_provincia, tab_treemap, tab_resumen, tab_presupuesto, tab_gantt = st.tabs(
         [
-            "📅 Ver detalle por mes",
-            "📍 Ver detalle por provincia",
-            "🌳 Ver Provincia → Estado",
-            "🧾 Ver resumen por estado y tipo de compra",
-            "🧱 Presupuesto por Tipo (Treemap)",
-            "🗓️ Cronograma de Procesos (Gantt)",
+            ":material/calendar_month: Ver detalle por mes",
+            ":material/location_on: Ver detalle por provincia",
+            ":material/account_tree: Ver Provincia → Estado",
+            ":material/receipt_long: Ver resumen por estado y tipo de compra",
+            ":material/payments: Presupuesto por Tipo (Treemap)",
+            ":material/timeline: Cronograma de Procesos (Gantt)",
         ]
     )
     with tab_mensual:
@@ -1476,7 +1510,7 @@ CLAVES_FILTRO_PROCESOS = [
 
 
 def render_pagina_procesos(registros_totales: list[dict]) -> None:
-    st.header("📋 Procesos de Contratación")
+    st.header(":material/assignment: Procesos de Contratación")
 
     col_estado, col_inicio, col_fin, col_palabra = st.columns([1, 1, 1, 1.4])
     with col_estado:
@@ -1491,8 +1525,8 @@ def render_pagina_procesos(registros_totales: list[dict]) -> None:
         )
 
     col_buscar, col_limpiar, _ = st.columns([1, 1, 4])
-    buscar = col_buscar.button("🔍 Buscar", type="primary", use_container_width=True)
-    limpiar = col_limpiar.button("🧹 Limpiar filtros", use_container_width=True)
+    buscar = col_buscar.button(":material/search: Buscar", type="primary", use_container_width=True)
+    limpiar = col_limpiar.button(":material/filter_alt_off: Limpiar filtros", use_container_width=True)
 
     if buscar:
         with st.spinner("Buscando procesos..."):
@@ -1519,7 +1553,7 @@ def render_pagina_procesos(registros_totales: list[dict]) -> None:
 
 
 def render_pagina_reportes() -> None:
-    st.header("📄 Reportes")
+    st.header(":material/description: Reportes")
     render_generador_reportes()
 
 
@@ -1555,13 +1589,17 @@ COLUMNAS_ITEMS_ESPECIFICACIONES_TECNICAS = [
 CATALOGO_CPC_PATH = Path(__file__).resolve().parent / "data" / "cpc_n9.csv"
 
 
-@st.cache_data
+@st.cache_data(ttl=86400, show_spinner=False)
 def _cargar_catalogo_cpc() -> dict[str, str]:
     """Catalogo oficial 'Listado de CPC N9' (SERCOP, ~30.000 codigos):
-    codigo -> descripcion. Se carga UNA sola vez por sesion (cache_data) y
+    codigo -> descripcion. Se carga UNA sola vez cada 24h (cache_data con
+    ttl=86400 -- el CSV es un catalogo fijo, no cambia entre reruns) y
     se expone como dict, no como DataFrame, para que la busqueda del
     autocompletado sea O(1) por codigo en vez de recorrer/filtrar
-    30.000 filas en cada guardado."""
+    30.000 filas en cada guardado. show_spinner=False porque se llama
+    dentro del boton "Guardar Ítems", a mitad de la seccion "Ítems y
+    Presupuesto" ya renderizada -- un spinner ahi se veria como un salto
+    visual, no como una carga inicial de pagina."""
     df = pd.read_csv(CATALOGO_CPC_PATH, dtype=str)
     return dict(zip(df["codigo_cpc"].str.strip(), df["descripcion_cpc"].str.strip()))
 
@@ -1655,13 +1693,20 @@ def _dataframe_cpc_especificaciones_tecnicas_vacio() -> pd.DataFrame:
     return pd.DataFrame({"Código CPC": pd.Series(dtype="str"), "Descripción del CPC": pd.Series(dtype="str")})
 
 
+@st.cache_data(show_spinner=False)
 def _recalcular_items_especificaciones_tecnicas(df: pd.DataFrame) -> pd.DataFrame:
     """Recalcula Item # (posicion) y Valor Total = Cantidad Solicitada *
     Valor Unitario tras cada edicion -- ninguna de las dos columnas es
     editable directamente por el usuario (ver column_config en
     render_formularios_y_registro). "Tipo" tambien se rellena con "Bien"
     por defecto para filas nuevas (el selector Bien/Servicio es POR
-    ITEM, via SelectboxColumn, no un unico selector global)."""
+    ITEM, via SelectboxColumn, no un unico selector global).
+
+    Cacheada (@st.cache_data): funcion pura (mismo df de entrada ->
+    mismo resultado) llamada varias veces por rerun (vista previa,
+    seccion "Ítems y Presupuesto", Word) sobre el mismo
+    session_state.especificaciones_tecnicas_items_df -- sin cache se
+    recalcularia identico varias veces por script run."""
     df = df.reset_index(drop=True).copy()
     df["Ítem"] = df.index + 1
     if "Tipo" not in df.columns:
@@ -1673,12 +1718,18 @@ def _recalcular_items_especificaciones_tecnicas(df: pd.DataFrame) -> pd.DataFram
     return df
 
 
+@st.cache_data(show_spinner=False)
 def _sumar_valor_total_items_especificaciones_tecnicas(df_items: pd.DataFrame) -> float:
     """Suma la columna "Valor Total" (ya recalculada por
     _recalcular_items_especificaciones_tecnicas) de todos los items de Especificaciones Técnicas. Es la unica
     fuente de la Sumatoria Total Y del Presupuesto Referencial (bloqueado),
     ambos mostrados en la seccion "Ítems y Presupuesto" -- ambos leen de
-    aqui para no poder desincronizarse."""
+    aqui para no poder desincronizarse.
+
+    Cacheada (@st.cache_data): funcion pura, misma razon que
+    _recalcular_items_especificaciones_tecnicas -- se llama varias veces por rerun
+    (Sumatoria Total, Presupuesto Referencial autocompletado, Word/Vista
+    Previa) sobre el mismo dataframe."""
     if df_items.empty or "Valor Total" not in df_items.columns:
         return 0.0
     return float(df_items["Valor Total"].sum())
@@ -2087,8 +2138,12 @@ def _html_filas_item(numero: int, item: dict) -> str:
     )
 
 
-@st.cache_data
+@st.cache_data(ttl=86400, show_spinner=False)
 def _imagenes_especificaciones_tecnicas_base64() -> tuple[str, str]:
+    """Encabezado/pie institucionales: archivos de imagen fijos en disco
+    (IMAGEN_ENCABEZADO/IMAGEN_PIE_PAGINA), mismo criterio de ttl=86400 que
+    _cargar_catalogo_cpc y cargar_geojson_provincias. show_spinner=False
+    porque se llama dentro de la pestaña "Generación y Vista Previa"."""
     return (
         base64.b64encode(IMAGEN_ENCABEZADO.read_bytes()).decode(),
         base64.b64encode(IMAGEN_PIE_PAGINA.read_bytes()).decode(),
@@ -2608,7 +2663,7 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
             st.session_state.especificaciones_tecnicas_borrador_id if st.session_state.especificaciones_tecnicas_borrador_id in ids_disponibles else None
         )
 
-    st.markdown("**📁 Gestor de Contrataciones** (guardado persistente en la base de datos)")
+    st.markdown("**:material/folder_open: Gestor de Contrataciones** (guardado persistente en la base de datos)")
     col_selector, col_guardar, col_nuevo, col_eliminar = st.columns([3, 1, 1, 1])
 
     id_seleccionado = col_selector.selectbox(
@@ -2650,7 +2705,7 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
                 st.success(f"Contratación «{borrador['nombre_contratacion']}» cargada.")
                 st.rerun()
 
-    if col_guardar.button("💾 Guardar progreso", key="especificaciones_tecnicas_guardar_borrador", use_container_width=True):
+    if col_guardar.button(":material/save: Guardar progreso", key="especificaciones_tecnicas_guardar_borrador", use_container_width=True):
         nombre_contratacion = (st.session_state.get("especificaciones_tecnicas_objeto_contratacion") or "").strip()
         if not nombre_contratacion:
             st.error(
@@ -2671,7 +2726,7 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
                 st.success(f"Progreso guardado como «{nombre_contratacion}».")
                 st.rerun()
 
-    if col_nuevo.button("🆕 Nueva contratación", key="especificaciones_tecnicas_nueva_contratacion", use_container_width=True):
+    if col_nuevo.button(":material/note_add: Nueva contratación", key="especificaciones_tecnicas_nueva_contratacion", use_container_width=True):
         _reiniciar_estado_especificaciones_tecnicas()
         st.success("Formulario en blanco: lista para una nueva contratación.")
         st.rerun()
@@ -2680,7 +2735,7 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
         st.session_state.especificaciones_tecnicas_confirmar_eliminar_borrador = False
 
     if col_eliminar.button(
-        "🗑️ Eliminar contratación",
+        ":material/delete: Eliminar contratación",
         key="especificaciones_tecnicas_eliminar_borrador",
         use_container_width=True,
         disabled=st.session_state.especificaciones_tecnicas_borrador_id is None,
@@ -2827,7 +2882,7 @@ def render_formularios_y_registro() -> None:
 
     _inyectar_estilos_especificaciones_tecnicas_cards()
 
-    st.subheader("📝 Formularios y Registro")
+    st.subheader(":material/edit_note: Formularios y Registro")
     st.caption(
         "Genera el documento de Especificaciones Técnicas para los Procesos de Bienes, "
         "con el mismo formato del modelo institucional."
@@ -2964,13 +3019,13 @@ def render_formularios_y_registro() -> None:
                                 height=68,
                             )
                             if col_quitar.button(
-                                "🗑️", key=f"especificaciones_tecnicas_specs_param_quitar_{indice}_{param_id}"
+                                ":material/delete:", key=f"especificaciones_tecnicas_specs_param_quitar_{indice}_{param_id}"
                             ):
                                 parametros.pop(indice_param)
                                 st.rerun()
 
                         col_agregar, col_cargar_archivo = st.columns([1, 2])
-                        if col_agregar.button("➕ Añadir parámetro", key=f"especificaciones_tecnicas_specs_agregar_param_{indice}"):
+                        if col_agregar.button(":material/add: Añadir parámetro", key=f"especificaciones_tecnicas_specs_agregar_param_{indice}"):
                             st.session_state.especificaciones_tecnicas_siguiente_param_id += 1
                             parametros.append(
                                 {
@@ -2991,7 +3046,7 @@ def render_formularios_y_registro() -> None:
                         # limpia solo), sus filas se volverian a anexar una y otra
                         # vez en cualquier rerun futuro (ej. al tipear en otro campo).
                         archivo_subido = col_cargar_archivo.file_uploader(
-                            "📎 Cargar parámetros desde archivo (Excel/CSV/TXT, 2 columnas)",
+                            ":material/attach_file: Cargar parámetros desde archivo (Excel/CSV/TXT, 2 columnas)",
                             type=["xlsx", "csv", "txt"],
                             key=f"especificaciones_tecnicas_specs_param_uploader_{indice}",
                         )
@@ -3105,7 +3160,7 @@ def render_formularios_y_registro() -> None:
                         "Valor Total": st.column_config.NumberColumn("Valor Total", disabled=True, format="%.2f"),
                     },
                 )
-                guardar_items = st.form_submit_button("💾 Guardar Ítems", type="primary")
+                guardar_items = st.form_submit_button(":material/save: Guardar Ítems", type="primary")
 
             if guardar_items:
                 # Al guardar SI se recalcula (a diferencia de antes): "Ítem"
@@ -3155,7 +3210,7 @@ def render_formularios_y_registro() -> None:
             buffer_excel = io.BytesIO()
             df_items_visible.to_excel(buffer_excel, index=False, engine="openpyxl")
             st.download_button(
-                "📊 Descargar Tabla de Ítems en Excel",
+                ":material/table_chart: Descargar Tabla de Ítems en Excel",
                 data=buffer_excel.getvalue(),
                 file_name="EspecificacionesTecnicas_items.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -3352,7 +3407,7 @@ def render_formularios_y_registro() -> None:
             col_a3.text_input("Aprobado por — Firmado por", key="especificaciones_tecnicas_firma_aprobado_firmado")
 
         st.divider()
-        if st.button("📄 Descargar Especificaciones Técnicas en Word", key="especificaciones_tecnicas_generar", type="primary"):
+        if st.button(":material/description: Descargar Especificaciones Técnicas en Word", key="especificaciones_tecnicas_generar", type="primary"):
             if st.session_state.especificaciones_tecnicas_items_df.empty:
                 st.warning(
                     'Agrega al menos un ítem en la sección "Ítems y Presupuesto" '
@@ -3370,7 +3425,7 @@ def render_formularios_y_registro() -> None:
 
         if st.session_state.get("especificaciones_tecnicas_docx_bytes"):
             st.download_button(
-                "⬇ Descargar " + st.session_state.especificaciones_tecnicas_docx_nombre,
+                ":material/download: Descargar " + st.session_state.especificaciones_tecnicas_docx_nombre,
                 data=st.session_state.especificaciones_tecnicas_docx_bytes,
                 file_name=st.session_state.especificaciones_tecnicas_docx_nombre,
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -3389,7 +3444,7 @@ def render_formularios_y_registro() -> None:
 
 
 def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None:
-    st.header("🏙️ Municipalidad de Guayaquil")
+    st.header(":material/location_city: Municipalidad de Guayaquil")
     registros_municipio = filtrar_por_entidad(registros_totales, ENTIDAD_MUNICIPALIDAD_GUAYAQUIL)
     if registros_municipio:
         render_contadores(registros_municipio)
@@ -3404,7 +3459,7 @@ def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None
 
 
 def render_pagina_configuracion() -> None:
-    st.header("⚙️ Configuración")
+    st.header(":material/settings: Configuración")
     render_vaciar_base_datos()
 
 

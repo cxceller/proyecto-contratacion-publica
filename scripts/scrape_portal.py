@@ -59,10 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.import_csv import mapear_columnas, importar_dataframe  # noqa: E402
 
-URL_BUSQUEDA = (
-    "https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/PC/"
-    "buscarProceso.cpe?sg=1"
-)
+URL_BUSQUEDA = "https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/PC/buscarProceso.cpe"
 ESPERA_POR_DEFECTO_S = 90  # tiempo maximo para completar el captcha y la busqueda
 MAX_PAGINAS = 50
 DEBUG_DUMP_PATH = Path(__file__).resolve().parent.parent / "debug_sin_tabla.html"
@@ -133,7 +130,7 @@ def _forzar_codificacion_windows1252(route: Route) -> None:
     entrada = f"{request.resource_type} {request.method} {request.url}"
 
     try:
-        response = route.fetch()
+        response = route.fetch(max_redirects=0)
     except Exception as exc:
         _registrar_linea_debug(f"{entrada} | FETCH_ERROR: {exc}")
         try:
@@ -444,7 +441,12 @@ def main() -> None:
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
-        page = browser.new_page()
+        page = browser.new_page(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+        )
         page.route("**/*", _forzar_codificacion_windows1252)
         page.goto(URL_BUSQUEDA, timeout=60000)
 
