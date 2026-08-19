@@ -268,6 +268,51 @@ HTML_FILA_ESTADO_PROCESO_SIN_SEGUNDA_CELDA = """
 """
 
 
+# Fragmento derivado de un volcado REAL de una pagina de detalle
+# (informacionProcesoContratacion2.cpe, proceso LICO-MIMG-2026-002, capturado
+# con Playwright dejando pasar tiempo suficiente para que el bloque de
+# `<table>` que arma `activeTab()` en el onload ya este renderizado -- ver
+# TIMEOUT_MOTIVO_ESTADO_MS en scrape_portal.py). A diferencia de los
+# fixtures sinteticos de arriba (que usan `<td>etiqueta</td><td>valor</td>`),
+# la fila real usa `<th>etiqueta</th><td>valor</td>` -- un patron que los
+# fixtures sinteticos nunca ejercitaron.
+HTML_ESTADO_PROCESO_TABLA_REAL = """
+<html><body>
+<table>
+<tr><th>Tipo de Contratación:</th><td>Licitación - </td></tr>
+<tr><th>Forma de Pago:</th><td>Anticipo: 20% Saldo:  80.00%</td></tr>
+<tr><th>Plazo de Entrega:</th><td>360 dias</td></tr>
+<tr><th>Vigencia de Oferta:</th><td>90 días</td></tr>
+<tr><th>Funcionario encargado del proceso:</th><td>gdominguezi@guayaquil.gov.ec</td></tr>
+<tr><th>Estado del Proceso:</th><td> <strong>Adjudicado - Registro de Contratos</strong></td></tr>
+<tr><th>Descripción:</th><td>MANTENIMIENTO VIAL CON PAVIMENTO DE HORMIGÓN</td></tr>
+</table>
+</body></html>
+"""
+
+# Mismo fragmento real, pero capturado ANTES de que `activeTab()` termine de
+# renderizar la tabla (equivalente al dump temprano real, t=0): la fila
+# "Estado del Proceso" -- de hecho la tabla entera -- todavia no existe.
+HTML_TABLA_AUN_NO_RENDERIZADA = """
+<html><body>
+<div id="tabContenido"></div>
+</body></html>
+"""
+
+
+class TestExtraerMotivoEstadoConHtmlRealThTd:
+    """Cubre el patron `<th>etiqueta</th><td>valor</td>` de la pagina de
+    detalle real (ver HTML_ESTADO_PROCESO_TABLA_REAL) -- los fixtures
+    sinteticos de TestExtraerMotivoEstado de mas abajo usan `<td><td>` y
+    nunca ejercitaron este caso."""
+
+    def test_extrae_estado_de_fila_con_th_y_td(self):
+        assert _extraer_motivo_estado(HTML_ESTADO_PROCESO_TABLA_REAL) == "Adjudicado - Registro de Contratos"
+
+    def test_tabla_aun_no_renderizada_devuelve_none(self):
+        assert _extraer_motivo_estado(HTML_TABLA_AUN_NO_RENDERIZADA) is None
+
+
 class TestExtraerMotivoEstado:
     def test_extrae_texto_completo_con_razon_fecha_y_justificacion(self):
         texto = _extraer_motivo_estado(HTML_ESTADO_PROCESO_DESIERTA)

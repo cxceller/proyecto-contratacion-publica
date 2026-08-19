@@ -87,6 +87,15 @@ MAX_PESTANAS_DETALLE_CONCURRENTES = 4
 # quiere ser mas conservador, subir tambien este valor.
 ESPERA_ENTRE_ADJUDICACIONES_S = 0.5
 TIMEOUT_ADJUDICACION_MS = 20000
+# Timeout corto y tolerante (no los 20s completos de TIMEOUT_ADJUDICACION_MS):
+# la fila "Estado del Proceso" de la pagina general se arma via JS en el
+# onload (activeTab(...)) DESPUES de que el HTML inicial ya llego -- sin
+# esperarla, _extraer_motivo_estado casi siempre lee el DOM antes de que
+# esa fila exista y devuelve None (confirmado con un volcado real: la fila
+# completa, no solo el valor, tarda ~2s en aparecer). Si el timeout expira
+# igual se sigue con motivo=None, mismo patron tolerante que ya usa
+# _ir_a_resumen_de_contrato con su propio wait_for_selector.
+TIMEOUT_MOTIVO_ESTADO_MS = 6000
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -404,7 +413,12 @@ def _extraer_motivo_estado(html: str) -> str | None:
     fila = etiqueta.find_parent("tr")
     if fila is None:
         return None
-    celdas = fila.find_all("td")
+    # find_all(["th", "td"]), no solo "td": la fila real del portal es
+    # <th>Estado del Proceso</th><td>valor</td> (etiqueta en <th>, no en
+    # <td>) -- con solo "td" quedaba un unico elemento y `len < 2` hacia
+    # devolver None aunque la fila estuviera completa. Backward-compatible
+    # con el formato <td><td> (celdas[-1] sigue siendo el valor en ambos).
+    celdas = fila.find_all(["th", "td"])
     if len(celdas) < 2:
         return None
     texto = celdas[-1].get_text(separator="\n", strip=True)
@@ -635,6 +649,10 @@ async def _obtener_montos_adjudicados(
                 return
             try:
                 await pagina_worker.goto(url, timeout=TIMEOUT_ADJUDICACION_MS)
+                try:
+                    await pagina_worker.wait_for_selector("text=Estado del Proceso", timeout=TIMEOUT_MOTIVO_ESTADO_MS)
+                except PlaywrightTimeoutError:
+                    pass
                 motivos[codigo] = _extraer_motivo_estado(await pagina_worker.content())
                 if _es_proceso_produccion_nacional(codigo):
                     if await _ir_a_resumen_resultados_pn(pagina_worker):
