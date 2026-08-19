@@ -16,6 +16,7 @@ debug_sin_tabla.html
 debug_rutas_red.txt
 page_dump.html
 page_dump.png
+debug_detalle_*.html
 
 # Capturas de pantalla por pagina generadas por scripts/scrape_portal.py
 capturas/
