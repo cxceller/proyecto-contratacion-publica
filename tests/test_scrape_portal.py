@@ -18,9 +18,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.scrape_portal import (  # noqa: E402
+    _es_proceso_licitacion,
     _es_proceso_produccion_nacional,
     _extraer_monto_adjudicado,
     _extraer_monto_desde_subtotal,
+    _extraer_monto_licitacion,
     _extraer_motivo_estado,
 )
 
@@ -222,6 +224,143 @@ class TestExtraerMontoDesdeSubtotal:
 
     def test_html_sin_tablas_no_lanza_excepcion(self):
         assert _extraer_monto_desde_subtotal("<html><body><p>Sin tablas</p></body></html>") is None
+
+
+class TestEsProcesoLicitacion:
+    def test_codigo_lico_es_licitacion(self):
+        assert _es_proceso_licitacion("LICO-MIMG-2026-002") is True
+
+    def test_codigo_lics_es_licitacion(self):
+        assert _es_proceso_licitacion("LICS-MIMG-2026-008") is True
+
+    def test_codigo_licb_es_licitacion(self):
+        assert _es_proceso_licitacion("LICB-MIMG-2026-005") is True
+
+    def test_codigo_en_minuscula_tambien_cuenta(self):
+        assert _es_proceso_licitacion("lics-mimg-2026-008") is True
+
+    def test_codigo_con_espacios_alrededor_tambien_cuenta(self):
+        assert _es_proceso_licitacion("  LICS-MIMG-2026-008  ") is True
+
+    def test_codigo_de_otro_tipo_de_proceso_no_es_licitacion(self):
+        assert _es_proceso_licitacion("SIE-MIMG-2026-022") is False
+
+    def test_codigo_vpn_no_es_licitacion(self):
+        assert _es_proceso_licitacion("VPN-MIMG-2026-001") is False
+
+
+# Fragmentos derivados de un volcado REAL de resumenAdjudicacion.cpe
+# (proceso LICS-MIMG-2026-008, Monto Adjudicado real confirmado en el
+# portal: $87.600,00) -- ambas tablas traen columna Subtotal/SubTotal, lo
+# que las hace indistinguibles por esa columna sola; ver
+# _tabla_resultados_licitacion_adjudicados sobre como se distinguen. Nota:
+# el portal usa una capitalizacion DISTINTA para esa columna en cada tabla
+# ("SubTotal" en la referencial, "Subtotal" en la de adjudicados) -- a
+# proposito no se normaliza aca, para poder detectar una regresion si
+# _tabla_resultados_licitacion_adjudicados alguna vez asumiera un literal
+# fijo (ver el comentario en esa funcion).
+HTML_LICITACION_TABLA_REFERENCIAL = """
+<table width="100%" border="1" cellspacing="0" cellpadding="0" class="licitacion_contenido_texto">
+    <tbody><tr>
+        <td class="filaTitulo"><div align="center">Categoría</div></td>
+        <td class="filaTitulo"><div align="center">Bien/Obra/Servicio</div></td>
+        <td class="filaTitulo"><div align="center">Cant.</div></td>
+        <td class="filaTitulo"><div align="center">Unidad Medida</div></td>
+        <td class="filaTitulo"><div align="center">Precio Ref. Unitarios</div></td>
+        <td class="filaTitulo"><div align="center">SubTotal</div></td>
+    </tr>
+    <tr>
+        <td>836100011</td>
+        <td>SERVICIOS DE PLANIFICACION</td>
+        <td>1</td>
+        <td>Unidad</td>
+        <td align="right">USD 87,644.81</td>
+        <td align="right">USD 87,644.81</td>
+    </tr>
+</tbody></table>
+"""
+
+HTML_LICITACION_TABLA_ADJUDICADOS = """
+<table width="100%" border="0" cellpadding="2" cellspacing="0">
+    <tbody><tr>
+        <td class="bordeCompleto filaTitulo"><div align="center">Categoría</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Descripción Bien/Obra/Servicio</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Proveedor</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Cantidad Adjudicada</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Precio Unitario</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Subtotal</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Tiempo de Entrega</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Razón Adjudicación</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Estado</div></td>
+    </tr>
+    <tr>
+        <td class="bordeCompleto filaTitulo2">836100011</td>
+        <td class="bordeCompleto filaTitulo2">SERVICIOS DE PLANIFICACION</td>
+        <td class="bordeCompleto filaTitulo2">COMIC CITY S.A.S.</td>
+        <td class="bordeCompleto filaTitulo2" align="center">1</td>
+        <td class="bordeCompleto filaTitulo2" align="center">USD 87,600.00</td>
+        <td class="bordeCompleto filaTitulo2" align="center">USD 87,600.00</td>
+        <td class="bordeCompleto filaTitulo2" align="center">20</td>
+        <td class="bordeCompleto filaTitulo2">POR SER IDÓNEA</td>
+        <td class="bordeCompleto filaTitulo2">Adjudicado</td>
+    </tr>
+</tbody></table>
+"""
+
+HTML_LICITACION_TABLA_ADJUDICADOS_VARIOS_LOTES = """
+<table width="100%" border="0" cellpadding="2" cellspacing="0">
+    <tbody><tr>
+        <td class="bordeCompleto filaTitulo"><div align="center">Categoría</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Descripción Bien/Obra/Servicio</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Proveedor</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Cantidad Adjudicada</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Precio Unitario</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Subtotal</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Razón Adjudicación</div></td>
+        <td class="bordeCompleto filaTitulo"><div align="center">Estado</div></td>
+    </tr>
+    <tr>
+        <td>1</td><td>Lote uno</td><td>Proveedor A</td><td>1</td>
+        <td align="center">USD 10,000.00</td><td align="center">USD 10,000.00</td>
+        <td>Motivo A</td><td>Adjudicado</td>
+    </tr>
+    <tr>
+        <td>2</td><td>Lote dos</td><td>Proveedor B</td><td>1</td>
+        <td align="center">USD 5,500.50</td><td align="center">USD 5,500.50</td>
+        <td>Motivo B</td><td>Adjudicado</td>
+    </tr>
+</tbody></table>
+"""
+
+HTML_RESUMEN_ADJUDICACION_AMBAS_TABLAS = (
+    "<html><body>" + HTML_LICITACION_TABLA_REFERENCIAL + HTML_LICITACION_TABLA_ADJUDICADOS + "</body></html>"
+)
+
+# Estado real de un proceso "Adjudicado - Registro de Contratos" cuyo
+# contrato aun no se registra: resumenAdjudicacion.cpe SI existe y trae la
+# tabla referencial, pero la de "Bien/Obra/Servicio Adjudicados" todavia no
+# se publica -- debe devolver None, NUNCA el valor referencial.
+HTML_RESUMEN_ADJUDICACION_SOLO_REFERENCIAL = "<html><body>" + HTML_LICITACION_TABLA_REFERENCIAL + "</body></html>"
+
+
+class TestExtraerMontoLicitacion:
+    def test_toma_la_tabla_de_adjudicados_no_la_referencial(self):
+        assert _extraer_monto_licitacion(HTML_RESUMEN_ADJUDICACION_AMBAS_TABLAS) == 87600.00
+        assert _extraer_monto_licitacion(HTML_RESUMEN_ADJUDICACION_AMBAS_TABLAS) != 87644.81
+
+    def test_varios_lotes_suma_los_subtotales_adjudicados(self):
+        html = "<html><body>" + HTML_LICITACION_TABLA_ADJUDICADOS_VARIOS_LOTES + "</body></html>"
+        assert _extraer_monto_licitacion(html) == 15500.50
+
+    def test_solo_tabla_referencial_sin_adjudicados_devuelve_none(self):
+        # Nunca debe caer de vuelta al valor referencial (87644.81).
+        assert _extraer_monto_licitacion(HTML_RESUMEN_ADJUDICACION_SOLO_REFERENCIAL) is None
+
+    def test_html_vacio_no_lanza_excepcion(self):
+        assert _extraer_monto_licitacion("") is None
+
+    def test_html_sin_tablas_no_lanza_excepcion(self):
+        assert _extraer_monto_licitacion("<html><body><p>Sin tablas</p></body></html>") is None
 
 
 # Cambio 10: capturar el texto completo (Razon/Fecha/Justificacion) de la

@@ -583,6 +583,146 @@ def _extraer_monto_desde_subtotal(html: str) -> float | None:
     return None
 
 
+def _es_proceso_licitacion(codigo: str) -> bool:
+    """Procesos de Licitacion (de Obras/LICO, de Servicios/LICS, de
+    Bienes/LICB -- el prefijo comun "LIC" cubre las tres) no siempre tienen
+    "Resumen de Contrato" aunque ya esten "Adjudicado - Registro de
+    Contratos": ese enlace solo aparece una vez que la entidad registra el
+    contrato, y hasta entonces el "Monto de Adjudicacion" real ya esta
+    publicado en otra pagina -- ver _ir_a_resumen_resultados_licitacion/
+    _extraer_monto_licitacion para la ruta de respaldo que si les aplica.
+    Verificado navegando una pagina real (LICS-MIMG-2026-008); LICO/LICB
+    comparten el mismo tipo de procedimiento "Licitacion" y la misma
+    plantilla de pagina, pero conviene confirmarlos contra un proceso
+    adjudicado real cuando aparezca uno."""
+    return codigo.strip().upper().startswith("LIC")
+
+
+# El enlace "Ver Resultados de Licitacion" no vive en la pestaña
+# "Descripción" que carga por defecto (activeTab(1,...) del onload, ver
+# TIMEOUT_MOTIVO_ESTADO_MS), sino dentro de la pestaña "Fechas" -- hay que
+# abrirla primero (confirmado navegando una pagina real: buscar el enlace
+# sin abrir esa pestaña no lo encuentra). Selector por texto, no por id de
+# pestaña (#tab2 puede no ser estable entre distintos tipos de proceso).
+_CANDIDATOS_TAB_FECHAS = ["a:has-text('Fechas')", "text=Fechas"]
+
+# Mismo motivo que _CANDIDATOS_ENLACE_RESUMEN_PN: varios candidatos por si
+# el portal varia acentos/mayusculas entre procesos.
+_CANDIDATOS_ENLACE_RESULTADOS_LICITACION = [
+    "text=Ver Resultados de Licitación",
+    "text=Ver Resultados de Licitacion",
+    "a:has-text('Resultados de Licitación')",
+    "a:has-text('Resultados de Licitacion')",
+]
+
+
+async def _ir_a_resumen_resultados_licitacion(pagina_worker: Page) -> bool:
+    """Analogo a _ir_a_resumen_resultados_pn, pero para procesos de
+    Licitacion (ver _es_proceso_licitacion): abre la pestaña "Fechas" y
+    despues el enlace "Ver Resultados de Licitación", que lleva a
+    resumenAdjudicacion.cpe ("Resumen de Adjudicación a Proveedores"), cuya
+    tabla "Bien/Obra/Servicio Adjudicados" trae el monto adjudicado real en
+    la columna Subtotal (ver _extraer_monto_licitacion). Devuelve False (sin
+    lanzar) si no se encuentra la pestaña o el enlace -- mismo criterio
+    tolerante que el resto de las funciones de navegacion de esta pagina."""
+    try:
+        await pagina_worker.click("button:has-text('Aceptar')", timeout=3000)
+    except Exception:
+        pass
+
+    for selector in _CANDIDATOS_TAB_FECHAS:
+        tab = pagina_worker.locator(selector).first
+        try:
+            if await tab.count() == 0:
+                continue
+            await tab.click(timeout=10000)
+        except Exception:
+            continue
+        break
+
+    for selector in _CANDIDATOS_ENLACE_RESULTADOS_LICITACION:
+        enlace = pagina_worker.locator(selector).first
+        try:
+            if await enlace.count() == 0:
+                continue
+            await enlace.click(timeout=10000)
+        except Exception:
+            continue
+        try:
+            await pagina_worker.wait_for_selector("table", timeout=TIMEOUT_ADJUDICACION_MS)
+        except PlaywrightTimeoutError:
+            pass
+        return True
+
+    return False
+
+
+# Columnas (normalizadas via _normalizar) que solo aparecen en la tabla
+# "Bien/Obra/Servicio Adjudicados" de resumenAdjudicacion.cpe, nunca en la
+# tabla "Detalle: Bien/Obra/Servicio" (referencial, misma forma de tabla y
+# tambien con columna Subtotal) -- confirmado contra una pagina real
+# (LICS-MIMG-2026-008): la referencial trae "Precio Ref. Unitarios" y
+# ninguno de estos tres; la de adjudicados siempre trae al menos uno.
+_MARCADORES_TABLA_LICITACION_ADJUDICADA = {"razonadjudicacion", "cantidadadjudicada", "estado"}
+
+
+def _tabla_resultados_licitacion_adjudicados(tabla: pd.DataFrame) -> tuple[str, pd.DataFrame] | None:
+    """Analoga a _tabla_con_columna_subtotal, pero exige ADEMAS al menos uno
+    de _MARCADORES_TABLA_LICITACION_ADJUDICADA para no confundir la tabla de
+    adjudicados con la referencial (ambas traen columna Subtotal). A
+    diferencia de _tabla_con_columna_subtotal, el nombre real de la columna
+    Subtotal se toma tal cual aparece en la tabla (no se asume "SubTotal"
+    literal): confirmado que el portal usa una capitalizacion distinta en
+    cada una de estas dos tablas ("SubTotal" en la referencial, "Subtotal"
+    en la de adjudicados), asi que forzar un literal fijo rompe el lookup
+    de columna en una de las dos. Mismo quirk de encabezado-como-fila que
+    _tabla_con_columna_subtotal."""
+    columnas_planas = _aplanar_columnas(tabla.columns)
+    columna_subtotal = next((c for c in columnas_planas if _normalizar(c) == "subtotal"), None)
+    if columna_subtotal is not None and {_normalizar(c) for c in columnas_planas} & _MARCADORES_TABLA_LICITACION_ADJUDICADA:
+        tabla = tabla.copy()
+        tabla.columns = columnas_planas
+        return columna_subtotal, tabla
+
+    if len(tabla) > 0:
+        primera_fila = [str(v) for v in tabla.iloc[0].tolist()]
+        columna_subtotal = next((v for v in primera_fila if _normalizar(v) == "subtotal"), None)
+        if columna_subtotal is not None and {_normalizar(v) for v in primera_fila} & _MARCADORES_TABLA_LICITACION_ADJUDICADA:
+            tabla = tabla.iloc[1:].copy()
+            tabla.columns = primera_fila
+            return columna_subtotal, tabla.reset_index(drop=True)
+
+    return None
+
+
+def _extraer_monto_licitacion(html: str) -> float | None:
+    """Extrae el monto adjudicado real de un proceso de Licitacion (ver
+    _es_proceso_licitacion) desde resumenAdjudicacion.cpe, sumando la
+    columna Subtotal de la tabla "Bien/Obra/Servicio Adjudicados" -- NUNCA
+    la tabla "Detalle: Bien/Obra/Servicio" (referencial, igual al
+    presupuesto: tomarla por error dejaria el "% de Ahorro" siempre en 0%).
+    Ver _tabla_resultados_licitacion_adjudicados para como se distinguen.
+    Devuelve None si no aparece esa tabla especifica en ninguna de las
+    tablas de la pagina (mejor None que el valor referencial equivocado) o
+    si el HTML no se puede interpretar -- nunca lanza, mismo criterio de
+    tolerancia a fallos que _extraer_monto_adjudicado."""
+    try:
+        tablas = pd.read_html(StringIO(html))
+    except Exception:
+        return None
+
+    for tabla in tablas:
+        encontrada = _tabla_resultados_licitacion_adjudicados(tabla)
+        if encontrada is None:
+            continue
+        columna_subtotal, tabla_con_encabezado = encontrada
+        valores = tabla_con_encabezado[columna_subtotal].map(parsear_presupuesto).dropna().tolist()
+        if valores:
+            return float(sum(valores))
+
+    return None
+
+
 async def _obtener_montos_adjudicados(
     context: BrowserContext, mapa_urls: dict[str, str]
 ) -> tuple[dict[str, float | None], dict[str, str | None]]:
@@ -659,6 +799,21 @@ async def _obtener_montos_adjudicados(
                         montos[codigo] = _extraer_monto_desde_subtotal(await pagina_worker.content())
                     else:
                         montos[codigo] = None
+                elif _es_proceso_licitacion(codigo):
+                    monto = None
+                    if await _ir_a_resumen_de_contrato(pagina_worker):
+                        monto = _extraer_monto_adjudicado(await pagina_worker.content())
+                    if monto is None:
+                        # Intento 2 (respaldo): "Resumen de Contrato" no
+                        # existe todavia (tipico en "Adjudicado - Registro
+                        # de Contratos", contrato aun sin registrar) o no
+                        # trajo valor -- se vuelve a la ficha general por
+                        # si el intento 1 navego a otra pagina, y se prueba
+                        # la ruta de resultados de Licitacion.
+                        await pagina_worker.goto(url, timeout=TIMEOUT_ADJUDICACION_MS)
+                        if await _ir_a_resumen_resultados_licitacion(pagina_worker):
+                            monto = _extraer_monto_licitacion(await pagina_worker.content())
+                    montos[codigo] = monto
                 elif await _ir_a_resumen_de_contrato(pagina_worker):
                     montos[codigo] = _extraer_monto_adjudicado(await pagina_worker.content())
                 else:
