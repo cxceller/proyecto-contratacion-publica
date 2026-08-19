@@ -131,8 +131,14 @@ def mapear_columnas(df: pd.DataFrame) -> pd.DataFrame:
 def importar_dataframe(
     df: pd.DataFrame, palabra_clave: str | None = None, lote_id: str | None = None
 ) -> tuple[int, int]:
-    """Valida e inserta en SQLite las filas de un DataFrame ya mapeado a
-    los nombres de campo internos (codigo, entidad_contratante, ...).
+    """Valida e inserta (o actualiza, si el `codigo` ya existe -- ver
+    database.upsert_contratacion) en SQLite las filas de un DataFrame ya
+    mapeado a los nombres de campo internos (codigo, entidad_contratante,
+    ...). Es normal que un `codigo` ya exista: el portal solo permite
+    buscar 6 meses atras / 15 dias adelante desde la fecha de publicacion,
+    asi que los mismos procesos "vivos" reaparecen en cada busqueda nueva
+    que se solape con una anterior -- upsert_contratacion actualiza esa
+    fila en vez de crear una copia.
     Si se indica `palabra_clave`, se asigna a todas las filas importadas
     (para registrar con que busqueda del portal se obtuvieron). Si se indica
     `lote_id`, se asigna igual a todas las filas de esta llamada, para poder
@@ -175,6 +181,16 @@ def importar_dataframe(
                 else None
             ),
             "lote_id": lote_id,
+            "monto_adjudicado": (
+                parsear_presupuesto(fila.get("monto_adjudicado"))
+                if "monto_adjudicado" in df.columns
+                else None
+            ),
+            "motivo_estado_raw": (
+                str(fila["motivo_estado_raw"]).strip()
+                if "motivo_estado_raw" in df.columns and pd.notna(fila.get("motivo_estado_raw"))
+                else None
+            ),
         }
 
         try:
@@ -187,7 +203,7 @@ def importar_dataframe(
         data = validado.model_dump()
         if data.get("fecha_publicacion") is not None:
             data["fecha_publicacion"] = data["fecha_publicacion"].isoformat()
-        database.insert_contratacion(data)
+        database.upsert_contratacion(data)
         importados += 1
 
     return importados, con_error

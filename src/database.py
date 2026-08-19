@@ -59,6 +59,7 @@ def init_db() -> None:
                 palabra_clave TEXT,
                 url TEXT,
                 lote_id TEXT,
+                monto_adjudicado REAL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
@@ -78,6 +79,47 @@ def init_db() -> None:
             # confiable (ver scripts/report_generator.py) en vez de adivinar
             # por saltos en el id.
             conn.execute("ALTER TABLE contrataciones ADD COLUMN lote_id TEXT")
+        if "monto_adjudicado" not in columnas:
+            # "Monto de Adjudicación ($)" real, leido de la seccion
+            # "Informacion de Adjudicacion" de la pagina de detalle de cada
+            # proceso (campo `url`) durante el scraping -- NO viene en la
+            # tabla de resultados de busqueda, por eso se completa aparte
+            # (ver scripts/scrape_portal.py::_obtener_montos_adjudicados),
+            # a diferencia de presupuesto_referencial que si viene ahi.
+            conn.execute("ALTER TABLE contrataciones ADD COLUMN monto_adjudicado REAL")
+        if "motivo_estado_raw" not in columnas:
+            # Texto completo de la celda "Estado del Proceso" de la pagina
+            # general de detalle (Razon, Fecha y Justificacion -- para
+            # estados como Desierta/Cancelado/Suspendido trae mucho mas que
+            # la sola etiqueta del estado). Se captura para TODOS los
+            # procesos donde la pagina de detalle ya se visita (gratis, sin
+            # peticion extra -- ver scripts/scrape_portal.py::_extraer_motivo_estado),
+            # no solo Desierta: sirve de base para explicacion_estado (ver
+            # abajo) y para otros estados en el futuro.
+            conn.execute("ALTER TABLE contrataciones ADD COLUMN motivo_estado_raw TEXT")
+        if "explicacion_estado" not in columnas:
+            # Explicacion en lenguaje simple de motivo_estado_raw, generada
+            # por un LLM (ver scripts/explicar_estado_desierta.py) -- hoy
+            # solo se completa para procesos "Desierta". NULL hasta que el
+            # script de enriquecimiento la complete; distingue "todavia no
+            # se genero" (NULL) de "se genero y esta vacia" (no deberia
+            # pasar, pero NULL es la señal correcta de pendiente en
+            # cualquier caso).
+            conn.execute("ALTER TABLE contrataciones ADD COLUMN explicacion_estado TEXT")
+
+        # Un mismo `codigo` de proceso reaparece en cada busqueda que se
+        # solape con una anterior (el portal solo permite buscar 6 meses
+        # atras / 15 dias adelante desde la fecha de publicacion, asi que
+        # los procesos "vivos" reaparecen en cada corrida nueva de
+        # scrape_portal.py/import_csv.py). Sin esta restriccion, cada
+        # corrida insertaba una fila nueva en vez de actualizar la
+        # existente -- ver upsert_contratacion, que es quien realmente
+        # depende de este indice para el ON CONFLICT(codigo). En una base
+        # con datos previos a este cambio, esto puede fallar si todavia
+        # quedan `codigo` duplicados sin limpiar (hay que deduplicar antes
+        # de que esto se ejecute; no se hace aca automaticamente para no
+        # borrar filas de produccion sin que alguien lo revise primero).
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_contrataciones_codigo_unico ON contrataciones(codigo)")
 
         # estado, fecha_publicacion y palabra_clave son las columnas que
         # mas se usan para filtrar (dashboard, endpoint de reportes,
@@ -118,6 +160,13 @@ def init_db() -> None:
 
 
 def insert_contratacion(data: dict[str, Any]) -> int:
+    """INSERT simple, sin resolver conflictos de `codigo` -- para la
+    creacion manual via API (POST /api/todos, ver src/main.py), donde un
+    `codigo` repetido es un error del usuario que se le debe reportar (409),
+    no algo que se deba fusionar en silencio con una fila existente. Para
+    la importacion masiva desde el portal (scrape_portal.py/import_csv.py,
+    donde SI es normal y esperado volver a encontrar el mismo `codigo` en
+    corridas que se solapan) usar upsert_contratacion en su lugar."""
     conn = get_connection()
     try:
         cursor = conn.execute(
@@ -125,8 +174,8 @@ def insert_contratacion(data: dict[str, Any]) -> int:
             INSERT INTO contrataciones
                 (codigo, entidad_contratante, objeto_proceso, estado,
                  provincia_canton, presupuesto_referencial, fecha_publicacion,
-                 palabra_clave, url, lote_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 palabra_clave, url, lote_id, monto_adjudicado, motivo_estado_raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["codigo"],
@@ -139,10 +188,80 @@ def insert_contratacion(data: dict[str, Any]) -> int:
                 data.get("palabra_clave"),
                 data.get("url"),
                 data.get("lote_id"),
+                data.get("monto_adjudicado"),
+                data.get("motivo_estado_raw"),
             ),
         )
         conn.commit()
         return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def upsert_contratacion(data: dict[str, Any]) -> int:
+    """INSERT o, si ya existe una fila con el mismo `codigo`
+    (idx_contrataciones_codigo_unico, ver init_db), UPDATE de esa fila en
+    vez de insertar una copia nueva. Usado por importar_dataframe (scripts/
+    import_csv.py), compartido por scrape_portal.py y la importacion
+    manual de CSV/Excel: es normal volver a encontrar el mismo `codigo` en
+    corridas que se solapan (el portal solo permite buscar 6 meses atras /
+    15 dias adelante desde la fecha de publicacion), y un proceso real
+    cambia de estado con el tiempo (p.ej. de "Entrega de Propuesta" a
+    "Adjudicado"), asi que lo correcto es reflejar ese cambio en la misma
+    fila, no acumular copias.
+
+    `codigo`, `fecha_publicacion` y `created_at` NO se tocan en el UPDATE:
+    son datos que no deberian cambiar entre corridas para el mismo proceso.
+    `monto_adjudicado` y `motivo_estado_raw` usan COALESCE(nuevo, existente)
+    para no borrar un valor ya conocido si una corrida posterior no llega a
+    visitar la pagina de detalle (p.ej. corrida con --sin-monto-adjudicado,
+    ver scripts/scrape_portal.py, que se salta esa pagina por completo) --
+    el resto de los campos si se pisan con el valor nuevo, porque reflejan
+    el estado mas reciente del proceso. `explicacion_estado` NO se toca
+    aca a proposito -- no es parte de lo que trae el scraper, la completa
+    aparte scripts/explicar_estado_desierta.py via update_contratacion, y
+    un re-scrape no deberia borrarla.
+    Devuelve el `id` de la fila (nueva o la ya existente que se actualizo)."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO contrataciones
+                (codigo, entidad_contratante, objeto_proceso, estado,
+                 provincia_canton, presupuesto_referencial, fecha_publicacion,
+                 palabra_clave, url, lote_id, monto_adjudicado, motivo_estado_raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(codigo) DO UPDATE SET
+                entidad_contratante = excluded.entidad_contratante,
+                objeto_proceso = excluded.objeto_proceso,
+                estado = excluded.estado,
+                provincia_canton = excluded.provincia_canton,
+                presupuesto_referencial = excluded.presupuesto_referencial,
+                palabra_clave = excluded.palabra_clave,
+                url = excluded.url,
+                lote_id = excluded.lote_id,
+                monto_adjudicado = COALESCE(excluded.monto_adjudicado, monto_adjudicado),
+                motivo_estado_raw = COALESCE(excluded.motivo_estado_raw, motivo_estado_raw)
+            RETURNING id
+            """,
+            (
+                data["codigo"],
+                data["entidad_contratante"],
+                data["objeto_proceso"],
+                data["estado"],
+                data.get("provincia_canton"),
+                data.get("presupuesto_referencial"),
+                data.get("fecha_publicacion"),
+                data.get("palabra_clave"),
+                data.get("url"),
+                data.get("lote_id"),
+                data.get("monto_adjudicado"),
+                data.get("motivo_estado_raw"),
+            ),
+        )
+        contratacion_id = cursor.fetchone()["id"]
+        conn.commit()
+        return contratacion_id
     finally:
         conn.close()
 

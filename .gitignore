@@ -5,6 +5,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
 
 # Base de datos SQLite local
 data/*.db
@@ -30,3 +31,6 @@ logs/
 
 # Variables de entorno locales (API_KEY, etc.) -- nunca al repo
 .env
+
+# Reglas e instrucciones locales de IA para esta maquina -- no al repo
+CLAUDE.local.md

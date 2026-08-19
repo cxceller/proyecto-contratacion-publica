@@ -39,6 +39,33 @@ class ContratacionBase(BaseModel):
             "confiable en los reportes."
         ),
     )
+    monto_adjudicado: float | None = Field(
+        None,
+        ge=0,
+        description=(
+            "Monto de Adjudicación ($) real, leido de la pagina de detalle del "
+            "proceso (campo `url`) durante el scraping -- no viene en la tabla "
+            "de resultados de busqueda."
+        ),
+    )
+    motivo_estado_raw: str | None = Field(
+        None,
+        max_length=5000,
+        description=(
+            "Texto completo (Razón/Fecha/Justificación) de la celda 'Estado del "
+            "Proceso' de la página general de detalle, leído durante el "
+            "scraping -- no solo la etiqueta corta del estado."
+        ),
+    )
+    explicacion_estado: str | None = Field(
+        None,
+        max_length=2000,
+        description=(
+            "Explicación en lenguaje simple de motivo_estado_raw, generada por "
+            "un LLM (ver scripts/explicar_estado_desierta.py) -- hoy solo se "
+            "completa para procesos en estado 'Desierta'."
+        ),
+    )
 
 
 class ContratacionCreate(ContratacionBase):
@@ -58,6 +85,9 @@ class ContratacionUpdate(BaseModel):
     palabra_clave: str | None = Field(None, min_length=1, max_length=200)
     url: str | None = Field(None, min_length=1, max_length=500)
     lote_id: str | None = Field(None, max_length=64)
+    monto_adjudicado: float | None = Field(None, ge=0)
+    motivo_estado_raw: str | None = Field(None, max_length=5000)
+    explicacion_estado: str | None = Field(None, max_length=2000)
 
 
 class ContratacionOut(ContratacionCreate):

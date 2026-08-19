@@ -20,3 +20,7 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+      - name: Lint (ruff)
+        run: ruff check .
+        continue-on-error: true

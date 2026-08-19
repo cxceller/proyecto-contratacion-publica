@@ -1,4 +1,5 @@
 """API REST de procesos de contratacion publica (FastAPI + SQLite)."""
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import date
 
@@ -65,7 +66,20 @@ def crear_contratacion(payload: ContratacionCreate):
     if data.get("fecha_publicacion") is not None:
         data["fecha_publicacion"] = data["fecha_publicacion"].isoformat()
 
-    new_id = database.insert_contratacion(data)
+    try:
+        new_id = database.insert_contratacion(data)
+    except sqlite3.IntegrityError as exc:
+        # `codigo` tiene un indice UNIQUE (ver database.init_db, agregado
+        # para que la importacion masiva pueda hacer upsert por codigo --
+        # ver database.upsert_contratacion). Esta ruta de creacion manual
+        # via API usa insert_contratacion a proposito (no upsert): un
+        # codigo repetido aca es un error del que hay que avisarle al
+        # cliente de la API, no algo para fusionar en silencio con una
+        # fila existente.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Ya existe un proceso de contratacion con el codigo {data['codigo']!r}",
+        ) from exc
     row = database.get_contratacion_by_id(new_id)
     return ContratacionOut(**row)
 

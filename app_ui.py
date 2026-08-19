@@ -24,6 +24,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from scripts.especificaciones_tecnicas_generator import (
@@ -71,6 +72,16 @@ from scripts.dashboard_analitico import (
     construir_datos_treemap_presupuesto,
 )
 from scripts.formato_ec import formatear_moneda_ec, formatear_numero_ec
+from scripts.importador_items import (
+    ErrorImportacionItems,
+    ErrorLLMImportacionItems,
+    importar_items,
+)
+from scripts.importador_parametros import (
+    ErrorImportacionParametros,
+    ErrorLLMImportacionParametros,
+    importar_parametros,
+)
 from scripts.tinymce_editor import tinymce_editor
 
 load_dotenv()
@@ -92,7 +103,6 @@ COLOR_SIDEBAR_ACENTO = "#FF9800"  # mismo naranja de PALETA_VIVA, como acento de
 # (Vaciar Base de Datos), para que nunca se confunda con una accion primaria
 # normal (Generar Reporte, Guardar Items, etc.).
 COLOR_PELIGRO = "#DC2626"
-COLOR_PELIGRO_FONDO_SUAVE = "#FEF2F2"
 COLOR_NEUTRO_BORDE = "#E2E8F0"
 COLOR_NEUTRO_TEXTO_SUAVE = "#64748B"
 
@@ -137,6 +147,12 @@ INTERVALO_AUTOREFRESCO_IMPORTACION_SERCOP_S = 3
 PATRON_RESUMEN_IMPORTACION_SERCOP = re.compile(
     r"Busqueda completa: (\d+) registro\(s\) insertado\(s\) en (\d+) pagina\(s\) de resultados, "
     r"(\d+) omitido\(s\) por error de validacion"
+)
+
+# Coincide con la linea final que imprime scripts/actualizar_montos_adjudicados.py
+# al terminar (ver ese script) -- SIN tildes, tal como la imprime el script real.
+PATRON_RESUMEN_ACTUALIZAR_MONTOS = re.compile(
+    r"Completo en \d+s: (\d+) actualizado\(s\), (\d+) sin adjudicar todavia, (\d+) con error"
 )
 
 # Nombre exacto de la Entidad Contratante para la seccion "Municipalidad
@@ -191,13 +207,48 @@ NOMBRES_ESTADO_COMPLETOS = {
     "Por Adjudicar": "Por Adjudicar",
 }
 
+# Icono (nombre de Material Symbols, mismo set que ya usa toda la app via
+# los shortcodes :material/xxx: del sidebar -- ver _span_icono_material) y
+# color semantico por categoria de estado, para las tarjetas KPI de
+# render_contadores. Clave = misma clave truncada de ESTADOS (no el nombre
+# completo de NOMBRES_ESTADO_COMPLETOS), para poder buscar en el mismo
+# punto del loop antes de mapear al nombre a mostrar. "Otros" tiene entrada
+# propia (no es parte de ESTADOS, se agrega aparte en render_contadores);
+# "Total" NO tiene icono a proposito (es el agregado, no un estado
+# individual). Paleta Tailwind, consistente con el resto de colores ya
+# definidos en el archivo (COLOR_SIDEBAR_FONDO, COLOR_PELIGRO, etc.) --
+# los rojos de aca son tonos DISTINTOS a COLOR_PELIGRO, que segun su propio
+# comentario es "exclusivo para acciones destructivas" (Vaciar Base de
+# Datos) y no deberia reusarse para otra cosa.
+ICONOS_ESTADO = {
+    "Cancelado": ("cancel", "#EF4444"),  # red-500
+    "Finalizada": ("check_circle", "#16A34A"),  # green-600
+    "Ejecución de": ("engineering", "#2563EB"),  # blue-600
+    "Desierta": ("block", "#F97316"),  # orange-500
+    "En Recepción": ("inbox", "#2563EB"),  # blue-600
+    "Terminado U": ("report", "#991B1B"),  # red-800
+    "Adjudicado -": ("task_alt", "#16A34A"),  # green-600
+    "Adjudicada": ("task_alt", "#16A34A"),  # green-600
+    "Suspendido": ("pause_circle", "#F59E0B"),  # amber-500
+    "Por Adjudicar": ("hourglass_top", "#94A3B8"),  # slate-400
+    "Otros": ("more_horiz", COLOR_NEUTRO_TEXTO_SUAVE),
+}
+
 COLUMNAS_TABLA = {
     "codigo": "Código",
     "entidad_contratante": "Entidad Contratante",
     "objeto_proceso": "Objeto del Proceso",
     "estado": "Estado del Proceso",
+    # Solo se completa para procesos "Desierta" (ver
+    # scripts/explicar_estado_desierta.py) -- queda vacia para el resto,
+    # sin necesidad de ningun filtro especial aca: simplemente no hay dato
+    # que mostrar. Restringida a la vista de Municipalidad de Guayaquil,
+    # igual que "monto_adjudicado" -- ver el gate de mostrar_monto_adjudicado
+    # en render_tabla_con_color.
+    "explicacion_estado": "Explicación (Desierta)",
     "provincia_canton": "Provincia/Cantón",
     "presupuesto_referencial": "Presupuesto Referencial (sin IVA)",
+    "monto_adjudicado": "Monto Adjudicado",
     "fecha_publicacion": "Fecha de Publicación",
     "palabra_clave": "Palabra Clave",
     "url": "URL",
@@ -221,6 +272,28 @@ COLOR_LIENZO = "#FFFFFF"  # plot_bgcolor / paper_bgcolor: fondo claro fijo,
 COLOR_GRID = "#E0E0E0"  # gridlines grises muy tenues
 COLOR_AXIS = "black"  # linea solida de eje ("trazo de tinta")
 COLOR_TEXTO_EJE = "black"  # texto de ejes/fuente general, alto contraste sobre el lienzo claro
+
+# Opciones del selector "Comparar por" de render_grafico_comparativo: cada
+# etiqueta visible mapea a la columna real de df_filtrado por la que agrupar.
+DIMENSIONES_COMPARATIVAS = {
+    "Provincia/Cantón": "provincia_canton",
+    "Tipo de Compra": "tipo_compra",
+    "Estado del Proceso": "estado",
+}
+# Opciones del selector "Métrica" de render_grafico_comparativo: agregacion
+# a aplicar (columna + funcion) y el formateador Ecuador correspondiente.
+METRICAS_COMPARATIVAS = {
+    "Número de procesos": {
+        "columna": "id", "agg": "count",
+        "formato": formatear_numero_ec, "es_moneda": False,
+    },
+    "Presupuesto Referencial (total)": {
+        "columna": "presupuesto_referencial", "agg": "sum",
+        "formato": formatear_moneda_ec, "es_moneda": True,
+    },
+}
+COLOR_BARRA_RESALTADA = COLOR_SIDEBAR_ACENTO  # naranja de marca, para la categoria lider
+COLOR_BARRA_TENUE = "#B0BEC5"  # gris azulado para el resto de las barras
 
 # Capital y coordenadas (lat, lon) de cada una de las 24 provincias del
 # Ecuador, para ubicar el mapa de burbujas del Dashboard Analitico. Clave
@@ -327,6 +400,20 @@ def estado_con_emoji(estado: str) -> str:
         return texto
     emoji, texto_canonico = coincidencia
     return f"{emoji} {texto_canonico}"
+
+
+def _formatear_porcentaje_ahorro(valor) -> str:
+    """"% de Ahorro" (ver render_tabla_con_color) como texto: "🟢 51.58 %"
+    si el ahorro es positivo o cero, "🔴 -12.30 %" si es negativo (el
+    Monto Adjudicado superó al Presupuesto Referencial, caso atípico que
+    se muestra tal cual, sin forzarlo a positivo). Cadena vacía si `valor`
+    es NaN/None (Monto Adjudicado o Presupuesto Referencial vacíos, o
+    Presupuesto Referencial en 0 -- ver render_tabla_con_color) -- nunca
+    "0.00 %" ni un error."""
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
+        return ""
+    emoji = "🟢" if valor >= 0 else "🔴"
+    return f"{emoji} {valor:.2f} %"
 
 
 def api_request(method: str, path: str, timeout: int = 10, **kwargs):
@@ -546,21 +633,71 @@ def _aplicar_estilo_base(fig: go.Figure, altura: int = 380) -> None:
     )
 
 
-def _tarjeta_kpi_html(etiqueta: str, valor: str, ayuda: str | None = None) -> str:
+def _span_icono_material(nombre_icono: str, color: str, tamano_rem: float = 1.05) -> str:
+    """Renderiza un icono de Material Symbols como ligature (el texto del
+    nombre del icono se sustituye por el glifo cuando se le aplica la
+    fuente correcta), el mismo mecanismo estandar de Google que usa
+    Streamlit para sus propios shortcodes :material/xxx: del sidebar --
+    pero esos shortcodes solo funcionan dentro de widgets de texto de
+    Streamlit, no dentro de HTML crudo como el de _tarjeta_kpi_html
+    (st.markdown(unsafe_allow_html=True) inserta el string tal cual, sin
+    pasar por el parser de shortcodes de Streamlit). "Material Symbols
+    Rounded" ya esta declarada como @font-face globalmente por el propio
+    CSS de Streamlit (se usa en cada icono del sidebar), asi que no hace
+    falta cargar ninguna fuente ni hoja de estilos externa aca -- solo
+    aplicar el mismo font-family + font-feature-settings:'liga' que activa
+    la sustitucion ligature en el navegador.
+
+    `translate="no"` + `class="notranslate"` son necesarios: verificado en
+    vivo con el traductor de Chrome activo en la pagina (agrega
+    class="translated-ltr" al <html>, algo que le puede pasar a cualquier
+    usuario con traduccion automatica activada) -- SIN estos dos atributos,
+    Chrome traduce el texto crudo del nombre del icono ("cancel" ->
+    "CANCELAR", "engineering" -> "INGENIERÍA", etc.) ANTES de que la fuente
+    llegue a sustituirlo por el glifo, mostrando la palabra traducida en
+    vez del icono. Se confirmo que hasta los propios iconos :material/xxx:
+    del sidebar de Streamlit sufren el mismo problema (no tienen esta
+    proteccion) -- no es algo que se pueda arreglar ahi (es codigo de
+    Streamlit, no de este archivo), pero si se puede evitar aca."""
+    return (
+        f'<span translate="no" class="notranslate" '
+        f'style="font-family:\'Material Symbols Rounded\'; font-weight:normal; '
+        f'font-style:normal; font-size:{tamano_rem}rem; line-height:1; letter-spacing:normal; '
+        f'text-transform:none; display:inline-block; white-space:nowrap; word-wrap:normal; '
+        f'direction:ltr; -webkit-font-feature-settings:\'liga\'; -webkit-font-smoothing:antialiased; '
+        f'color:{color}; vertical-align:middle;">{nombre_icono}</span>'
+    )
+
+
+def _tarjeta_kpi_html(
+    etiqueta: str,
+    valor: str,
+    ayuda: str | None = None,
+    icono: str | None = None,
+    color_icono: str | None = None,
+) -> str:
     """Tarjeta KPI en HTML puro (no st.metric): mismo fondo/tipografia/
     bordes en toda la app (Dashboard, Procesos y Municipio de Guayaquil,
     vía render_kpi_card mas abajo), en vez de la mezcla anterior de
     st.metric (texto plano) en unas paginas y esta tarjeta HTML en otras.
     El fondo se fuerza por inline-style con COLOR_LIENZO, igual que
     plot_bgcolor/paper_bgcolor de los graficos, para que ambos recuadros
-    hagan juego sin depender del tema claro/oscuro de Streamlit."""
+    hagan juego sin depender del tema claro/oscuro de Streamlit.
+
+    `icono`/`color_icono` son opcionales (la mayoria de las tarjetas KPI --
+    Procesos, Presupuesto Total, Valor Adjudicado -- no representan un
+    estado y no llevan icono): cuando se indican, se agregan ANTES de la
+    etiqueta de texto (nunca en su reemplazo, para no depender solo del
+    color/icono para distinguir estados -- ver render_contadores, el unico
+    caller que los pasa hoy)."""
     atributo_titulo = f' title="{html.escape(ayuda)}"' if ayuda else ""
+    icono_html = _span_icono_material(icono, color_icono) + " " if icono else ""
     return f"""
     <div{atributo_titulo} style="background-color:{COLOR_LIENZO};
                 border:1px solid {COLOR_NEUTRO_BORDE}; border-radius:8px;
                 padding:1.25rem 1.5rem; margin-bottom:0.5rem;">
         <div style="font-size:0.875rem; color:{COLOR_NEUTRO_TEXTO_SUAVE};">
-            {etiqueta}
+            {icono_html}{etiqueta}
         </div>
         <div style="font-size:2rem; font-weight:600; color:{COLOR_TEXTO_EJE}; line-height:1.3;">
             {valor}
@@ -569,12 +706,23 @@ def _tarjeta_kpi_html(etiqueta: str, valor: str, ayuda: str | None = None) -> st
     """
 
 
-def render_kpi_card(columna, etiqueta: str, valor: str, ayuda: str | None = None) -> None:
+def render_kpi_card(
+    columna,
+    etiqueta: str,
+    valor: str,
+    ayuda: str | None = None,
+    icono: str | None = None,
+    color_icono: str | None = None,
+) -> None:
     """Tarjeta KPI reutilizable: mismo componente para Dashboard
     (render_kpis_dashboard), Procesos y Municipio de Guayaquil
     (render_contadores, render_metricas_resumen), en vez de que cada
-    pagina eligiera su propio estilo (st.metric vs. tarjeta HTML)."""
-    columna.markdown(_tarjeta_kpi_html(etiqueta, valor, ayuda), unsafe_allow_html=True)
+    pagina eligiera su propio estilo (st.metric vs. tarjeta HTML).
+    `icono`/`color_icono` son opcionales -- ver _tarjeta_kpi_html."""
+    columna.markdown(
+        _tarjeta_kpi_html(etiqueta, valor, ayuda, icono=icono, color_icono=color_icono),
+        unsafe_allow_html=True,
+    )
 
 
 def render_kpis_dashboard(df: pd.DataFrame):
@@ -693,6 +841,77 @@ def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
         tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
     )
     _aplicar_estilo_base(fig, altura=max(320, 34 * len(resumen)))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
+    """Ranking horizontal: el usuario elige la dimension (Provincia/Cantón,
+    Tipo de Compra o Estado del Proceso) y la metrica (numero de procesos o
+    presupuesto referencial total) via los selectores de
+    DIMENSIONES_COMPARATIVAS/METRICAS_COMPARATIVAS, y se dibuja una barra
+    por categoria, de mayor a menor, con la de mayor valor resaltada en
+    COLOR_BARRA_RESALTADA (naranja de marca) y el resto en
+    COLOR_BARRA_TENUE -- el valor tambien se anota como texto al final de
+    cada barra para no depender solo del color para distinguir al lider."""
+    st.markdown("**Comparativa por ranking**")
+    if df.empty:
+        st.info("No hay datos para graficar con los filtros actuales.")
+        return
+
+    col_dim, col_met = st.columns(2)
+    dimension_label = col_dim.selectbox(
+        "Comparar por", list(DIMENSIONES_COMPARATIVAS.keys()), key="comparativo_dimension"
+    )
+    metrica_label = col_met.selectbox(
+        "Métrica", list(METRICAS_COMPARATIVAS.keys()), key="comparativo_metrica"
+    )
+    columna_dim = DIMENSIONES_COMPARATIVAS[dimension_label]
+    cfg = METRICAS_COMPARATIVAS[metrica_label]
+
+    resumen = (
+        df.groupby(columna_dim, as_index=False)
+        .agg(valor=(cfg["columna"], cfg["agg"]))
+        .sort_values("valor", ascending=False)
+    )
+    if resumen.empty or resumen["valor"].fillna(0).eq(0).all():
+        st.info("No hay valores para graficar con los filtros actuales.")
+        return
+    resumen = resumen.iloc[:top_n]
+
+    valor_maximo = resumen["valor"].max()
+    colores = [
+        COLOR_BARRA_RESALTADA if v == valor_maximo else COLOR_BARRA_TENUE
+        for v in resumen["valor"]
+    ]
+    textos = [cfg["formato"](v) for v in resumen["valor"]]
+
+    fig = go.Figure(
+        go.Bar(
+            x=resumen["valor"],
+            y=resumen[columna_dim],
+            orientation="h",
+            marker=dict(color=colores, cornerradius=4, line=dict(width=0)),
+            text=textos,
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="<b>%{y}</b><br>" + metrica_label + ": %{text}<extra></extra>",
+        )
+    )
+    # autorange="reversed" + orden descendente = la categoria con mayor
+    # valor queda arriba (mismo criterio que render_gantt_procesos).
+    fig.update_yaxes(
+        autorange="reversed", showgrid=False, showline=True, linewidth=2,
+        linecolor=COLOR_AXIS, tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+    )
+    eje_x = dict(
+        showgrid=True, gridcolor=COLOR_GRID, zeroline=False, showline=True,
+        linewidth=2, linecolor=COLOR_AXIS, tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+    )
+    if cfg["es_moneda"]:
+        eje_x.update(tickprefix="$ ", tickformat=",.0f")
+    fig.update_xaxes(**eje_x)
+
+    _aplicar_estilo_base(fig, altura=max(320, 38 * len(resumen)))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
@@ -1088,18 +1307,38 @@ def render_tablas_resumen(df: pd.DataFrame):
     col2.table(_tabla_estatica(resumen_tipo))
 
 
-def render_metricas_resumen(registros: list[dict]):
-    """Tarjetas de resumen sobre los resultados actualmente filtrados. No
-    existe en el esquema un campo separado de "valor final adjudicado"
-    (solo `presupuesto_referencial`), asi que ese total se calcula como la
-    suma del presupuesto referencial de los procesos cuyo estado empieza
-    por "Adjudicad..." (ver `ESTADOS`)."""
+def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: bool = False):
+    """Tarjetas de resumen sobre los resultados actualmente filtrados.
+
+    `mostrar_monto_adjudicado` (default False, mismo criterio que
+    render_tabla_con_color -- solo Municipalidad de Guayaquil) cambia como
+    se calcula "Valor Adjudicado Total": con el campo real
+    `monto_adjudicado` (leido de la pagina de detalle de cada proceso
+    durante el scraping, ver scripts/scrape_portal.py) en vez del proxy
+    historico -- suma del Presupuesto Referencial de los procesos cuyo
+    estado empieza por "Adjudicad...", de cuando no existia ningun campo
+    de valor final adjudicado en el esquema. Ese proxy se mantiene para la
+    pestaña general "Procesos" (todas las entidades): `monto_adjudicado`
+    hoy solo se completa de forma confiable para Guayaquil."""
     presupuesto_total = sum(r.get("presupuesto_referencial") or 0 for r in registros)
-    valor_adjudicado_total = sum(
-        r.get("presupuesto_referencial") or 0
-        for r in registros
-        if r.get("estado", "").strip().lower().startswith("adjudicad")
-    )
+
+    if mostrar_monto_adjudicado:
+        valor_adjudicado_total = sum(r.get("monto_adjudicado") or 0 for r in registros)
+        ayuda_valor_adjudicado = (
+            "Suma del Monto Adjudicado real de cada proceso (leído de su página de "
+            "detalle en el portal durante la importación)."
+        )
+    else:
+        valor_adjudicado_total = sum(
+            r.get("presupuesto_referencial") or 0
+            for r in registros
+            if r.get("estado", "").strip().lower().startswith("adjudicad")
+        )
+        ayuda_valor_adjudicado = (
+            "Suma del Presupuesto Referencial de los procesos con estado "
+            "Adjudicada/Adjudicado. No hay un campo separado de valor final "
+            "adjudicado en los datos disponibles."
+        )
 
     col1, col2, col3 = st.columns(3)
     render_kpi_card(col1, "Número de Procesos", formatear_numero_ec(len(registros)))
@@ -1108,22 +1347,58 @@ def render_metricas_resumen(registros: list[dict]):
         col3,
         "Valor Adjudicado Total",
         formatear_moneda_ec(valor_adjudicado_total),
-        ayuda=(
-            "Suma del Presupuesto Referencial de los procesos con estado "
-            "Adjudicada/Adjudicado. No hay un campo separado de valor final "
-            "adjudicado en los datos disponibles."
-        ),
+        ayuda=ayuda_valor_adjudicado,
     )
 
 
-def render_tabla_con_color(registros: list[dict]):
+def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool = False):
+    """`mostrar_monto_adjudicado` (default False) agrega la columna "Monto
+    Adjudicado" Y la columna derivada "% de Ahorro" (Presupuesto
+    Referencial vs. Monto Adjudicado, calculada al vuelo, no vive en la
+    base de datos) -- pensadas solo para la vista de Municipalidad de
+    Guayaquil (ver render_pagina_municipalidad_guayaquil), no para la
+    pestaña general "Procesos" (todas las entidades), que la usa con el
+    default."""
     if not registros:
         st.info("No hay procesos de contratación para mostrar.")
         return
 
+    columnas_tabla = (
+        COLUMNAS_TABLA
+        if mostrar_monto_adjudicado
+        else {
+            clave: etiqueta
+            for clave, etiqueta in COLUMNAS_TABLA.items()
+            if clave not in ("monto_adjudicado", "explicacion_estado")
+        }
+    )
     df = pd.DataFrame(registros)
-    columnas_presentes = [c for c in COLUMNAS_TABLA if c in df.columns]
-    df_mostrar = df[columnas_presentes].rename(columns=COLUMNAS_TABLA)
+    columnas_presentes = [c for c in columnas_tabla if c in df.columns]
+    df_mostrar = df[columnas_presentes].rename(columns=columnas_tabla)
+
+    # "% de Ahorro" es un campo derivado (no vive en la base de datos, se
+    # calcula al vuelo aca) = (Presupuesto Referencial - Monto Adjudicado)
+    # / Presupuesto Referencial * 100. Se arma ANTES de capturar el CSV
+    # (mas abajo) para que quede incluido en la descarga con el valor
+    # numerico crudo, igual que Presupuesto Referencial/Monto Adjudicado.
+    # Mismo gate que "Monto Adjudicado" (mostrar_monto_adjudicado): depende
+    # de esa columna, y esta restringido a la misma vista (Municipalidad
+    # de Guayaquil).
+    if mostrar_monto_adjudicado and "Monto Adjudicado" in df_mostrar.columns:
+        presupuesto = pd.to_numeric(df_mostrar["Presupuesto Referencial (sin IVA)"], errors="coerce")
+        adjudicado = pd.to_numeric(df_mostrar["Monto Adjudicado"], errors="coerce")
+        # Division por cero (o Presupuesto Referencial vacio) y Monto
+        # Adjudicado vacio (proceso todavia no adjudicado) quedan en NaN
+        # -- nunca 0% ni un error -- que se muestra como celda vacia mas
+        # abajo (ver _formatear_porcentaje_ahorro). Un resultado negativo
+        # (el adjudicado supero al referencial, caso atipico) se deja tal
+        # cual, sin forzarlo a positivo.
+        ahorro = ((presupuesto - adjudicado) / presupuesto * 100).round(2)
+        ahorro = ahorro.where(presupuesto.notna() & (presupuesto != 0) & adjudicado.notna())
+        # Se inserta justo despues de "Monto Adjudicado" para que quede en
+        # ese orden tanto en la tabla interactiva como en el CSV.
+        posicion = df_mostrar.columns.get_loc("Monto Adjudicado") + 1
+        df_mostrar.insert(posicion, "% de Ahorro", ahorro)
 
     # El CSV conserva la URL como columna de texto propia, para referencia,
     # aunque en la tabla interactiva el enlace queda embebido en "Código".
@@ -1166,6 +1441,20 @@ def render_tabla_con_color(registros: list[dict]):
     df_visible["Presupuesto Referencial (sin IVA)"] = df_visible["Presupuesto Referencial (sin IVA)"].apply(
         formatear_moneda_ec
     )
+    # Monto Adjudicado: mismo formato de moneda, mismo motivo (preformateado
+    # como texto en vez de columna numerica). Puede venir vacio/None -- no
+    # todos los procesos estan adjudicados, y el dato solo se completa
+    # durante el scraping (ver scripts/scrape_portal.py::_obtener_montos_adjudicados);
+    # formatear_moneda_ec ya devuelve "" en ese caso.
+    if "Monto Adjudicado" in df_visible.columns:
+        df_visible["Monto Adjudicado"] = df_visible["Monto Adjudicado"].apply(formatear_moneda_ec)
+    # % de Ahorro: mismo criterio (preformateado como texto). Antepone
+    # 🟢/🔴 segun el signo -- mismo patron que estado_con_emoji un poco
+    # mas arriba -- como indicador visual simple sin necesitar un
+    # pandas Styler (que no combina bien con el column_config ya usado
+    # en esta tabla, ej. LinkColumn para "Código").
+    if "% de Ahorro" in df_visible.columns:
+        df_visible["% de Ahorro"] = df_visible["% de Ahorro"].apply(_formatear_porcentaje_ahorro)
 
     # Anchos priorizados para las columnas mas importantes (Código, Entidad,
     # Estado quedan fijas/legibles sin importar cuantas columnas tenga la
@@ -1180,10 +1469,13 @@ def render_tabla_con_color(registros: list[dict]):
         ),
         "Entidad Contratante": st.column_config.TextColumn("Entidad Contratante", width="medium"),
         "Estado del Proceso": st.column_config.TextColumn("Estado del Proceso", width="medium"),
+        "Explicación (Desierta)": st.column_config.TextColumn("Explicación (Desierta)", width="medium"),
         "Objeto del Proceso": st.column_config.TextColumn("Objeto del Proceso", width="medium"),
         "Presupuesto Referencial (sin IVA)": st.column_config.TextColumn(
             "Presupuesto Referencial (sin IVA)", width="medium"
         ),
+        "Monto Adjudicado": st.column_config.TextColumn("Monto Adjudicado", width="medium"),
+        "% de Ahorro": st.column_config.TextColumn("% de Ahorro", width="small"),
         "Fecha de Publicación": st.column_config.DateColumn(
             "Fecha de Publicación", format="YYYY-MM-DD"
         ),
@@ -1363,10 +1655,19 @@ def render_contadores(registros_totales: list[dict]):
 
     etiquetas = ESTADOS + ["Otros"]
     cols = st.columns(4)
+    # "Total" es el agregado, no un estado individual -- sin icono a
+    # proposito (ver ICONOS_ESTADO).
     render_kpi_card(cols[0], "Total", formatear_numero_ec(total))
     for i, estado_categoria in enumerate(etiquetas, start=1):
         etiqueta_mostrar = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
-        render_kpi_card(cols[i % 4], etiqueta_mostrar, formatear_numero_ec(conteos[estado_categoria]))
+        icono, color_icono = ICONOS_ESTADO.get(estado_categoria, (None, None))
+        render_kpi_card(
+            cols[i % 4],
+            etiqueta_mostrar,
+            formatear_numero_ec(conteos[estado_categoria]),
+            icono=icono,
+            color_icono=color_icono,
+        )
 
 
 def render_vaciar_base_datos():
@@ -1391,7 +1692,8 @@ def render_vaciar_base_datos():
         else:
             st.error(
                 "Esto eliminará **todos** los procesos de contratación de la base "
-                "de datos de forma permanente. Esta acción no se puede deshacer."
+                "de datos de forma permanente. Esta acción no se puede deshacer.",
+                icon="⚠️",
             )
             confirmado = st.checkbox("Sí, entiendo y quiero vaciar la base de datos por completo")
 
@@ -1423,7 +1725,6 @@ def render_vaciar_base_datos():
         <style>
         .st-key-zona_peligro_vaciar_bd {{
             border-color: {COLOR_PELIGRO} !important;
-            background-color: {COLOR_PELIGRO_FONDO_SUAVE};
         }}
         .st-key-zona_peligro_vaciar_bd button[kind="primary"] {{
             background-color: {COLOR_PELIGRO} !important;
@@ -1436,6 +1737,55 @@ def render_vaciar_base_datos():
         }}
         </style>
         """,
+        unsafe_allow_html=True,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _url_preload_fuente_material_symbols() -> str | None:
+    """Ubica, dentro del propio paquete de Streamlit instalado, el archivo
+    .woff2 de "Material Symbols Rounded" (el que usan los shortcodes
+    :material/xxx: de toda la app) y devuelve la URL relativa con la que el
+    navegador ya lo pide (confirmado con una captura de red real: algo como
+    "./static/media/MaterialSymbols-Rounded.<hash>.woff2"). El nombre de
+    archivo incluye un hash de build que cambia entre versiones de
+    Streamlit, asi que se descubre por glob en vez de hardcodearlo -- se
+    rompe (devuelve None, sin reventar la carga de la pagina) solo si un
+    cambio futuro de Streamlit reorganiza esa carpeta, no con cada upgrade
+    de version. Cacheada porque el filesystem no cambia durante la vida del
+    proceso."""
+    directorio_media = Path(st.__file__).resolve().parent / "static" / "static" / "media"
+    try:
+        candidatos = sorted(directorio_media.glob("MaterialSymbols-Rounded*.woff2"))
+    except OSError:
+        return None
+    if not candidatos:
+        return None
+    return f"./static/media/{candidatos[0].name}"
+
+
+def _inyectar_precarga_fuente_iconos() -> None:
+    """Inyecta un <link rel="preload"> para la fuente de iconos (Material
+    Symbols) apenas arranca la pagina, ANTES de que se rendericen los
+    botones del sidebar. El flash reportado (nombre del icono en texto
+    crudo, ej. "travel_explore", pegado a la etiqueta) es real: medido con
+    Playwright, el archivo de la fuente a veces tarda mas de un segundo en
+    quedar "loaded" en una carga en frio, y ese hueco es visible aunque
+    font-display:block (ya activo por defecto en el @font-face que trae
+    Streamlit) intente ocultarlo. Sin preload, el navegador recien pide
+    este archivo cuando el CSS de Streamlit se parsea Y un elemento que
+    usa esa fuente ya esta en pantalla -- con preload, el pedido arranca
+    en paralelo con el bundle de JS, apenas se inserta este <link>, sin
+    esperar a ese punto. Verificado en un test aislado: un <link
+    rel="preload"> insertado por innerHTML (mismo mecanismo que usa
+    st.markdown(unsafe_allow_html=True), no un <link> real en <head>)
+    SI dispara el fetch del recurso -- los navegadores procesan <link> en
+    cualquier posicion del arbol del documento, no solo en <head>."""
+    url_fuente = _url_preload_fuente_material_symbols()
+    if url_fuente is None:
+        return
+    st.markdown(
+        f'<link rel="preload" as="font" type="font/woff2" crossorigin href="{url_fuente}">',
         unsafe_allow_html=True,
     )
 
@@ -1511,27 +1861,104 @@ def _inyectar_estilos_sidebar() -> None:
         [data-testid="stSidebar"] hr {{
             border-color: rgba(255, 255, 255, 0.12);
         }}
+        /* Item "Municipalidad de Guayaquil": logo institucional (fuera del
+        boton, en su propia columna) + boton, en vez de un icono Material
+        inline. padding-left en el contenedor replica el inset de 0.8rem
+        que los demas items tienen por el padding propio del boton, para
+        que el logo arranque a la misma distancia del borde que sus
+        iconos. padding-left reducido en ESTE boton evita que el gap de
+        las columnas se sume al padding del boton y separe demasiado el
+        logo del texto. */
+        .st-key-nav_municipalidad_guayaquil {{
+            padding-left: 0.8rem;
+            margin-bottom: 0.15rem;
+        }}
+        .st-key-nav_municipalidad_guayaquil [data-testid="stHorizontalBlock"] {{
+            align-items: center;
+        }}
+        .st-key-nav_municipalidad_guayaquil [data-testid="stColumn"]:last-child {{
+            margin-left: -1rem;
+        }}
+        .st-key-nav_municipalidad_guayaquil .stButton > button {{
+            padding-left: 0;
+            margin-bottom: 0;
+        }}
         /* Mitiga el flash de texto crudo del nombre del icono (ej.
         "travel_explore") pegado a la etiqueta del boton en la carga
-        inicial: la fuente de iconos (Material Symbols) ya se carga con
-        font-display:block (invisible mientras carga), pero ese periodo
-        "block" dura ~3s segun especificacion -- pasado ese tiempo sin
-        cargar, el navegador cae a una fuente de reemplazo que SI muestra
-        el nombre del icono como texto. Retrasar la aparicion de todo el
-        contenido del sidebar unos milisegundos (fade-in con
-        animation-delay, sin JS) le da a esa fuente, servida por el propio
-        Streamlit (mismo origen, sin dependencia de un CDN externo), tiempo
-        de sobra para llegar antes de que se pinte cualquier texto. */
-        @keyframes sercop-sidebar-fade-in {{
-            from {{ opacity: 0; }}
+        inicial: la fuente de iconos (Material Symbols) tarda en quedar
+        "loaded" (medido con Playwright: mas de un segundo en frio), y
+        mientras tanto el navegador puede pintar el nombre del icono como
+        texto plano en vez del glifo. El contenido del sidebar arranca
+        invisible (opacity:0) SIN limite de tiempo fijo -- a diferencia de
+        un fade-in por animation-delay (intentado antes: un timer ciego
+        que arranca a contar desde que ESTE contenedor se inserta en el
+        DOM, no desde que su contenido real -- que Streamlit puede
+        completar en mensajes/deltas posteriores -- ya esta pintado, asi
+        que en la practica no cubria el hueco real), aca la revelacion la
+        dispara JS (ver _revelar_sidebar_cuando_cargue_fuente_iconos) en
+        cuanto `document.fonts.ready` confirma que la fuente ya esta lista.
+        Esta regla es solo el estado inicial + la animacion de respaldo de
+        abajo; el opacity:1 real lo pone ese script. */
+        [data-testid="stSidebarUserContent"] {{
+            opacity: 0;
+            transition: opacity 0.15s ease-in;
+        }}
+        /* Red de seguridad puramente CSS: si por lo que sea el script de
+        revelacion no llega a correr (bloqueador de contenido, iframe de
+        componentes deshabilitado, etc.), esto fuerza opacity:1 igual a
+        los pocos segundos -- sin esto, una falla silenciosa del script
+        dejaria el sidebar invisible para siempre, un regreso mucho peor
+        que el flash original. Sin `animation-fill-mode: backwards`, esta
+        animacion NO toca el opacity durante su animation-delay (usa la
+        cascada normal, es decir lo que haya puesto el script de JS o la
+        regla de arriba); recien se activa al cabo de los 4s. */
+        @keyframes sercop-sidebar-respaldo-revelar {{
             to {{ opacity: 1; }}
         }}
         [data-testid="stSidebarUserContent"] {{
-            animation: sercop-sidebar-fade-in 0.2s ease-in 0.3s both;
+            animation: sercop-sidebar-respaldo-revelar 0.01s linear 4s forwards;
         }}
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def _revelar_sidebar_cuando_cargue_fuente_iconos() -> None:
+    """Componente invisible (height=0) cuyo unico trabajo es correr un
+    script que espera a `document.fonts.ready` -- confirmado con un test
+    aislado que SI se puede acceder al `document` de la ventana padre
+    (`window.parent.document`) desde el script de un
+    `st.components.v1.html`, algo que NO es posible con
+    `st.markdown(unsafe_allow_html=True)` (los <script> insertados asi no
+    se ejecutan, verificado tambien por separado) -- y recien entonces le
+    pone opacity:1 al contenido del sidebar (ver el opacity:0 inicial en
+    _inyectar_estilos_sidebar). A diferencia de una espera con tiempo fijo,
+    esto reacciona al evento real de "la fuente ya esta lista" sin importar
+    cuanto tarde en la practica. Incluye su propio try/except + fallback
+    inmediato por si `document.fonts` no estuviera disponible (navegadores
+    muy viejos) -- la red de seguridad puramente CSS de
+    _inyectar_estilos_sidebar cubre, ademas, el caso de que este script ni
+    siquiera llegue a ejecutarse."""
+    components.html(
+        """
+        <script>
+        (function () {
+            function revelar() {
+                try {
+                    var el = window.parent.document.querySelector('[data-testid="stSidebarUserContent"]');
+                    if (el) { el.style.opacity = '1'; }
+                } catch (e) { /* nada mas que hacer desde aca */ }
+            }
+            try {
+                window.parent.document.fonts.ready.then(revelar);
+            } catch (e) {
+                revelar();
+            }
+        })();
+        </script>
+        """,
+        height=0,
     )
 
 
@@ -1552,16 +1979,20 @@ def render_navegacion_sidebar() -> None:
                 # calculado a partir de esa misma relacion de aspecto
                 # (st.image solo acepta fijar el ancho -- ver
                 # LOGO_MUNICIPALIDAD_ANCHO_PX), para que no se vea
-                # distorsionado.
-                col_icono, col_boton = st.columns([0.7, 4], gap="small", vertical_alignment="center")
-                with col_icono:
-                    st.image(str(LOGO_MUNICIPALIDAD_PATH), width=LOGO_MUNICIPALIDAD_ANCHO_PX)
-                with col_boton:
-                    if st.button(
-                        nombre.upper(), key=f"nav_{nombre}", use_container_width=True, type=tipo_boton,
-                    ):
-                        st.session_state.pagina_activa = nombre
-                        st.rerun()
+                # distorsionado. El container con key permite que
+                # _inyectar_estilos_sidebar (.st-key-nav_municipalidad_
+                # guayaquil) alinee el inset izquierdo y el padding del
+                # boton con los demas items del menu.
+                with st.container(key="nav_municipalidad_guayaquil"):
+                    col_icono, col_boton = st.columns([0.6, 4], gap="small", vertical_alignment="center")
+                    with col_icono:
+                        st.image(str(LOGO_MUNICIPALIDAD_PATH), width=LOGO_MUNICIPALIDAD_ANCHO_PX)
+                    with col_boton:
+                        if st.button(
+                            nombre.upper(), key=f"nav_{nombre}", use_container_width=True, type=tipo_boton,
+                        ):
+                            st.session_state.pagina_activa = nombre
+                            st.rerun()
                 continue
 
             if st.button(
@@ -1576,32 +2007,62 @@ def render_navegacion_sidebar() -> None:
         render_importacion_sercop_sidebar()
 
 
-def _iniciar_importacion_sercop() -> None:
+def _iniciar_importacion_sercop(sin_monto_adjudicado: bool = False) -> None:
     """Lanza scripts/scrape_portal.py (ventana visible de Chromium, CAPTCHA
     resuelto a mano por el usuario -- modelo hibrido local documentado en
     el propio script) en un proceso aparte con subprocess.Popen, para no
     bloquear el hilo principal de Streamlit mientras el usuario completa la
-    busqueda en el portal. A diferencia de la version anterior (que lanzaba
-    el proceso "a ciegas", sin redirigir su salida), aca el stdout/stderr
-    se redirige a un archivo en DIRECTORIO_LOGS_IMPORTACION_SERCOP: es la
-    unica forma de que render_pagina_importacion_sercop sepa despues cuantos
-    registros se importaron o si el script fallo, ya que el proceso corre
-    desacoplado de este hilo. El Popen y la ruta del log quedan en
-    session_state para que esa vista pueda consultarlos en cada rerun."""
+    busqueda en el portal. El stdout/stderr se redirige a un archivo en
+    DIRECTORIO_LOGS_IMPORTACION_SERCOP: es la unica forma de que
+    render_pagina_importacion_sercop sepa despues cuantos registros se
+    importaron o si el script fallo, ya que el proceso corre desacoplado de
+    este hilo. El Popen y la ruta del log quedan en session_state para que
+    esa vista pueda consultarlos en cada rerun.
+
+    El flag "-u" (Python sin buffer) es imprescindible: sin el, los
+    print() de scrape_portal.py se acumulan en el buffer interno del
+    proceso hijo y NO llegan al archivo hasta que el proceso termina (o el
+    buffer se llena) -- si se cancela o se cae antes de eso, todo lo
+    bufferizado se pierde y el log queda vacio aunque el script ya haya
+    impreso avances por consola. Con "-u" cada print() se escribe al
+    archivo de inmediato, asi que la cola del log (ver
+    _leer_cola_log_importacion_sercop) refleja el progreso real.
+
+    `sin_monto_adjudicado`, si viene marcado desde el checkbox del sidebar
+    (ver render_importacion_sercop_sidebar), agrega `--sin-monto-adjudicado`
+    al comando: scrape_portal.py se salta la visita al detalle de cada
+    proceso (mas rapido, sin el campo Monto de Adjudicacion)."""
+    st.session_state.sercop_import_cancelado = False
     DIRECTORIO_LOGS_IMPORTACION_SERCOP.mkdir(parents=True, exist_ok=True)
     marca_tiempo = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = DIRECTORIO_LOGS_IMPORTACION_SERCOP / f"importacion_{marca_tiempo}.log"
-    # Cerrar nuestro extremo del archivo apenas se lanza el proceso es
-    # seguro: subprocess.Popen duplica el descriptor/handle para el
-    # proceso hijo (tanto en Windows como en POSIX), asi que scrape_portal.py
-    # sigue escribiendo en el mismo archivo aunque este bloque `with` ya
-    # haya cerrado nuestra copia del handle.
-    with open(log_path, "w", encoding="utf-8") as log_file:
-        proceso = subprocess.Popen(
-            [sys.executable, "scripts/scrape_portal.py"],
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-        )
+    comando = [sys.executable, "-u", "scripts/scrape_portal.py"]
+    if sin_monto_adjudicado:
+        comando.append("--sin-monto-adjudicado")
+    try:
+        # Cerrar nuestro extremo del archivo apenas se lanza el proceso es
+        # seguro: subprocess.Popen duplica el descriptor/handle para el
+        # proceso hijo (tanto en Windows como en POSIX), asi que
+        # scrape_portal.py sigue escribiendo en el mismo archivo aunque
+        # este bloque `with` ya haya cerrado nuestra copia del handle.
+        with open(log_path, "w", encoding="utf-8") as log_file:
+            proceso = subprocess.Popen(
+                comando,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+    except OSError as exc:
+        # Si el lanzamiento en si falla (interprete o script no encontrado,
+        # permiso denegado, etc.), sercop_import_proceso nunca llega a
+        # asignarse. Sin este try/except la excepcion se propagaria fuera
+        # del manejador del boton, interrumpiendo el rerun ANTES de llegar
+        # a `st.session_state.pagina_activa = PAGINA_IMPORTACION_SERCOP` --
+        # eso es lo que hacia que, intermitentemente, un clic en "Importar
+        # desde Portal SERCOP" no cambiara de pagina.
+        st.session_state.sercop_import_proceso = None
+        st.session_state.sercop_import_error_lanzamiento = str(exc)
+        return
+    st.session_state.sercop_import_error_lanzamiento = None
     st.session_state.sercop_import_proceso = proceso
     st.session_state.sercop_import_log_path = str(log_path)
     st.session_state.sercop_import_inicio = time.time()
@@ -1657,6 +2118,14 @@ def render_importacion_sercop_sidebar() -> None:
     with st.sidebar:
         st.divider()
         st.caption("IMPORTACIÓN SERCOP")
+        sin_monto_adjudicado = st.checkbox(
+            "Omitir Monto de Adjudicación (más rápido)",
+            key="sercop_sin_monto_adjudicado",
+            help=(
+                "Salta la visita al detalle de cada proceso -- la fase mas lenta de la "
+                "importacion -- a cambio de no traer el Monto de Adjudicacion."
+            ),
+        )
         activo = st.session_state.pagina_activa == PAGINA_IMPORTACION_SERCOP
         if st.button(
             ":material/travel_explore: Importar desde Portal SERCOP",
@@ -1664,7 +2133,7 @@ def render_importacion_sercop_sidebar() -> None:
             use_container_width=True,
             type="primary" if activo else "secondary",
         ):
-            _iniciar_importacion_sercop()
+            _iniciar_importacion_sercop(sin_monto_adjudicado=sin_monto_adjudicado)
             st.session_state.pagina_activa = PAGINA_IMPORTACION_SERCOP
             st.rerun()
 
@@ -1686,12 +2155,18 @@ def render_pagina_importacion_sercop() -> None:
 
     proceso = st.session_state.get("sercop_import_proceso")
     if proceso is None:
-        st.info(
-            "Todavía no se ha iniciado ninguna importación en esta sesión. Usa el botón "
-            "'Importar desde Portal SERCOP' del menú lateral, o el botón de abajo, para empezar."
-        )
+        error_lanzamiento = st.session_state.get("sercop_import_error_lanzamiento")
+        if error_lanzamiento:
+            st.error(f":material/error: No se pudo iniciar la importación: {error_lanzamiento}")
+        else:
+            st.info(
+                "Todavía no se ha iniciado ninguna importación en esta sesión. Usa el botón "
+                "'Importar desde Portal SERCOP' del menú lateral, o el botón de abajo, para empezar."
+            )
         if st.button(":material/play_arrow: Iniciar importación", key="sercop_import_iniciar_pagina"):
-            _iniciar_importacion_sercop()
+            _iniciar_importacion_sercop(
+                sin_monto_adjudicado=st.session_state.get("sercop_sin_monto_adjudicado", False)
+            )
             st.rerun()
         return
 
@@ -1724,11 +2199,23 @@ def render_pagina_importacion_sercop() -> None:
             if st.button(
                 ":material/stop_circle: Detener proceso", key="sercop_import_detener", use_container_width=True
             ):
+                # Marcar la cancelacion ANTES de terminar el proceso: es lo
+                # que le permite a esta misma vista, en el siguiente rerun,
+                # distinguir "el usuario lo cancelo a proposito" de "el
+                # proceso se cayo solo" -- ambos casos terminan con el mismo
+                # codigo de salida (!= 0 en Windows), asi que sin este flag
+                # no hay forma de diferenciarlos solo mirando proceso.poll().
+                st.session_state.sercop_import_cancelado = True
                 proceso.terminate()
-                st.warning(
-                    "Se envió la señal de detener el proceso -- puede tardar unos segundos en "
-                    "cerrarse. Si la ventana de Chromium sigue abierta, ciérrala manualmente."
-                )
+                # Esperar un momento a que el proceso realmente termine
+                # (terminate() solo envia la señal, no es sincrono) evita
+                # que el rerun de abajo todavia lo vea como "en curso" y
+                # el usuario tenga que esperar otro ciclo de auto-refresco
+                # para ver el resultado de la cancelacion.
+                try:
+                    proceso.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
                 st.rerun()
 
         with st.expander("Ver log de la importación"):
@@ -1747,6 +2234,7 @@ def render_pagina_importacion_sercop() -> None:
         st.rerun()
 
     resumen = _leer_resumen_log_importacion_sercop(log_path)
+    cancelado = st.session_state.get("sercop_import_cancelado", False)
 
     if codigo_salida == 0 and resumen is not None:
         importados, paginas, con_error = resumen
@@ -1770,17 +2258,29 @@ def render_pagina_importacion_sercop() -> None:
             "esperado en el log -- puede que la ventana se haya cerrado manualmente antes de "
             "tiempo. Revisa el log de abajo para más detalle."
         )
+    elif cancelado:
+        # Un codigo de salida != 0 NO siempre es un fallo real: terminate()
+        # tambien deja al proceso con codigo != 0 (en Windows, 1) cuando lo
+        # cancela el propio usuario. Sin este chequeo (ver el flag que setea
+        # el boton "Detener proceso" mas arriba), esta cancelacion
+        # intencional se mostraba con el mismo st.error de un fallo real.
+        st.info(
+            f":material/stop_circle: Importación cancelada -- se detuvo manualmente tras "
+            f"{_formatear_duracion_es(transcurrido_s)}."
+        )
     else:
         st.error(
             f":material/error: La importación falló (el proceso terminó con código de salida "
             f"{codigo_salida}). Revisa el log de abajo para ver el error exacto."
         )
 
-    with st.expander("Ver log de la importación", expanded=codigo_salida != 0):
+    with st.expander("Ver log de la importación", expanded=codigo_salida != 0 and not cancelado):
         st.code(_leer_cola_log_importacion_sercop(log_path), language=None)
 
     if st.button(":material/refresh: Iniciar nueva importación", key="sercop_import_reiniciar"):
-        _iniciar_importacion_sercop()
+        _iniciar_importacion_sercop(
+            sin_monto_adjudicado=st.session_state.get("sercop_sin_monto_adjudicado", False)
+        )
         st.rerun()
 
 
@@ -1797,7 +2297,10 @@ def render_pagina_dashboard(registros_totales: list[dict]) -> None:
     df_filtrado = render_filtros_dashboard(df_totales)
     render_kpis_dashboard(df_filtrado)
 
-    tab_mensual, tab_provincia, tab_treemap, tab_resumen, tab_presupuesto, tab_items, tab_gantt = st.tabs(
+    (
+        tab_mensual, tab_provincia, tab_treemap, tab_resumen, tab_presupuesto,
+        tab_items, tab_gantt, tab_comparativa,
+    ) = st.tabs(
         [
             ":material/calendar_month: Ver detalle por mes",
             ":material/location_on: Ver detalle por provincia",
@@ -1806,6 +2309,7 @@ def render_pagina_dashboard(registros_totales: list[dict]) -> None:
             ":material/payments: Presupuesto por Tipo (Treemap)",
             ":material/inventory_2: Presupuesto por Ítem (Especificaciones Técnicas)",
             ":material/timeline: Cronograma de Procesos (Gantt)",
+            ":material/leaderboard: Comparativa (ranking)",
         ]
     )
     with tab_mensual:
@@ -1825,6 +2329,8 @@ def render_pagina_dashboard(registros_totales: list[dict]) -> None:
         )
     with tab_gantt:
         render_gantt_procesos(df_filtrado)
+    with tab_comparativa:
+        render_grafico_comparativo(df_filtrado)
 
 
 CLAVES_FILTRO_PROCESOS = [
@@ -2084,98 +2590,6 @@ def _specs_vacias_especificaciones_tecnicas(tipo: str) -> dict:
             "obligaciones": "",
         }
     return {"subtitulo_specs": "MODELO DE EJEMPLO", "descripcion_material": "", "parametros": []}
-
-
-def _celda_parametro_a_texto(valor) -> str:
-    """Normaliza una celda de pandas (NaN, float, str con saltos de linea
-    embebidos, etc.) al texto que se guarda en un parametro. Los saltos de
-    linea dentro de la celda (ej. una lista de viñetas pegada en Excel) se
-    preservan tal cual -- se muestran despues en un st.text_area, no en un
-    text_input de una sola linea."""
-    if pd.isna(valor):
-        return ""
-    if isinstance(valor, float) and valor.is_integer():
-        return str(int(valor))
-    return str(valor).lstrip("﻿").strip()
-
-
-def _parsear_texto_parametros_manual(texto: str, separador: str) -> pd.DataFrame:
-    """Reconstruye a mano (sin pd.read_csv) una tabla de 2 columnas
-    (Parametro, Valor) a partir del texto crudo de un .csv/.txt.
-
-    Los archivos reales de este flujo traen descripciones multilinea (ej.
-    una lista numerada del 1 al 9) SIN encerrarlas entre comillas -- para
-    un parser de CSV eso son lineas con menos campos de los que espera,
-    y pd.read_csv (con el engine C o el python) revienta con "Error
-    tokenizing data. C error: Expected N fields, saw M". Aqui, en cambio,
-    cada linea se procesa por su cuenta: si trae el separador es una fila
-    nueva (Parametro/Valor); si no lo trae y no esta vacia, se asume que
-    es la continuacion del Valor de la ULTIMA fila ya registrada y se le
-    concatena con un "\n" (una linea vacia no continua ni corta nada, se
-    ignora)."""
-    filas: list[list[str]] = []
-    for linea in texto.splitlines():
-        if separador in linea:
-            nombre, valor = linea.split(separador, 1)
-            filas.append([nombre.strip(), valor.strip()])
-        elif linea.strip() and filas:
-            filas[-1][1] = f"{filas[-1][1]}\n{linea.strip()}"
-        # una linea sin separador y sin ninguna fila previa (o vacia) no
-        # tiene donde continuar: se descarta sin romper el resto.
-    return pd.DataFrame(filas, columns=["Parámetro", "Valor"])
-
-
-def _leer_parametros_desde_archivo(archivo_subido) -> list[dict]:
-    """Lee un archivo .xlsx/.csv/.txt subido por el usuario y lo convierte
-    en una lista de {"nombre": ..., "valor": ...} listos para anexarse a
-    los parametros de un item. Solo usa las primeras 2 columnas del
-    archivo (columna 0 = Parametro, columna 1 = Valor/Descripcion) y
-    descarta filas sin nombre de parametro.
-
-    Lanza ValueError con un mensaje apto para mostrar en st.error si el
-    archivo no se puede leer o no tiene al menos 2 columnas."""
-    nombre_archivo = (archivo_subido.name or "").lower()
-    try:
-        if nombre_archivo.endswith(".xlsx"):
-            df = pd.read_excel(archivo_subido)
-        else:
-            # .csv/.txt: separador segun el tipo de archivo (tab en .txt,
-            # ";" en .csv -- el que usa Excel en configuracion regional
-            # Ecuador/es-ES al exportar, ya que "," esta reservado como
-            # separador decimal). Se procesa a mano (ver
-            # _parsear_texto_parametros_manual) en vez de pd.read_csv,
-            # porque las descripciones multilinea sin comillas de estos
-            # archivos rompen el parser de pandas.
-            separador = "\t" if nombre_archivo.endswith(".txt") else ";"
-            archivo_subido.seek(0)
-            crudo = archivo_subido.read()
-            try:
-                texto = crudo.decode("utf-8-sig")
-            except UnicodeDecodeError:
-                texto = crudo.decode("utf-8", errors="ignore")
-            df = _parsear_texto_parametros_manual(texto, separador)
-    except Exception as exc:
-        raise ValueError(f"No se pudo leer el archivo: {exc}") from exc
-
-    if df.shape[1] < 2:
-        raise ValueError("El archivo debe tener al menos 2 columnas (Parámetro y Valor/Descripción).")
-
-    # Purifica el dataframe ANTES del bucle de inyeccion: las celdas
-    # vacias de la 2da columna llegan como NaN, y sin este fillna("") se
-    # terminaria inyectando el string "nan" en vez de un campo vacio.
-    df = df.fillna("")
-
-    df_columnas = df.iloc[:, :2]
-    parametros = []
-    for _, fila in df_columnas.iterrows():
-        nombre = _celda_parametro_a_texto(fila.iloc[0])
-        if not nombre:
-            continue
-        parametros.append({"nombre": nombre, "valor": _celda_parametro_a_texto(fila.iloc[1])})
-
-    if not parametros:
-        raise ValueError("El archivo no tiene filas válidas (la columna Parámetro está vacía).")
-    return parametros
 
 
 def _recolectar_datos_especificaciones_tecnicas() -> dict:
@@ -3362,9 +3776,14 @@ def render_formularios_y_registro() -> None:
                             )
                             st.rerun()
 
-                        # Carga masiva: un Excel/CSV/TXT de 2 columnas (Parametro,
-                        # Valor/Descripcion) se anexa a `parametros` -- nunca lo
-                        # reemplaza, igual que el boton manual de arriba. La clave
+                        # Carga masiva: Excel/CSV/TXT con cualquier estructura de
+                        # columnas se anexa a `parametros` -- nunca lo reemplaza,
+                        # igual que el boton manual de arriba (ver
+                        # scripts/importador_parametros.py: camino rapido
+                        # determinístico para 2 columnas limpias, con escalada
+                        # automática a un normalizador vía IA para archivos con
+                        # celdas combinadas de Excel, columnas extra o texto
+                        # libre). La clave
                         # `especificaciones_tecnicas_specs_param_archivo_procesado_{indice}` guarda el
                         # file_id del ultimo archivo ya procesado para ESTE item:
                         # sin ese control, como el archivo subido sigue "presente"
@@ -3372,32 +3791,81 @@ def render_formularios_y_registro() -> None:
                         # limpia solo), sus filas se volverian a anexar una y otra
                         # vez en cualquier rerun futuro (ej. al tipear en otro campo).
                         archivo_subido = col_cargar_archivo.file_uploader(
-                            ":material/attach_file: Cargar parámetros desde archivo (Excel/CSV/TXT, 2 columnas)",
+                            ":material/attach_file: Cargar parámetros desde archivo (Excel/CSV/TXT, cualquier estructura)",
                             type=["xlsx", "csv", "txt"],
                             key=f"especificaciones_tecnicas_specs_param_uploader_{indice}",
                         )
                         clave_procesado = f"especificaciones_tecnicas_specs_param_archivo_procesado_{indice}"
-                        if archivo_subido is not None and st.session_state.get(clave_procesado) != archivo_subido.file_id:
-                            try:
-                                nuevos_parametros = _leer_parametros_desde_archivo(archivo_subido)
-                            except ValueError as exc:
-                                st.session_state[clave_procesado] = archivo_subido.file_id
-                                st.error(f"No se pudo procesar «{archivo_subido.name}»: {exc}")
-                            else:
-                                for nuevo in nuevos_parametros:
-                                    st.session_state.especificaciones_tecnicas_siguiente_param_id += 1
-                                    parametros.append(
-                                        {
-                                            "id": st.session_state.especificaciones_tecnicas_siguiente_param_id,
-                                            "nombre": nuevo["nombre"],
-                                            "valor": nuevo["valor"],
-                                        }
+                        # Los errores del camino IA (red/timeout) son transitorios: a
+                        # diferencia de un error de archivo (permanente, se marca
+                        # `clave_procesado` para no reintentar solo), aquí NO se marca
+                        # `clave_procesado` -- pero tampoco se reintenta automáticamente
+                        # en cada rerun no relacionado (ej. al tipear en otro campo),
+                        # porque eso dispararía llamadas a la API repetidas y silenciosas.
+                        # En cambio se guarda el error y se ofrece un botón explícito de
+                        # "Reintentar" que dispara un solo intento más.
+                        clave_error_llm = f"especificaciones_tecnicas_specs_param_error_llm_{indice}"
+                        clave_reintentar = f"especificaciones_tecnicas_specs_param_reintentar_{indice}"
+                        if archivo_subido is None:
+                            st.session_state[clave_error_llm] = None
+                        else:
+                            debe_procesar = st.session_state.get(
+                                clave_procesado
+                            ) != archivo_subido.file_id or st.session_state.get(clave_reintentar, False)
+                            if debe_procesar:
+                                st.session_state[clave_reintentar] = False
+                                try:
+                                    with st.spinner("Procesando archivo..."):
+                                        resultado = importar_parametros(
+                                            archivo_subido.name, archivo_subido.getvalue()
+                                        )
+                                except ErrorLLMImportacionParametros as exc:
+                                    st.session_state[clave_error_llm] = str(exc)
+                                except ErrorImportacionParametros as exc:
+                                    st.session_state[clave_procesado] = archivo_subido.file_id
+                                    st.session_state[clave_error_llm] = None
+                                    st.error(f"No se pudo procesar «{archivo_subido.name}»: {exc}")
+                                else:
+                                    for nuevo in resultado.parametros:
+                                        st.session_state.especificaciones_tecnicas_siguiente_param_id += 1
+                                        parametros.append(
+                                            {
+                                                "id": st.session_state.especificaciones_tecnicas_siguiente_param_id,
+                                                "nombre": nuevo["nombre"],
+                                                "valor": nuevo["valor"],
+                                            }
+                                        )
+                                    st.session_state[clave_procesado] = archivo_subido.file_id
+                                    st.session_state[clave_error_llm] = None
+                                    camino_legible = "con ayuda de IA" if resultado.camino == "llm" else "directamente"
+                                    st.success(
+                                        f"Se agregaron {len(resultado.parametros)} parámetro(s) desde "
+                                        f"«{archivo_subido.name}» (procesado {camino_legible})."
                                     )
-                                st.session_state[clave_procesado] = archivo_subido.file_id
-                                st.success(
-                                    f"Se agregaron {len(nuevos_parametros)} parámetro(s) desde "
-                                    f"«{archivo_subido.name}»."
-                                )
+                                    if resultado.advertencia_integridad:
+                                        st.warning(resultado.advertencia_integridad)
+                                    if resultado.filas_descartadas:
+                                        # st.container (no st.expander): esta seccion ya esta
+                                        # dentro del expander "Item N" mas arriba, y Streamlit
+                                        # no permite anidar expanders (StreamlitAPIException).
+                                        with st.container(border=True):
+                                            st.caption(
+                                                f"{len(resultado.filas_descartadas)} fila(s) descartada(s) del archivo original:"
+                                            )
+                                            for descarte in resultado.filas_descartadas:
+                                                st.caption(f"«{descarte['fila']}» — {descarte['motivo']}")
+                                    st.rerun()
+
+                        if archivo_subido is not None and st.session_state.get(clave_error_llm):
+                            st.error(
+                                f"No se pudo procesar «{archivo_subido.name}» con ayuda de IA: "
+                                f"{st.session_state[clave_error_llm]}"
+                            )
+                            if col_cargar_archivo.button(
+                                ":material/refresh: Reintentar",
+                                key=f"especificaciones_tecnicas_specs_param_reintentar_btn_{indice}",
+                            ):
+                                st.session_state[clave_reintentar] = True
                                 st.rerun()
                     else:
                         spec["procedimiento"] = st.text_area(
@@ -3440,6 +3908,109 @@ def render_formularios_y_registro() -> None:
                 'automáticamente (Cantidad Solicitada × Valor Unitario) y no es editable. Presiona '
                 '"Guardar Ítems" para aplicar los cambios.'
             )
+
+            # Importar items desde archivo: fuera del st.form a proposito --
+            # un file_uploader dentro de un form no se procesa hasta el
+            # submit, y aca se necesita feedback inmediato (resumen,
+            # advertencias, boton de reintento) apenas se sube. Ver
+            # scripts/importador_items.py: camino rapido deterministico
+            # (deteccion de encabezado + fuzzy matching de columnas) con
+            # respaldo via IA para archivos sin estructura de columnas clara.
+            archivo_items_subido = st.file_uploader(
+                ":material/upload_file: Cargar ítems desde archivo (Excel/CSV/TXT) -- columnas "
+                "ÍTEM, DESCRIPCIÓN, UNIDAD, CANTIDAD, PRECIO UNITARIO y CPC (en cualquier orden, "
+                "con encabezados alterados, o sin estructura de columnas clara)",
+                type=["xlsx", "csv", "txt"],
+                key="especificaciones_tecnicas_items_uploader",
+            )
+            clave_procesado_items = "especificaciones_tecnicas_items_archivo_procesado"
+            # Mismo patron de dos niveles de error que el uploader de
+            # Parametros: un error permanente (archivo vacio/corrupto) marca
+            # el archivo como procesado y no reintenta solo; un error
+            # transitorio del camino IA (red/timeout) NO lo marca, pero
+            # tampoco reintenta automaticamente en cada rerun no relacionado
+            # -- se guarda el mensaje y se ofrece un boton explicito de
+            # "Reintentar" que dispara un solo intento mas.
+            clave_error_llm_items = "especificaciones_tecnicas_items_error_llm"
+            clave_reintentar_items = "especificaciones_tecnicas_items_reintentar"
+            if archivo_items_subido is None:
+                st.session_state[clave_error_llm_items] = None
+            else:
+                debe_procesar_items = st.session_state.get(
+                    clave_procesado_items
+                ) != archivo_items_subido.file_id or st.session_state.get(clave_reintentar_items, False)
+                if debe_procesar_items:
+                    st.session_state[clave_reintentar_items] = False
+                    try:
+                        with st.spinner("Procesando archivo de ítems..."):
+                            resultado_items = importar_items(
+                                archivo_items_subido.name,
+                                archivo_items_subido.getvalue(),
+                                catalogo_cpc=_cargar_catalogo_cpc(),
+                            )
+                    except ErrorLLMImportacionItems as exc:
+                        st.session_state[clave_error_llm_items] = str(exc)
+                    except ErrorImportacionItems as exc:
+                        st.session_state[clave_procesado_items] = archivo_items_subido.file_id
+                        st.session_state[clave_error_llm_items] = None
+                        st.error(f"No se pudo procesar «{archivo_items_subido.name}»: {exc}")
+                    else:
+                        # Mismos dtypes que _dataframe_items_especificaciones_tecnicas_vacio():
+                        # "Ítem" y "_fila_id" quedan en pd.NA (Int64), igual que una fila
+                        # agregada a mano con el boton "+" del editor -- la logica ya
+                        # existente (_asignar_fila_ids_especificaciones_tecnicas /
+                        # _recalcular_items_especificaciones_tecnicas) los completa en el
+                        # proximo "Guardar Ítems", sin que este importador toque esa parte.
+                        cantidad_filas_nuevas = len(resultado_items.filas)
+                        filas_nuevas = pd.DataFrame(
+                            {
+                                "Ítem": pd.array([pd.NA] * cantidad_filas_nuevas, dtype="Int64"),
+                                "Tipo": [f["tipo"] for f in resultado_items.filas],
+                                "Descripción": [f["descripcion"] for f in resultado_items.filas],
+                                "Unidad de Medida": [f["unidad_medida"] for f in resultado_items.filas],
+                                "Cantidad Solicitada": [f["cantidad_solicitada"] for f in resultado_items.filas],
+                                "Valor Unitario": [f["valor_unitario"] for f in resultado_items.filas],
+                                "Valor Total": [0.0] * cantidad_filas_nuevas,
+                                "Descripción CPC": [f["descripcion_cpc"] for f in resultado_items.filas],
+                                "Número CPC": [f["numero_cpc"] for f in resultado_items.filas],
+                                "_fila_id": pd.array([pd.NA] * cantidad_filas_nuevas, dtype="Int64"),
+                            }
+                        )
+                        st.session_state.especificaciones_tecnicas_items_df = pd.concat(
+                            [st.session_state.especificaciones_tecnicas_items_df, filas_nuevas], ignore_index=True
+                        )
+                        st.session_state.especificaciones_tecnicas_items_editor_version += 1
+                        st.session_state[clave_procesado_items] = archivo_items_subido.file_id
+                        st.session_state[clave_error_llm_items] = None
+                        camino_legible = "con ayuda de IA" if resultado_items.camino == "llm" else "directamente"
+                        st.success(
+                            f"Se agregaron {cantidad_filas_nuevas} ítem(s) desde "
+                            f"«{archivo_items_subido.name}» (procesado {camino_legible})."
+                        )
+                        if resultado_items.cpc_no_encontrados:
+                            codigos_unicos = ", ".join(sorted(set(resultado_items.cpc_no_encontrados)))
+                            st.warning(f"Código(s) CPC no encontrado(s) en el catálogo: {codigos_unicos}")
+                        if resultado_items.filas_con_error:
+                            # st.container (no st.expander): aunque esta seccion no esta
+                            # anidada en otro expander hoy, se usa el mismo patron ya
+                            # corregido en el importador de Parametros para no reintroducir
+                            # el StreamlitAPIException de expanders anidados si la UI se
+                            # reestructura mas adelante.
+                            with st.container(border=True):
+                                st.caption(f"{len(resultado_items.filas_con_error)} fila(s) con advertencias:")
+                                for error in resultado_items.filas_con_error:
+                                    st.caption(f"«{error['fila']}» — {error['motivo']}")
+                        st.rerun()
+
+            if archivo_items_subido is not None and st.session_state.get(clave_error_llm_items):
+                st.error(
+                    f"No se pudo procesar «{archivo_items_subido.name}» con ayuda de IA: "
+                    f"{st.session_state[clave_error_llm_items]}"
+                )
+                if st.button(":material/refresh: Reintentar", key="especificaciones_tecnicas_items_reintentar_btn"):
+                    st.session_state[clave_reintentar_items] = True
+                    st.rerun()
+
             # La edicion vive dentro de un st.form: sin esto, CADA tecla/celda
             # confirmada dispara un rerun completo de todo el script mientras
             # el usuario sigue escribiendo, lo que puede chocar con el propio
@@ -3769,14 +4340,116 @@ def render_formularios_y_registro() -> None:
     _guardar_campos_simples_especificaciones_tecnicas()
 
 
+def _iniciar_actualizacion_montos_adjudicados() -> None:
+    """Lanza scripts/actualizar_montos_adjudicados.py --entidad
+    "Municipalidad de Guayaquil" en un proceso aparte, con el mismo patron
+    de log + session_state que _iniciar_importacion_sercop. A diferencia
+    de ese script, este SI corre headless (no hay CAPTCHA involucrado --
+    visita directamente los enlaces de detalle que cada proceso ya tiene
+    guardados en `url`, ver el docstring del propio script), asi que no
+    abre ninguna ventana visible ni bloquea al usuario."""
+    st.session_state.actualizar_montos_proceso = None
+    DIRECTORIO_LOGS_IMPORTACION_SERCOP.mkdir(parents=True, exist_ok=True)
+    marca_tiempo = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = DIRECTORIO_LOGS_IMPORTACION_SERCOP / f"actualizar_montos_{marca_tiempo}.log"
+    try:
+        with open(log_path, "w", encoding="utf-8") as log_file:
+            proceso = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-u",
+                    "scripts/actualizar_montos_adjudicados.py",
+                    "--entidad",
+                    ENTIDAD_MUNICIPALIDAD_GUAYAQUIL,
+                ],
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+    except OSError as exc:
+        st.session_state.actualizar_montos_error_lanzamiento = str(exc)
+        return
+    st.session_state.actualizar_montos_error_lanzamiento = None
+    st.session_state.actualizar_montos_proceso = proceso
+    st.session_state.actualizar_montos_log_path = str(log_path)
+    st.session_state.actualizar_montos_inicio = time.time()
+
+
+def render_actualizar_montos_adjudicados() -> None:
+    """Botón "Actualizar Montos Adjudicados" para Municipalidad de
+    Guayaquil: reintenta scripts/actualizar_montos_adjudicados.py sobre
+    los procesos que todavía no tienen `monto_adjudicado` (importados
+    antes de que este campo existiera, o cuya extracción falló la primera
+    vez). Mismo patrón de estado que Importación SERCOP (log +
+    auto-refresco cada INTERVALO_AUTOREFRESCO_IMPORTACION_SERCOP_S
+    segundos), simplificado a un solo bloque en vez de una página aparte:
+    esto es una acción de "completar datos" puntual y rápida (sin
+    CAPTCHA), no un flujo largo que necesite su propia navegación."""
+    st.caption(
+        "Completa el Monto Adjudicado de los procesos que todavía no lo tienen (recién "
+        "adjudicados desde la última importación, o que fallaron antes). No requiere "
+        "CAPTCHA -- corre en segundo plano, sin abrir ninguna ventana."
+    )
+    if st.button(":material/sync: Actualizar Montos Adjudicados", key="actualizar_montos_boton"):
+        _iniciar_actualizacion_montos_adjudicados()
+        st.rerun()
+
+    proceso = st.session_state.get("actualizar_montos_proceso")
+    if proceso is None:
+        error_lanzamiento = st.session_state.get("actualizar_montos_error_lanzamiento")
+        if error_lanzamiento:
+            st.error(f":material/error: No se pudo iniciar la actualización: {error_lanzamiento}")
+        return
+
+    log_path: str = st.session_state.actualizar_montos_log_path
+    inicio: float = st.session_state.actualizar_montos_inicio
+    transcurrido_s = time.time() - inicio
+    codigo_salida = proceso.poll()
+
+    if codigo_salida is None:
+        st.info(f":material/hourglass_top: Actualizando desde hace {_formatear_duracion_es(transcurrido_s)}...")
+        with st.expander("Ver log"):
+            st.code(_leer_cola_log_importacion_sercop(log_path), language=None)
+        time.sleep(INTERVALO_AUTOREFRESCO_IMPORTACION_SERCOP_S)
+        st.rerun()
+
+    try:
+        contenido_log = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        contenido_log = ""
+    resumen = PATRON_RESUMEN_ACTUALIZAR_MONTOS.search(contenido_log)
+
+    if codigo_salida == 0 and resumen is not None:
+        actualizados, sin_adjudicar, con_error = (int(grupo) for grupo in resumen.groups())
+        if actualizados > 0:
+            st.success(
+                f":material/check_circle: {actualizados} proceso(s) actualizado(s) en "
+                f"{_formatear_duracion_es(transcurrido_s)}. {sin_adjudicar} sin adjudicar todavía."
+            )
+        else:
+            st.info(
+                f":material/info: Ningún proceso nuevo para actualizar "
+                f"({sin_adjudicar} sin adjudicar todavía)."
+            )
+        if con_error:
+            st.caption(f"{con_error} proceso(s) con error al actualizar (ver log).")
+    elif codigo_salida == 0:
+        st.warning(":material/info: El proceso terminó sin errores, pero no se encontró el resumen esperado.")
+    else:
+        st.error(f":material/error: La actualización falló (código de salida {codigo_salida}). Revisa el log.")
+
+    with st.expander("Ver log", expanded=codigo_salida != 0):
+        st.code(_leer_cola_log_importacion_sercop(log_path), language=None)
+
+
 def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None:
     st.header(":material/location_city: Municipalidad de Guayaquil")
     registros_municipio = filtrar_por_entidad(registros_totales, ENTIDAD_MUNICIPALIDAD_GUAYAQUIL)
     if registros_municipio:
         render_contadores(registros_municipio)
         st.divider()
-        render_metricas_resumen(registros_municipio)
-        render_tabla_con_color(registros_municipio)
+        render_metricas_resumen(registros_municipio, mostrar_monto_adjudicado=True)
+        render_tabla_con_color(registros_municipio, mostrar_monto_adjudicado=True)
+        render_actualizar_montos_adjudicados()
     else:
         st.info(f'No se encontraron procesos para "{ENTIDAD_MUNICIPALIDAD_GUAYAQUIL}".')
 
@@ -3791,7 +4464,9 @@ def render_pagina_configuracion() -> None:
 
 def main():
     st.set_page_config(page_title="SERCOP Analytics", layout="wide")
+    _inyectar_precarga_fuente_iconos()
     _inyectar_estilos_sidebar()
+    _revelar_sidebar_cuando_cargue_fuente_iconos()
 
     if "resultados" not in st.session_state:
         st.session_state.resultados = None
@@ -3804,7 +4479,7 @@ def main():
 
     render_navegacion_sidebar()
 
-    # obtener_contrataciones() esta cacheada (ttl=30s), pero igual evitamos
+    # obtener_contrataciones() esta cacheada (ttl=60s), pero igual evitamos
     # llamarla del todo en paginas que no la necesitan (Reportes solo pega a
     # /api/generar-reporte, Configuración solo a /api/todos DELETE). El
     # spinner solo se nota quando hay cache miss (round-trip real a la

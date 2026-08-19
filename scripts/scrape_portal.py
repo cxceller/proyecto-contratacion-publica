@@ -5,7 +5,7 @@ espera a que completes la busqueda manualmente y extrae TODAS las paginas
 de resultados hacia la base de datos SQLite local).
 
 Uso:
-    .venv/Scripts/python.exe scripts/scrape_portal.py [--espera SEGUNDOS] [--palabra-clave TEXTO]
+    .venv/Scripts/python.exe scripts/scrape_portal.py [--espera SEGUNDOS] [--palabra-clave TEXTO] [--sin-monto-adjudicado]
 
 Flujo:
     1. Se abre una ventana de Chromium en la pagina de busqueda del SERCOP.
@@ -24,8 +24,18 @@ Flujo:
        los resultados, ej. "Procesos del 1 al 20 de 169": el script hace
        clic en "Siguiente" hasta la ultima pagina), incluyendo el enlace
        directo de cada proceso (el `href` del codigo, que `pd.read_html`
-       no preserva), y guarda todo en la base de datos. Por cada pagina con
-       datos, guarda tambien una captura de pantalla completa en
+       no preserva). Por cada proceso con enlace, visita ademas su pagina
+       de detalle -- con un pool acotado de pestanas trabajando en paralelo
+       (ver MAX_PESTANAS_DETALLE_CONCURRENTES) -- para leer el "Monto de
+       Adjudicacion ($)" real de la seccion "Informacion de Adjudicacion"
+       -- un dato que no viene en la tabla de resultados -- con un pequeno
+       retraso por pestana entre visitas para no sobrecargar el portal; si
+       un proceso puntual falla (pagina caida, sin adjudicar todavia,
+       estructura cambiada) queda con ese campo vacio, sin interrumpir el
+       resto. `--sin-monto-adjudicado` permite saltarse esta fase por
+       completo cuando no hace falta ese dato (mas rapido). Todo se guarda
+       en la base de datos, y por cada pagina de resultados con datos se
+       guarda tambien una captura de pantalla completa en
        `capturas/[palabra_clave]_[lote_id]_pag_[numero].png` (el lote_id
        identifica esta ejecucion, ver mas abajo).
     5. Al terminar cierra el navegador e imprime cuantos procesos guardo.
@@ -42,9 +52,9 @@ pierde la entrada estandar interactiva cuando el proceso tarda mas de
 ~2 minutos, y cualquier pregunta por teclado fallaria con EOFError.
 """
 import argparse
+import asyncio
 import re
 import sys
-import time
 import unicodedata
 from datetime import datetime
 from io import StringIO
@@ -53,15 +63,34 @@ from urllib.parse import urljoin
 
 import pandas as pd
 from bs4 import BeautifulSoup
-from playwright.sync_api import Page, Route, sync_playwright
+from playwright.async_api import BrowserContext, Page, Route, async_playwright
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.import_csv import mapear_columnas, importar_dataframe  # noqa: E402
+from scripts.import_csv import importar_dataframe, mapear_columnas, parsear_presupuesto  # noqa: E402
 
 URL_BUSQUEDA = "https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/PC/buscarProceso.cpe"
 ESPERA_POR_DEFECTO_S = 90  # tiempo maximo para completar el captcha y la busqueda
 MAX_PAGINAS = 50
+# Cuantas pestanas de detalle trabajan en paralelo dentro de
+# _obtener_montos_adjudicados (ver esa funcion). Punto de partida
+# razonable para no bombardear al portal SERCOP con una rafaga de
+# peticiones simultaneas; subir o bajar segun que tan bien lo tolere.
+MAX_PESTANAS_DETALLE_CONCURRENTES = 4
+# Pequeno retraso, POR PESTANA del pool, entre visitas a paginas de detalle
+# (Monto de Adjudicacion), para no sobrecargar el portal SERCOP con una
+# rafaga de visitas seguidas. Con el pool, la tasa efectiva es de hasta
+# MAX_PESTANAS_DETALLE_CONCURRENTES peticiones cada ~ESPERA_ENTRE_ADJUDICACIONES_S
+# segundos (antes era 1 cada ese intervalo); si se sube la concurrencia y se
+# quiere ser mas conservador, subir tambien este valor.
+ESPERA_ENTRE_ADJUDICACIONES_S = 0.5
+TIMEOUT_ADJUDICACION_MS = 20000
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
 DEBUG_DUMP_PATH = Path(__file__).resolve().parent.parent / "debug_sin_tabla.html"
 DEBUG_ROUTE_LOG_PATH = Path(__file__).resolve().parent.parent / "debug_rutas_red.txt"
 CAPTURAS_DIR = Path(__file__).resolve().parent.parent / "capturas"
@@ -114,27 +143,34 @@ def _con_encabezado_valido(tabla: pd.DataFrame) -> pd.DataFrame | None:
     return None
 
 
-def _forzar_codificacion_windows1252(route: Route) -> None:
+async def _forzar_codificacion_windows1252(route: Route) -> None:
     """El portal declara `charset=utf-8` en sus paginas HTML, pero los bytes
     reales de la pagina de resultados no son utf-8 valido (son windows-1252
     o equivalente). Si se deja que Chromium decodifique segun lo declarado,
     los caracteres con tilde/ene quedan sustituidos por un caracter de
     reemplazo de forma IRREVERSIBLE (la informacion original ya no se puede
-    recuperar despues). Por eso se intercepta cada respuesta (de cualquier
-    tipo, no solo "document"/"xhr"/"fetch": no hay certeza de como clasifica
-    Playwright la llamada que arma la tabla en este sitio) y se le indica al
-    navegador la codificacion real antes de que la parsee, sin tocar ni
-    perder ningun byte del contenido. Se registra cada intento en
-    DEBUG_ROUTE_LOG_PATH para poder diagnosticar si algo no se reescribe."""
+    recuperar despues). Por eso se intercepta cada respuesta de tipo
+    "document"/"xhr"/"fetch" (los unicos que pueden traer el HTML/JSON de
+    la tabla en este sitio; imagenes, CSS, fuentes y JS estatico no
+    necesitan re-encoding y se dejan pasar de inmediato con
+    `route.continue_()`, sin el `route.fetch()`+`route.fulfill()` extra que
+    antes se hacia para TODO el trafico) y se le indica al navegador la
+    codificacion real antes de que la parsee, sin tocar ni perder ningun
+    byte del contenido. Se registra cada intento en DEBUG_ROUTE_LOG_PATH
+    para poder diagnosticar si algo no se reescribe."""
     request = route.request
+    if request.resource_type not in ("document", "xhr", "fetch"):
+        await route.continue_()
+        return
+
     entrada = f"{request.resource_type} {request.method} {request.url}"
 
     try:
-        response = route.fetch(max_redirects=0)
+        response = await route.fetch(max_redirects=0)
     except Exception as exc:
         _registrar_linea_debug(f"{entrada} | FETCH_ERROR: {exc}")
         try:
-            route.continue_()
+            await route.continue_()
         except Exception:
             pass
         return
@@ -145,10 +181,10 @@ def _forzar_codificacion_windows1252(route: Route) -> None:
     try:
         if "text/html" in content_type.lower() or "text/plain" in content_type.lower():
             headers = {**response.headers, "content-type": "text/html; charset=windows-1252"}
-            route.fulfill(response=response, headers=headers)
+            await route.fulfill(response=response, headers=headers)
             entrada += " | reescrito a windows-1252"
         else:
-            route.fulfill(response=response)
+            await route.fulfill(response=response)
     except Exception as exc:
         entrada += f" | FULFILL_ERROR: {exc}"
 
@@ -212,16 +248,438 @@ def _extraer_mapa_codigo_a_url(html: str, url_base: str) -> dict[str, str]:
     return mapa
 
 
-def _esperar_resultados(page: Page, espera_s: int) -> None:
+# Etiquetas que identifican el dato en las dos plantillas reales de
+# resumen contractual que usa el portal (confirmado navegando paginas
+# reales): "Monto de Adjudicacion ($)" en resumenContractual1.cpe,
+# "Monto de Adjudicacion" (sin "($)") en resumenContractual.cpe. Ambas
+# normalizan igual ("montodeadjudicacion", ver _normalizar), asi que un
+# solo patron alcanza para las dos. "Valor Adjudicado" se agrega para el
+# caso de Subasta Inversa Electronica descrito en la seccion "Ver
+# resultados de negociacion" -- NO se pudo confirmar contra una pagina
+# real (ningun proceso de Guayaquil quedo en esa fase especifica al
+# momento de escribir esto), se agrega igual por las dudas pero con menos
+# certeza que las otras dos.
+ETIQUETAS_MONTO_ADJUDICADO = ("montodeadjudicacion", "valoradjudicado")
+
+
+def _tabla_con_columna_monto_adjudicacion(tabla: pd.DataFrame) -> tuple[str, pd.DataFrame] | None:
+    """Busca una columna que identifique el Monto de Adjudicacion (ver
+    ETIQUETAS_MONTO_ADJUDICADO) en una tabla ya leida por `pd.read_html`,
+    sea que pandas la haya reconocido como encabezado real (`tabla.columns`)
+    o que -- verificado contra una pagina real de resumenContractual1.cpe:
+    NINGUNA de sus tablas trae `<th>`, todas quedan con columnas enteras
+    0,1,2,... y el encabezado real aparece como la PRIMERA FILA de datos --
+    haya que promover la primera fila a encabezado, el mismo quirk que ya
+    resuelve `_con_encabezado_valido` para la tabla de resultados de
+    busqueda, aca generalizado a esta columna en particular. Este es el
+    formato de tabla "una fila por adjudicatario" (resumenContractual1.cpe);
+    ver _valor_monto_adjudicacion_en_celdas para el otro formato, de
+    "etiqueta: valor" (resumenContractual.cpe). Devuelve
+    (nombre_de_columna, tabla_con_encabezado_ya_promovido), o None si la
+    columna no aparece de ninguna de las dos formas."""
+    columnas_planas = _aplanar_columnas(tabla.columns)
+    columna_monto = next(
+        (c for c in columnas_planas if any(e in _normalizar(c) for e in ETIQUETAS_MONTO_ADJUDICADO)), None
+    )
+    if columna_monto is not None:
+        tabla = tabla.copy()
+        tabla.columns = columnas_planas
+        return columna_monto, tabla
+
+    if len(tabla) > 0:
+        primera_fila = [str(v) for v in tabla.iloc[0].tolist()]
+        columna_monto = next(
+            (v for v in primera_fila if any(e in _normalizar(v) for e in ETIQUETAS_MONTO_ADJUDICADO)), None
+        )
+        if columna_monto is not None:
+            tabla = tabla.iloc[1:].copy()
+            tabla.columns = primera_fila
+            return columna_monto, tabla.reset_index(drop=True)
+
+    return None
+
+
+def _valores_monto_adjudicacion_en_celdas(tabla: pd.DataFrame) -> list[float]:
+    """Busca el Monto de Adjudicacion en el otro formato que usa el portal
+    para la pagina de detalle: NO como columna de una tabla con una fila
+    por adjudicatario, sino como una celda-etiqueta suelta (ej. "Monto de
+    Adjudicacion") con el valor en dolares en una celda vecina de la MISMA
+    fila (confirmado contra una pagina real de resumenContractual.cpe, sin
+    el "1" -- el portal a veces arma toda la pagina como una unica tabla
+    gigante de dos columnas "etiqueta: valor" en vez de tablas separadas
+    por seccion). El HTML de origen suele repetir el mismo valor en varias
+    celdas contiguas por como se combinan columnas (colspan) al leerlo con
+    pandas, asi que alcanza con la primera celda de la fila, distinta de
+    la etiqueta, que se pueda interpretar como numero."""
+    valores: list[float] = []
+    for _, fila in tabla.iterrows():
+        valores_fila = list(fila)
+        indice_etiqueta = next(
+            (
+                i
+                for i, celda in enumerate(valores_fila)
+                if isinstance(celda, str) and any(e in _normalizar(celda) for e in ETIQUETAS_MONTO_ADJUDICADO)
+            ),
+            None,
+        )
+        if indice_etiqueta is None:
+            continue
+        for i, celda in enumerate(valores_fila):
+            if i == indice_etiqueta:
+                continue
+            numero = parsear_presupuesto(celda)
+            if numero is not None:
+                valores.append(numero)
+                break
+    return valores
+
+
+def _extraer_monto_adjudicado(html: str) -> float | None:
+    """Busca, entre todas las tablas de la pagina de detalle de un proceso
+    (la pagina "Resumen del Contrato"/"Resumen Informacion Esencial del
+    Contrato" -- ver _obtener_montos_adjudicados sobre como se llega ahi;
+    el portal usa AL MENOS dos plantillas distintas para esa pagina segun
+    el proceso: resumenContractual1.cpe y resumenContractual.cpe, ambas
+    confirmadas contra paginas reales, con estructura de tabla diferente
+    entre si -- ver _tabla_con_columna_monto_adjudicacion y
+    _valores_monto_adjudicacion_en_celdas), el "Monto de Adjudicacion" real
+    y devuelve la suma (un solo valor si hay un unico adjudicatario, la
+    suma de todos si hay varios). Se identifica EXCLUSIVAMENTE por las
+    etiquetas de ETIQUETAS_MONTO_ADJUDICADO, para no confundirlo con "Monto
+    Contractual ($)" (tabla de "Informacion del Contrato", mas abajo en la
+    misma pagina, con una forma muy parecida en la plantilla de tabla).
+    Devuelve None si no aparece en ninguna tabla (proceso todavia sin
+    adjudicar) o si el HTML no se puede interpretar -- nunca lanza, para
+    que un solo proceso con la pagina caida o con la estructura cambiada
+    no interrumpa el resto de la importacion (ver _obtener_montos_adjudicados).
+    Ademas de `ValueError` (lo que lanza pd.read_html cuando no encuentra
+    ninguna tabla), un HTML vacio o gravemente malformado puede hacer que
+    el parser XML subyacente (lxml) lance su propio `XMLSyntaxError` -- por
+    eso se captura `Exception` en general en vez de solo `ValueError`."""
+    try:
+        tablas = pd.read_html(StringIO(html))
+    except Exception:
+        return None
+
+    for tabla in tablas:
+        encontrada = _tabla_con_columna_monto_adjudicacion(tabla)
+        if encontrada is not None:
+            columna_monto, tabla_con_encabezado = encontrada
+            valores = tabla_con_encabezado[columna_monto].map(parsear_presupuesto).dropna().tolist()
+        else:
+            valores = _valores_monto_adjudicacion_en_celdas(tabla)
+
+        if valores:
+            return float(sum(valores))
+
+    return None
+
+
+def _extraer_motivo_estado(html: str) -> str | None:
+    """Extrae el texto completo de la celda "Estado del Proceso" de la
+    pagina GENERAL de detalle de un proceso (informacionProcesoContratacion2.cpe,
+    la misma pagina a la que ya se navega para llegar a "Resumen de
+    Contrato"/"Resumen de Resultados PN" -- ver _obtener_montos_adjudicados).
+    Para estados como "Desierta", "Cancelado" o "Suspendido" esa celda trae
+    Razon, Fecha y Justificacion completas (confirmado por el usuario con
+    captura del portal: para un proceso "Desierta" el portal explica
+    textualmente el articulo de ley y el motivo), no solo la palabra del
+    estado -- un dato que hoy se descarta porque solo se guarda la
+    etiqueta corta (columna `estado`, que viene de la tabla de resultados
+    de busqueda, no de esta pagina). Se captura para TODOS los procesos, no
+    solo "Desierta": es gratis obtenerlo (la pagina ya se visita para leer
+    el Monto de Adjudicacion) y sirve de base para
+    scripts/explicar_estado_desierta.py. Devuelve el texto crudo tal cual
+    aparece en el portal (celdas de la fila separadas por salto de linea),
+    o None si no se encuentra la fila -- nunca lanza, mismo criterio de
+    tolerancia a fallos que el resto de las funciones de extraccion de esta
+    pagina."""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return None
+    etiqueta = soup.find(string=re.compile(r"Estado del Proceso", re.IGNORECASE))
+    if etiqueta is None:
+        return None
+    fila = etiqueta.find_parent("tr")
+    if fila is None:
+        return None
+    celdas = fila.find_all("td")
+    if len(celdas) < 2:
+        return None
+    texto = celdas[-1].get_text(separator="\n", strip=True)
+    return texto or None
+
+
+async def _ir_a_resumen_de_contrato(pagina_detalle: Page) -> bool:
+    """Desde la pagina general de un proceso (informacionProcesoContratacion2.cpe,
+    la URL que ya se guarda en la columna `url`), navega hasta la pagina
+    real de resumen contractual (resumenContractual1.cpe o
+    resumenContractual.cpe, segun el proceso -- ver _extraer_monto_adjudicado)
+    haciendo clic en el enlace "Resumen de Contrato" de la seccion "FASE
+    CONTRACTUAL" -- confirmado navegando paginas reales: el "Monto de
+    Adjudicacion" NO esta en la pagina general, solo ahi. Antes de buscar
+    ese enlace, cierra el aviso de cookies si aparece (igual que ya hace
+    main() en la pagina de busqueda, via el mismo boton "Aceptar") --
+    mientras el aviso este abierto intercepta los clics y el de "Resumen
+    de Contrato" fallaria. En vez de esperar a que la red quede inactiva
+    (`wait_for_load_state("networkidle")`, lento en un sitio con trackers
+    de fondo), espera puntualmente los selectores que de verdad hacen
+    falta: primero que aparezca el enlace "Resumen de Contrato" (o el
+    timeout, lo cual es normal en un proceso que todavia no llego a fase
+    contractual -- ver mas abajo), y despues de hacer clic, que aparezca
+    alguna tabla en la pagina de resumen contractual (ambas plantillas,
+    resumenContractual1.cpe y resumenContractual.cpe, son tablas). Devuelve
+    False (sin lanzar) si el enlace "Resumen de Contrato" no aparece dentro
+    del timeout -- no hay adjudicacion/contrato registrado aun, asi que el
+    enlace ni existe -- lo cual es un resultado normal, no un error."""
+    try:
+        await pagina_detalle.click("button:has-text('Aceptar')", timeout=3000)
+    except Exception:
+        pass
+
+    try:
+        await pagina_detalle.wait_for_selector("text=Resumen de Contrato", timeout=TIMEOUT_ADJUDICACION_MS)
+    except PlaywrightTimeoutError:
+        return False
+
+    enlace_resumen = pagina_detalle.locator("text=Resumen de Contrato").first
+    await enlace_resumen.click(timeout=10000)
+    try:
+        await pagina_detalle.wait_for_selector("table", timeout=TIMEOUT_ADJUDICACION_MS)
+    except PlaywrightTimeoutError:
+        pass
+    return True
+
+
+def _es_proceso_produccion_nacional(codigo: str) -> bool:
+    """Los procesos VPN (Verificacion de Produccion Nacional) tienen un
+    flujo de fases distinto al resto -- sin ningun paso de "Resumen de
+    Contrato" (confirmado por el usuario con capturas del portal: su fase
+    precontractual es Preguntas/Respuestas/Aclaraciones > Entrega de
+    Propuesta > Apertura de ofertas > Calificacion de Participantes >
+    Publicar resultado > Finalizada, sin fase contractual) -- identificable
+    por el prefijo VPN de su codigo (ej. VPN-MIMG-2026-001). Por eso
+    _ir_a_resumen_de_contrato siempre les devuelve False (no hay error,
+    simplemente el enlace que busca no existe para este tipo de proceso) y
+    quedan con monto_adjudicado en NULL aunque si esten adjudicados -- ver
+    _ir_a_resumen_resultados_pn/_extraer_monto_desde_subtotal para el
+    camino equivalente que si les aplica."""
+    return codigo.strip().upper().startswith("VPN")
+
+
+# El texto exacto del enlace "Resumen de Resultados PN" no se pudo
+# confirmar contra una pagina real en vivo (portal con CAPTCHA, ver
+# _ir_a_resumen_resultados_pn) -- se prueban varios candidatos en orden,
+# mismo patron de respaldo que ya usa _extraer_palabra_clave, por si el
+# portal varia mayusculas/espacios entre procesos.
+_CANDIDATOS_ENLACE_RESUMEN_PN = [
+    "text=Resumen de Resultados PN",
+    "text=Resumen de Resultados",
+    "a:has-text('Resumen de Resultados PN')",
+    "a:has-text('Resultados PN')",
+]
+
+
+async def _ir_a_resumen_resultados_pn(pagina_worker: Page) -> bool:
+    """Analogo a _ir_a_resumen_de_contrato, pero para procesos VPN (ver
+    _es_proceso_produccion_nacional): en vez de "Resumen de Contrato", la
+    seccion FASE PRECONTRACTUAL de estos procesos trae un enlace "Resumen
+    de Resultados PN" que lleva a la pagina "Lista de Preseleccionados"
+    (con un bloque "CERTIFICADO DE PRODUCCION NACIONAL"), cuya tabla
+    "Detalle:" trae el monto adjudicado real en la columna SubTotal (ver
+    _extraer_monto_desde_subtotal). Prueba los selectores candidatos de
+    _CANDIDATOS_ENLACE_RESUMEN_PN en orden y usa el primero que aparezca.
+    Devuelve False (sin lanzar) si ninguno aparece -- mismo criterio que
+    _ir_a_resumen_de_contrato: no es un error, puede ser un proceso que
+    todavia no llego a esa fase o cuyo enlace no matchea ninguno de los
+    candidatos."""
+    try:
+        await pagina_worker.click("button:has-text('Aceptar')", timeout=3000)
+    except Exception:
+        pass
+
+    for selector in _CANDIDATOS_ENLACE_RESUMEN_PN:
+        enlace = pagina_worker.locator(selector).first
+        try:
+            if await enlace.count() == 0:
+                continue
+            await enlace.click(timeout=10000)
+        except Exception:
+            continue
+        try:
+            await pagina_worker.wait_for_selector("text=Detalle:", timeout=TIMEOUT_ADJUDICACION_MS)
+        except PlaywrightTimeoutError:
+            pass
+        return True
+
+    return False
+
+
+def _tabla_con_columna_subtotal(tabla: pd.DataFrame) -> tuple[str, pd.DataFrame] | None:
+    """Analoga a _tabla_con_columna_monto_adjudicacion pero para la columna
+    "SubTotal" de la tabla "Detalle" de un proceso VPN (ver
+    _extraer_monto_desde_subtotal): el mismo quirk del portal aplica aca --
+    el encabezado real puede venir como fila normal (<td>, no <th>), asi
+    que pandas la deja con columnas enteras 0,1,2,... y hay que promover la
+    primera fila a encabezado cuando corresponda."""
+    columnas_planas = _aplanar_columnas(tabla.columns)
+    if any(_normalizar(c) == "subtotal" for c in columnas_planas):
+        tabla = tabla.copy()
+        tabla.columns = columnas_planas
+        return "SubTotal", tabla
+
+    if len(tabla) > 0:
+        primera_fila = [str(v) for v in tabla.iloc[0].tolist()]
+        if any(_normalizar(v) == "subtotal" for v in primera_fila):
+            tabla = tabla.iloc[1:].copy()
+            tabla.columns = primera_fila
+            return "SubTotal", tabla.reset_index(drop=True)
+
+    return None
+
+
+def _extraer_monto_desde_subtotal(html: str) -> float | None:
+    """Extrae el monto adjudicado de un proceso VPN (ver
+    _es_proceso_produccion_nacional) sumando la columna "SubTotal" de la
+    tabla "Detalle" en la pagina "Lista de Preseleccionados" (columnas
+    Categoria | Descripcion | Cant. | Unidad Medida | Precio Ref.
+    Unitarios | SubTotal -- confirmado por el usuario con captura del
+    portal). Misma logica de "sumar todas las filas" que ya usa
+    _extraer_monto_adjudicado para procesos con varios adjudicatarios.
+    Se maneja separada de ETIQUETAS_MONTO_ADJUDICADO/_extraer_monto_adjudicado
+    a proposito: "subtotal" es una etiqueta demasiado generica para
+    mezclarla ahi -- podria matchear tablas no relacionadas en otras
+    paginas -- por eso esta funcion solo se invoca cuando el codigo
+    empieza con VPN."""
+    try:
+        tablas = pd.read_html(StringIO(html))
+    except Exception:
+        return None
+
+    for tabla in tablas:
+        encontrada = _tabla_con_columna_subtotal(tabla)
+        if encontrada is None:
+            continue
+        columna_subtotal, tabla_con_encabezado = encontrada
+        valores = tabla_con_encabezado[columna_subtotal].map(parsear_presupuesto).dropna().tolist()
+        if valores:
+            return float(sum(valores))
+
+    return None
+
+
+async def _obtener_montos_adjudicados(
+    context: BrowserContext, mapa_urls: dict[str, str]
+) -> tuple[dict[str, float | None], dict[str, str | None]]:
+    """Visita la pagina de detalle de cada proceso (el mismo enlace que ya
+    se guarda en la columna `url`) y de ahi navega hasta el resumen
+    contractual real (ver _ir_a_resumen_de_contrato) para leer el "Monto de
+    Adjudicacion" -- un dato que NO aparece ni en la tabla de resultados de
+    busqueda ni en la pagina general del proceso, solo en su resumen
+    contractual. Los procesos VPN (Verificacion de Produccion Nacional,
+    ver _es_proceso_produccion_nacional) toman un camino distinto dentro
+    del worker -- via _ir_a_resumen_resultados_pn/_extraer_monto_desde_subtotal
+    -- porque no tienen fase contractual ni el enlace "Resumen de Contrato".
+    De paso, apenas se llega a la pagina general (ANTES de navegar hacia
+    cualquiera de esos dos resumenes, que llevan a otra pagina), tambien se
+    captura el texto completo de "Estado del Proceso" (ver
+    _extraer_motivo_estado) -- gratis, sin peticion extra, porque esta
+    pagina ya se visita igual.
+
+    Antes esto se hacia SECUENCIALMENTE, una pestana, un proceso a la vez;
+    con 60-150+ procesos por busqueda y timeouts de hasta
+    TIMEOUT_ADJUDICACION_MS, esa era la fase mas lenta del script con
+    diferencia. Ahora se reparte el trabajo entre un pool acotado de
+    MAX_PESTANAS_DETALLE_CONCURRENTES pestanas (todas del mismo `context`
+    que ya comparte la ventana con `page` -- nunca se abren ventanas
+    nuevas), cada una sacando trabajo de una cola compartida
+    (`asyncio.Queue`) hasta vaciarla. La API sync de Playwright NO es seguro
+    usarla desde threads distintos; por eso la concurrencia real se logra
+    con la API async (`playwright.async_api`) y `asyncio`, no con
+    `ThreadPoolExecutor`. El contador de progreso (`completados`) se
+    actualiza sin lock porque el event loop de asyncio es de un solo hilo
+    -- no hay dos corutinas ejecutando Python al mismo tiempo, solo
+    intercaladas en los puntos `await`.
+
+    Un error en UN proceso puntual (pagina caida, timeout, estructura
+    cambiada) se registra en consola -- que queda en el log de la
+    importacion, ver render_pagina_importacion_sercop en app_ui.py -- y NO
+    interrumpe el resto: ese proceso queda con monto_adjudicado en
+    None/NULL en vez de propagar la excepcion. Un proceso que todavia no
+    llego a fase contractual tambien queda en None, sin loguear nada --
+    ver _ir_a_resumen_de_contrato -- porque no es un error, es el estado
+    esperado para un proceso que aun no se adjudica.
+
+    Devuelve (montos, motivos): dos dicts {codigo: valor}, para no forzar a
+    los callers que solo necesitan uno de los dos (ej. tests) a lidiar con
+    el otro."""
+    if not mapa_urls:
+        return {}, {}
+
+    montos: dict[str, float | None] = {}
+    motivos: dict[str, str | None] = {}
+    cola: asyncio.Queue = asyncio.Queue()
+    for item in mapa_urls.items():
+        cola.put_nowait(item)
+
+    total = len(mapa_urls)
+    completados = 0  # event loop de un solo hilo -> no hace falta lock
+
+    async def worker(pagina_worker: Page) -> None:
+        nonlocal completados
+        while not cola.empty():
+            try:
+                codigo, url = cola.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                await pagina_worker.goto(url, timeout=TIMEOUT_ADJUDICACION_MS)
+                motivos[codigo] = _extraer_motivo_estado(await pagina_worker.content())
+                if _es_proceso_produccion_nacional(codigo):
+                    if await _ir_a_resumen_resultados_pn(pagina_worker):
+                        montos[codigo] = _extraer_monto_desde_subtotal(await pagina_worker.content())
+                    else:
+                        montos[codigo] = None
+                elif await _ir_a_resumen_de_contrato(pagina_worker):
+                    montos[codigo] = _extraer_monto_adjudicado(await pagina_worker.content())
+                else:
+                    montos[codigo] = None
+            except Exception as exc:
+                print(f"  Monto de Adjudicacion de {codigo}: no se pudo obtener ({exc}).")
+                montos[codigo] = None
+                motivos.setdefault(codigo, None)
+            completados += 1
+            if completados % 5 == 0 or completados == total:
+                print(f"  Monto de Adjudicacion: {completados}/{total} procesados...")
+            await asyncio.sleep(ESPERA_ENTRE_ADJUDICACIONES_S)
+
+    paginas_worker = [
+        await context.new_page() for _ in range(min(MAX_PESTANAS_DETALLE_CONCURRENTES, total))
+    ]
+    try:
+        await asyncio.gather(*(worker(p) for p in paginas_worker))
+    finally:
+        for p in paginas_worker:
+            try:
+                await p.close()
+            except Exception:
+                pass
+    return montos, motivos
+
+
+async def _esperar_resultados(page: Page, espera_s: int) -> None:
     """Espera activamente (a diferencia de un `time.sleep` fijo) a que el
     contenedor de resultados del portal (`div#divProcesos`) tenga contenido,
     hasta un maximo de `espera_s` segundos. Como el portal arma la tabla de
     resultados dinamicamente en el navegador (no hay una unica respuesta de
     red reconocible como "la tabla"), esta es la forma confiable de saber
     que la busqueda ya cargo, sin depender de adivinar cuanto tarda el
-    usuario en resolver el captcha y hacer clic en Buscar."""
+    usuario en resolver el captcha y hacer clic en Buscar. Ya usa polling
+    activo via `wait_for_function` en vez de `networkidle`, asi que no
+    necesito el cambio de Cambio 2 -- se deja igual."""
     try:
-        page.wait_for_function(
+        await page.wait_for_function(
             "() => {"
             "  const el = document.getElementById('divProcesos');"
             "  return !!el && el.textContent.trim().length > 0;"
@@ -235,7 +693,7 @@ def _esperar_resultados(page: Page, espera_s: int) -> None:
         )
 
 
-def _extraer_palabra_clave(page: Page) -> str | None:
+async def _extraer_palabra_clave(page: Page) -> str | None:
     """Lee automaticamente lo que el usuario escribio en el campo "Palabras
     claves" del formulario de busqueda del portal, para no depender de que
     se indique por linea de comandos. El campo real (visto en el HTML del
@@ -248,34 +706,42 @@ def _extraer_palabra_clave(page: Page) -> str | None:
         "input[name*='alabra' i]",
         "input[id*='alabra' i]",
     ]
-    for selector in candidatos_selector:
-        loc = page.locator(selector).first
-        if loc.count() == 0:
-            continue
-        try:
-            valor = loc.input_value(timeout=2000)
-        except Exception:
-            continue
-        if valor and valor.strip():
-            return valor.strip()
-
+    # Todo el cuerpo va envuelto en un try/except de PlaywrightError (clase
+    # base de la que hereda TargetClosedError): si el usuario cierra la
+    # ventana de Chromium manualmente mientras el script todavia esta
+    # leyendo el formulario, cualquier llamada aca (`.count()`,
+    # `.input_value()`) puede lanzar esa excepcion -- sin este bloque, el
+    # traceback crudo llegaba directo al log de la UI (ver
+    # render_pagina_importacion_sercop en app_ui.py).
     try:
+        for selector in candidatos_selector:
+            loc = page.locator(selector).first
+            if await loc.count() == 0:
+                continue
+            try:
+                valor = await loc.input_value(timeout=2000)
+            except PlaywrightError:
+                continue
+            if valor and valor.strip():
+                return valor.strip()
+
         etiqueta = page.locator("text=Palabras claves").first
-        if etiqueta.count() > 0:
+        if await etiqueta.count() > 0:
             input_cercano = etiqueta.locator(
                 "xpath=ancestor::tr[1]//input[@type='text' or not(@type)]"
             ).first
-            if input_cercano.count() > 0:
-                valor = input_cercano.input_value(timeout=2000)
+            if await input_cercano.count() > 0:
+                valor = await input_cercano.input_value(timeout=2000)
                 if valor and valor.strip():
                     return valor.strip()
-    except Exception:
-        pass
+    except PlaywrightError:
+        print("  No se pudo leer la palabra clave: la ventana del navegador se cerro antes de tiempo.")
+        return None
 
     return None
 
 
-def _intentar_siguiente_pagina(page: Page) -> bool:
+async def _intentar_siguiente_pagina(page: Page) -> bool:
     """Busca un enlace/boton de 'Siguiente' en la paginacion y hace clic.
     Devuelve True si avanzo de pagina, False si no encontro mas paginas."""
     candidatos = [
@@ -286,10 +752,10 @@ def _intentar_siguiente_pagina(page: Page) -> bool:
     ]
     for selector in candidatos:
         loc = page.locator(selector).first
-        if loc.count() > 0 and loc.is_visible():
+        if await loc.count() > 0 and await loc.is_visible():
             try:
-                loc.click()
-                page.wait_for_load_state("networkidle", timeout=30000)
+                await loc.click()
+                await page.wait_for_load_state("networkidle", timeout=30000)
                 return True
             except Exception:
                 return False
@@ -329,19 +795,23 @@ def _nombre_captura(palabra_clave: str | None, lote_id: str | None, numero_pagin
     return f"{_slug_palabra_clave(palabra_clave)}_{_slug_lote_id(lote_id)}_pag_{numero_pagina}.png"
 
 
-def _capturar_pantalla_pagina(
+async def _capturar_pantalla_pagina(
     page: Page, palabra_clave: str | None, lote_id: str | None, numero_pagina: int
 ) -> Path:
     """Guarda una captura de pantalla completa (full_page=True, sin cortes)
     de la pagina de resultados actual, con nombre secuencial por pagina."""
     CAPTURAS_DIR.mkdir(parents=True, exist_ok=True)
     ruta = CAPTURAS_DIR / _nombre_captura(palabra_clave, lote_id, numero_pagina)
-    page.screenshot(path=str(ruta), full_page=True)
+    await page.screenshot(path=str(ruta), full_page=True)
     return ruta
 
 
-def _procesar_busqueda(
-    page: Page, palabra_clave: str | None = None, lote_id: str | None = None
+async def _procesar_busqueda(
+    page: Page,
+    context: BrowserContext,
+    palabra_clave: str | None = None,
+    lote_id: str | None = None,
+    sin_monto_adjudicado: bool = False,
 ) -> tuple[int, int, int]:
     """Extrae e importa todas las paginas de resultados disponibles tras la
     busqueda ya realizada por el usuario. Si se indica `palabra_clave`, se
@@ -349,52 +819,74 @@ def _procesar_busqueda(
     `lote_id`, se asigna igual a todos los registros importados en esta
     ejecucion, para poder reconstruir mas tarde (ver
     scripts/report_generator.py) que filas pertenecen a esta misma busqueda,
-    sin depender de adivinar por saltos en el id. Devuelve (importados,
+    sin depender de adivinar por saltos en el id. `context` es el
+    BrowserContext compartido (ver main()): se le pasa directo a
+    _obtener_montos_adjudicados, que abre ahi su propio pool de pestanas de
+    detalle por cada pagina de resultados, sin interferir con `page`, que
+    sigue paginando los resultados de busqueda. Si `sin_monto_adjudicado`
+    es True, se sigue extrayendo y guardando la columna `url` de cada
+    proceso, pero se omite por completo la visita a las paginas de detalle
+    (mas rapido, sin el campo Monto de Adjudicacion NI motivo_estado_raw --
+    ver _obtener_montos_adjudicados, ambos se capturan en la misma visita).
+    Devuelve (importados,
     con_error, paginas)."""
     importados_total, con_error_total, paginas = 0, 0, 0
-    while paginas < MAX_PAGINAS:
-        html = page.content()
-        tabla = _extraer_tabla_resultados(html)
-        if tabla is None:
-            if paginas == 0:
-                DEBUG_DUMP_PATH.write_text(html, encoding="utf-8")
-                print(
-                    "  No se encontro una tabla de resultados reconocible. "
-                    f"Se guardo el HTML de la pagina en {DEBUG_DUMP_PATH} para revisarlo."
-                )
-            break
+    try:
+        while paginas < MAX_PAGINAS:
+            html = await page.content()
+            tabla = _extraer_tabla_resultados(html)
+            if tabla is None:
+                if paginas == 0:
+                    DEBUG_DUMP_PATH.write_text(html, encoding="utf-8")
+                    print(
+                        "  No se encontro una tabla de resultados reconocible. "
+                        f"Se guardo el HTML de la pagina en {DEBUG_DUMP_PATH} para revisarlo."
+                    )
+                break
 
-        df = mapear_columnas(tabla)
-        if len(df) == 0:
-            # Algunas paginaciones del portal dejan el enlace "Siguiente"
-            # clickeable aun sin mas datos, mostrando una tabla vacia (solo
-            # encabezado). Sin este corte, el bucle seguiria "avanzando"
-            # sobre paginas vacias hasta MAX_PAGINAS.
-            break
+            df = mapear_columnas(tabla)
+            if len(df) == 0:
+                # Algunas paginaciones del portal dejan el enlace "Siguiente"
+                # clickeable aun sin mas datos, mostrando una tabla vacia (solo
+                # encabezado). Sin este corte, el bucle seguiria "avanzando"
+                # sobre paginas vacias hasta MAX_PAGINAS.
+                break
 
-        mapa_urls = _extraer_mapa_codigo_a_url(html, page.url)
-        if mapa_urls:
-            df["url"] = df["codigo"].astype(str).str.strip().map(mapa_urls)
+            mapa_urls = _extraer_mapa_codigo_a_url(html, page.url)
+            if mapa_urls:
+                df["url"] = df["codigo"].astype(str).str.strip().map(mapa_urls)
+                if not sin_monto_adjudicado:
+                    montos_adjudicados, motivos_estado = await _obtener_montos_adjudicados(context, mapa_urls)
+                    df["monto_adjudicado"] = df["codigo"].astype(str).str.strip().map(montos_adjudicados)
+                    df["motivo_estado_raw"] = df["codigo"].astype(str).str.strip().map(motivos_estado)
 
-        importados, con_error = importar_dataframe(df, palabra_clave=palabra_clave, lote_id=lote_id)
-        importados_total += importados
-        con_error_total += con_error
-        paginas += 1
+            importados, con_error = importar_dataframe(df, palabra_clave=palabra_clave, lote_id=lote_id)
+            importados_total += importados
+            con_error_total += con_error
+            paginas += 1
 
-        ruta_captura = _capturar_pantalla_pagina(page, palabra_clave, lote_id, paginas)
+            ruta_captura = await _capturar_pantalla_pagina(page, palabra_clave, lote_id, paginas)
+            print(
+                f"  Pagina {paginas}: {importados} importados, {con_error} con error. "
+                f"Captura: {ruta_captura}"
+            )
+
+            if not await _intentar_siguiente_pagina(page):
+                break
+            await asyncio.sleep(1)
+    except PlaywrightError:
+        # Si el usuario cierra la ventana de Chromium a mitad de la
+        # extraccion, se corta el bucle y se devuelve lo ya importado hasta
+        # ese punto en vez de dejar subir un traceback crudo al log de la UI.
         print(
-            f"  Pagina {paginas}: {importados} importados, {con_error} con error. "
-            f"Captura: {ruta_captura}"
+            "  La ventana del navegador se cerro antes de terminar de extraer "
+            f"todas las paginas. Se guardo lo recolectado hasta la pagina {paginas}."
         )
-
-        if not _intentar_siguiente_pagina(page):
-            break
-        time.sleep(1)
 
     return importados_total, con_error_total, paginas
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--espera",
@@ -415,6 +907,11 @@ def main() -> None:
             "en vez de leerla automaticamente del campo 'Palabras claves' "
             "del formulario (uso normal: no hace falta pasarla)."
         ),
+    )
+    parser.add_argument(
+        "--sin-monto-adjudicado",
+        action="store_true",
+        help="Omite la visita al detalle de cada proceso (mas rapido, sin el campo Monto de Adjudicacion).",
     )
     args = parser.parse_args()
 
@@ -438,34 +935,45 @@ def main() -> None:
     )
     if args.palabra_clave:
         print(f"Se forzara la palabra clave {args.palabra_clave!r} en cada proceso importado.")
+    if args.sin_monto_adjudicado:
+        print("Se omitira la visita al detalle de cada proceso (sin Monto de Adjudicacion).")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-        page = browser.new_page(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
-        )
-        page.route("**/*", _forzar_codificacion_windows1252)
-        page.goto(URL_BUSQUEDA, timeout=60000)
+    async with async_playwright() as p:
+        # `--start-maximized` + `no_viewport=True` para que la ventana de
+        # Chromium aparezca maximizada y al frente en vez del tamano fijo
+        # (1280x720) que Playwright impone por defecto. Un unico
+        # `browser.new_context(...)` para `page` (el listado) y para el
+        # pool de pestanas de detalle que abre _obtener_montos_adjudicados:
+        # `browser.new_page()` crea un contexto nuevo -- y por lo tanto una
+        # ventana de Chromium nueva -- por cada llamada, que era la causa
+        # de que se abrieran varias ventanas en vez de una sola con varias
+        # pestanas.
+        browser = await p.chromium.launch(headless=False, args=["--start-maximized"])
+        context = await browser.new_context(user_agent=USER_AGENT, no_viewport=True)
+        page = await context.new_page()
+        await page.route("**/*", _forzar_codificacion_windows1252)
+        await page.goto(URL_BUSQUEDA, timeout=60000)
 
         try:
-            page.click("button:has-text('Aceptar')", timeout=5000)
+            await page.click("button:has-text('Aceptar')", timeout=5000)
         except Exception:
             pass
 
         print(f"\nEsperando hasta {args.espera} segundos a que completes la busqueda...")
-        _esperar_resultados(page, args.espera)
+        await _esperar_resultados(page, args.espera)
 
-        palabra_clave = args.palabra_clave or _extraer_palabra_clave(page)
+        palabra_clave = args.palabra_clave or await _extraer_palabra_clave(page)
         if palabra_clave:
             print(f"Palabra clave detectada: {palabra_clave!r} (se guardara en cada proceso).")
         else:
             print("No se detecto ninguna palabra clave en el formulario; se guardara vacia.")
 
-        importados, con_error, paginas = _procesar_busqueda(
-            page, palabra_clave=palabra_clave, lote_id=lote_id
+        importados, con_error, paginas = await _procesar_busqueda(
+            page,
+            context,
+            palabra_clave=palabra_clave,
+            lote_id=lote_id,
+            sin_monto_adjudicado=args.sin_monto_adjudicado,
         )
 
         print(
@@ -474,8 +982,13 @@ def main() -> None:
             "error de validacion.\n"
             "Para buscar otro periodo o palabra clave, ejecuta el script de nuevo."
         )
-        browser.close()
+        try:
+            await browser.close()
+        except PlaywrightError:
+            # Ya estaba cerrado (el usuario cerro la ventana manualmente):
+            # no hay nada que cerrar, no es un error a propagar.
+            pass
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
