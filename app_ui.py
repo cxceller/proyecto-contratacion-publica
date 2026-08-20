@@ -111,6 +111,7 @@ NAV_ITEMS = [
     ("Procesos", ":material/assignment:"),
     ("Reportes", ":material/description:"),
     ("Municipalidad de Guayaquil", ":material/location_city:"),
+    ("Dashboard Municipio de Guayaquil", ":material/analytics:"),
     ("Configuración", ":material/settings:"),
 ]
 
@@ -560,12 +561,18 @@ def preparar_dataframe(registros: list[dict]) -> pd.DataFrame:
 CLAVES_FILTRO_DASHBOARD = ["dashboard_anio", "dashboard_mes", "dashboard_provincia"]
 
 
-def render_filtros_dashboard(df: pd.DataFrame) -> pd.DataFrame:
+def render_filtros_dashboard(df: pd.DataFrame, key_prefix: str = "") -> pd.DataFrame:
     """Fila de filtros superiores (Año, Mes, Provincia/Cantón) que acota
     todo lo que se muestra debajo: graficos, tablas y KPIs comparten el
     mismo dataframe filtrado, para que las cifras siempre coincidan. Los
     widgets tienen key propia para que "Limpiar filtros" pueda resetearlos
-    de verdad (no solo re-consultar datos), ver CLAVES_FILTRO_DASHBOARD."""
+    de verdad (no solo re-consultar datos), ver CLAVES_FILTRO_DASHBOARD.
+
+    `key_prefix` distingue las keys de session_state cuando esta misma
+    funcion se llama mas de una vez en la app con datos distintos (ver
+    render_dashboard_analitico, reusado por el Dashboard general y por
+    Dashboard Municipio de Guayaquil) -- sin prefijo, ambas instancias
+    compartirian las mismas keys y la seleccion de una pisaria a la otra."""
     col1, col2, col3, col4 = st.columns([1, 1, 2, 1])
 
     if df.empty:
@@ -575,25 +582,31 @@ def render_filtros_dashboard(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     anios_disponibles = sorted(df["anio"].dropna().unique().astype(int), reverse=True)
-    anio_sel = col1.selectbox("Año", ["(Todos)"] + [str(a) for a in anios_disponibles], key="dashboard_anio")
+    anio_sel = col1.selectbox(
+        "Año", ["(Todos)"] + [str(a) for a in anios_disponibles], key=f"{key_prefix}dashboard_anio"
+    )
 
     meses_disponibles = sorted(df["mes_num"].dropna().unique().astype(int))
     opciones_mes = ["(Todos)"] + [MESES_ES[m] for m in meses_disponibles]
-    mes_sel = col2.selectbox("Mes", opciones_mes, key="dashboard_mes")
+    mes_sel = col2.selectbox("Mes", opciones_mes, key=f"{key_prefix}dashboard_mes")
 
     provincias_disponibles = sorted(df["provincia_canton"].dropna().unique())
     provincias_sel = col3.multiselect(
         "Provincia/Cantón",
         provincias_disponibles,
-        key="dashboard_provincia",
+        key=f"{key_prefix}dashboard_provincia",
         placeholder="Selecciona una o más provincias/cantones",
     )
 
     with col4:
         st.write("")  # alinea verticalmente el boton con los selectbox de arriba
-        if st.button(":material/filter_alt_off: Limpiar filtros", key="dashboard_limpiar_filtros", use_container_width=True):
+        if st.button(
+            ":material/filter_alt_off: Limpiar filtros",
+            key=f"{key_prefix}dashboard_limpiar_filtros",
+            use_container_width=True,
+        ):
             for clave in CLAVES_FILTRO_DASHBOARD:
-                st.session_state.pop(clave, None)
+                st.session_state.pop(f"{key_prefix}{clave}", None)
             st.rerun()
 
     df_filtrado = df
@@ -2308,17 +2321,21 @@ def render_pagina_importacion_sercop() -> None:
         st.rerun()
 
 
-def render_pagina_dashboard(registros_totales: list[dict]) -> None:
-    """Revelacion progresiva: por defecto solo se ven los contadores y los
-    3 KPIs principales (Procesos, Presupuesto, Adjudicado); el resto del
-    detalle (evolucion mensual, provincia, mapa, treemap, tablas resumen)
-    queda agrupado en pestañas, para no abrumar con todo el dashboard de
-    una sola vez."""
-    render_contadores(registros_totales)
-    st.divider()
+def render_dashboard_analitico(registros_totales: list[dict], key_prefix: str = "") -> None:
+    """Filtros (Año/Mes/Provincia) + KPIs + graficos Plotly en pestañas,
+    todo calculado sobre `registros_totales` -- reusado tal cual por el
+    Dashboard general (render_pagina_dashboard, todos los procesos) y por
+    Dashboard Municipio de Guayaquil (render_pagina_dashboard_municipio_
+    guayaquil, ya filtrado a esa entidad): ninguna logica de agregacion
+    vive aca, solo orquesta el render sobre el DataFrame que le pasen.
+
+    `key_prefix` evita que los widgets de filtro de ambas paginas
+    compartan keys de session_state (ver render_filtros_dashboard) -- las
+    pestañas de st.tabs no necesitan key propia (Streamlit no las
+    identifica por session_state), asi que no hace falta prefijarlas."""
     st.header(":material/analytics: Dashboard Analítico")
     df_totales = preparar_dataframe(registros_totales)
-    df_filtrado = render_filtros_dashboard(df_totales)
+    df_filtrado = render_filtros_dashboard(df_totales, key_prefix=key_prefix)
     render_kpis_dashboard(df_filtrado)
 
     (
@@ -2355,6 +2372,17 @@ def render_pagina_dashboard(registros_totales: list[dict]) -> None:
         render_gantt_procesos(df_filtrado)
     with tab_comparativa:
         render_grafico_comparativo(df_filtrado)
+
+
+def render_pagina_dashboard(registros_totales: list[dict]) -> None:
+    """Revelacion progresiva: por defecto solo se ven los contadores y los
+    3 KPIs principales (Procesos, Presupuesto, Adjudicado); el resto del
+    detalle (evolucion mensual, provincia, mapa, treemap, tablas resumen)
+    queda agrupado en pestañas, para no abrumar con todo el dashboard de
+    una sola vez."""
+    render_contadores(registros_totales)
+    st.divider()
+    render_dashboard_analitico(registros_totales, key_prefix="global_")
 
 
 CLAVES_FILTRO_PROCESOS = [
@@ -4481,6 +4509,25 @@ def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None
     render_formularios_y_registro()
 
 
+def render_pagina_dashboard_municipio_guayaquil(registros_totales: list[dict]) -> None:
+    """Mismo Contador de contrataciones + Dashboard Analitico que la
+    pagina "Dashboard" general (render_pagina_dashboard), reusando las
+    mismas funciones (render_contadores, render_dashboard_analitico) sin
+    duplicar logica -- la unica diferencia es que aca los registros ya
+    vienen acotados a Municipalidad de Guayaquil (mismo filtro que ya usa
+    render_pagina_municipalidad_guayaquil, via filtrar_por_entidad), asi
+    que los totales/graficos reflejan solo esa entidad."""
+    st.header(":material/analytics: Dashboard Municipio de Guayaquil")
+    registros_municipio = filtrar_por_entidad(registros_totales, ENTIDAD_MUNICIPALIDAD_GUAYAQUIL)
+    if not registros_municipio:
+        st.info(f'No se encontraron procesos para "{ENTIDAD_MUNICIPALIDAD_GUAYAQUIL}".')
+        return
+
+    render_contadores(registros_municipio)
+    st.divider()
+    render_dashboard_analitico(registros_municipio, key_prefix="gye_")
+
+
 def render_pagina_configuracion() -> None:
     st.header(":material/settings: Configuración")
     render_vaciar_base_datos()
@@ -4523,6 +4570,10 @@ def main():
         with st.spinner("Cargando datos de la Municipalidad de Guayaquil..."):
             registros = obtener_contrataciones()
         render_pagina_municipalidad_guayaquil(registros)
+    elif pagina == "Dashboard Municipio de Guayaquil":
+        with st.spinner("Cargando datos del dashboard..."):
+            registros = obtener_contrataciones()
+        render_pagina_dashboard_municipio_guayaquil(registros)
     elif pagina == "Configuración":
         render_pagina_configuracion()
     elif pagina == PAGINA_IMPORTACION_SERCOP:
