@@ -54,7 +54,9 @@ PROMPT_SISTEMA = (
     "Justificacion legal) y debes explicarlo en 1 o 2 frases simples, en español, sin "
     "jerga legal ni citar artículos de ley textualmente. Usa exclusivamente la "
     "informacion del texto que se te da: no inventes, no resumas de mas, ni agregues "
-    "razones que no esten ahi."
+    "razones que no esten ahi. Responde en texto plano, un solo parrafo, sin ningun "
+    "formato Markdown: nada de encabezados (#, ##), listas, negritas (**texto**) ni "
+    "titulos tipo 'Explicación simple'. La respuesta empieza directo con la explicacion."
 )
 
 
