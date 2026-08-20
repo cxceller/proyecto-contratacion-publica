@@ -46,17 +46,47 @@ load_dotenv()
 MODELO_LLM_POR_DEFECTO = "claude-haiku-4-5"
 TIMEOUT_LLM_S = 30.0
 MAX_TOKENS_EXPLICACION = 300
+# Baja a proposito (no 0 por si el modelo la rechaza en algun momento, pero
+# cerca): mismo motivo/salida para el mismo motivo_estado_raw en corridas
+# distintas, en vez de redacciones distintas cada vez para el mismo texto.
+TEMPERATURA_LLM_EXPLICACION = 0.0
 
+# "Desierta" (LOSNCP Art. 33) y "Cancelacion del procedimiento" (Art. 34) son
+# figuras juridicas DISTINTAS -- causa, motivacion y consecuencias distintas.
+# El prompt anterior (mas laxo, "explicalo en 1 o 2 frases simples") dejaba
+# que el modelo escribiera "cancelado/cancelada" para procesos Desierta
+# (confirmado contra salidas reales: 22 de 124), y tambien le atribuyera la
+# decision al SERCOP (13 de 124) -- el SERCOP es el ente rector, quien
+# declara desierto un proceso es la ENTIDAD CONTRATANTE (su maxima autoridad
+# o delegado). Este prompt reemplaza al anterior con reglas duras para
+# eliminar ambos errores y forzar que la causa mapee a una de las tres
+# causales reales del Art. 33.
 PROMPT_SISTEMA = (
-    "Eres un asistente que explica procesos de contratacion publica del Ecuador a "
-    "personas sin conocimiento tecnico ni legal. Recibes el texto crudo que el portal "
-    "SERCOP muestra como motivo de un proceso declarado 'Desierto' (Razon, Fecha y "
-    "Justificacion legal) y debes explicarlo en 1 o 2 frases simples, en español, sin "
-    "jerga legal ni citar artículos de ley textualmente. Usa exclusivamente la "
-    "informacion del texto que se te da: no inventes, no resumas de mas, ni agregues "
-    "razones que no esten ahi. Responde en texto plano, un solo parrafo, sin ningun "
-    "formato Markdown: nada de encabezados (#, ##), listas, negritas (**texto**) ni "
-    "titulos tipo 'Explicación simple'. La respuesta empieza directo con la explicacion."
+    "Eres un experto en contratación pública del Ecuador (LOSNCP y su Reglamento). "
+    "Te dan el texto oficial del estado 'Desierta' de un proceso del portal SERCOP. "
+    "Explica en lenguaje simple, para un ciudadano sin conocimiento técnico ni legal, "
+    "POR QUÉ quedó desierto -- en 1 a 3 frases.\n\n"
+    "REGLAS OBLIGATORIAS (no las rompas):\n"
+    "1. El proceso está DECLARADO DESIERTO. Empieza siempre por 'El proceso fue "
+    "declarado desierto porque...'. Está PROHIBIDO usar las palabras 'cancelado', "
+    "'cancelada', 'fallido' o 'terminado': esas son figuras jurídicas distintas "
+    "(cancelación = Art. 34 LOSNCP; adjudicatario fallido = Art. 35).\n"
+    "2. La decisión la toma la ENTIDAD CONTRATANTE (su máxima autoridad o delegado), "
+    "NUNCA el SERCOP. No menciones al SERCOP como quien decide. Si no sabes la "
+    "entidad, di 'la entidad contratante'.\n"
+    "3. La causa DEBE derivarse del texto que te dan y corresponder a una de estas "
+    "tres: (a) no se presentó ninguna oferta; (b) las ofertas o la única presentada "
+    "fueron inhabilitadas/rechazadas por no cumplir los requisitos del pliego; "
+    "(c) todas las ofertas o la única se consideraron inconvenientes para los "
+    "intereses de la entidad o del país.\n"
+    "4. No inventes datos: nada de artículos de ley, montos, fechas, nombres de "
+    "oferentes, 'recomendaciones oficiales' ni detalles que no estén en el texto "
+    "dado.\n"
+    "5. Si el texto no permite identificar la causa, responde exactamente: "
+    "'El proceso fue declarado desierto. El portal no detalla la causa específica.'\n"
+    "6. Lenguaje claro y neutro, sin tecnicismos innecesarios. No repitas literal el "
+    "texto legal; explícalo. Responde en texto plano, un solo párrafo, sin ningún "
+    "formato Markdown (nada de encabezados, listas ni negritas)."
 )
 
 
@@ -72,6 +102,7 @@ def _explicar_motivo(motivo_estado_raw: str, cliente_llm, modelo: str) -> str:
         respuesta = cliente_llm.with_options(timeout=TIMEOUT_LLM_S).messages.create(
             model=modelo,
             max_tokens=MAX_TOKENS_EXPLICACION,
+            temperature=TEMPERATURA_LLM_EXPLICACION,
             system=PROMPT_SISTEMA,
             messages=[
                 {

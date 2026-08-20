@@ -1469,7 +1469,11 @@ def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool
         ),
         "Entidad Contratante": st.column_config.TextColumn("Entidad Contratante", width="medium"),
         "Estado del Proceso": st.column_config.TextColumn("Estado del Proceso", width="medium"),
-        "Explicación (Desierta)": st.column_config.TextColumn("Explicación (Desierta)", width="medium"),
+        "Explicación (Desierta)": st.column_config.TextColumn(
+            "Explicación (Desierta)",
+            width="large",
+            help="Explicación en lenguaje simple de por qué el proceso quedó desierto.",
+        ),
         "Objeto del Proceso": st.column_config.TextColumn("Objeto del Proceso", width="medium"),
         "Presupuesto Referencial (sin IVA)": st.column_config.TextColumn(
             "Presupuesto Referencial (sin IVA)", width="medium"
@@ -1499,6 +1503,26 @@ def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool
         file_name=f"contrataciones_{date.today().isoformat()}.csv",
         mime="text/csv",
     )
+
+    # Visor de detalle para procesos "Desierta": st.dataframe no envuelve
+    # texto multilinea dentro de la celda (solo trunca con "…", visible
+    # completo recien al pasar el cursor/hacer clic), asi que para un
+    # texto largo como "Explicación (Desierta)" esto es la forma robusta
+    # de leerlo completo -- ademas de junto a su fuente real
+    # (motivo_estado_raw, el texto oficial del portal). Mismo gate que la
+    # columna misma (mostrar_monto_adjudicado -- ver docstring de esta
+    # funcion): solo tiene sentido en la vista de Municipalidad de
+    # Guayaquil, donde motivo_estado_raw/explicacion_estado se completan.
+    if mostrar_monto_adjudicado:
+        desiertas = df[df["estado"].str.startswith("Desierta", na=False)] if "estado" in df.columns else df.iloc[0:0]
+        if not desiertas.empty:
+            st.markdown("**Ver explicación completa de un proceso Desierto**")
+            codigo_elegido = st.selectbox(
+                "Proceso", desiertas["codigo"], key="detalle_desierta_codigo", label_visibility="collapsed"
+            )
+            fila = desiertas[desiertas["codigo"] == codigo_elegido].iloc[0]
+            st.markdown(f"**Motivo oficial (portal):** {fila.get('motivo_estado_raw') or '—'}")
+            st.info(f"**Explicación:** {fila.get('explicacion_estado') or '—'}")
 
 
 def _opciones_lote_id(registros: list[dict]) -> dict[str, str]:
