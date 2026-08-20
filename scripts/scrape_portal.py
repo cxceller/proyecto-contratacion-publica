@@ -723,6 +723,220 @@ def _extraer_monto_licitacion(html: str) -> float | None:
     return None
 
 
+def _es_proceso_subasta_inversa(codigo: str) -> bool:
+    """Procesos de Subasta Inversa Electronica: igual que Licitacion (ver
+    _es_proceso_licitacion), el Monto de Adjudicacion real puede estar
+    publicado en "Ver Resultados de Subasta" (ResumenPuja.cpe) antes de que
+    exista "Resumen de Contrato" (tipico en "Adjudicado - Registro de
+    Contratos", contrato aun sin registrar) -- ver
+    _ir_a_resumen_resultados_subasta para la ruta de respaldo que les
+    aplica. Para SIE ya en "Ejecución de Contrato" (con contrato
+    registrado), la ruta existente "Resumen de Contrato" ya resuelve el
+    valor sin necesidad de este respaldo -- confirmado contra una pagina
+    real (SIE-MIMG-2026-021)."""
+    return codigo.strip().upper().startswith("SIE")
+
+
+# Un SIE puede exponer el enlace como "Ver Resultados de Subasta" (termino
+# por puja) o como "Ver Resultados de Negociacion" (se resolvio por
+# negociacion, ej. un solo oferente) -- AMBOS llevan a la MISMA pagina
+# ResumenPuja.cpe con el mismo "Valor Adjudicado". Confirmado contra dos
+# paginas reales: SIE-MIMG-2026-021 (Subasta, $80,000.00) y
+# SIE-MIMG-2026-002 (Negociacion, $37,000.00) -- buscar solo "Subasta"
+# dejaba a este segundo en NULL sin necesidad (mismo motivo de fondo que
+# _CANDIDATOS_ENLACE_RESULTADOS_LICITACION: variantes de texto reales, no
+# hipoteticas).
+_CANDIDATOS_ENLACE_RESULTADOS_SUBASTA = [
+    "text=Ver Resultados de Subasta",
+    "text=Ver Resultados de Negociación",
+    "text=Resultados de Subasta",
+    "text=Resultados de Negociación",
+    "a:has-text('Resultados de Subasta')",
+    "a:has-text('Resultados de Negociación')",
+]
+
+
+async def _ir_a_resumen_resultados_subasta(pagina_worker: Page) -> bool:
+    """Analogo a _ir_a_resumen_resultados_licitacion, pero para procesos de
+    Subasta Inversa Electronica (ver _es_proceso_subasta_inversa): abre la
+    misma pestaña "Fechas" (_CANDIDATOS_TAB_FECHAS, ya renderizada por JS --
+    compartida con la ruta de Licitacion, confirmado que el enlace vive en
+    el mismo lugar) y despues el enlace "Ver Resultados de Subasta" o "Ver
+    Resultados de Negociacion" (ver _CANDIDATOS_ENLACE_RESULTADOS_SUBASTA
+    sobre por que hay que probar ambos), que llevan a ResumenPuja.cpe. Esa
+    pagina NO es accesible por URL directa "en frio" (redirige a "Ingreso
+    al Sistema"/login) -- solo se alcanza navegando dentro de la sesion ya
+    abierta por el goto() previo de la ficha general, exactamente como hace
+    esta funcion (nunca por URL fija). El "Monto de Adjudicacion" real ahi
+    se lee bajo la etiqueta "Valor Adjudicado" -- YA cubierta por
+    ETIQUETAS_MONTO_ADJUDICADO -- asi que se reusa _extraer_monto_adjudicado
+    sin extractor nuevo: confirmado contra dos paginas reales (subasta y
+    negociacion) que el formato "etiqueta: valor en la misma fila"
+    (_valores_monto_adjudicacion_en_celdas) ya resuelve el valor correcto
+    en ambos casos. Devuelve False (sin lanzar) si no se encuentra la
+    pestaña ni ningun enlace candidato."""
+    try:
+        await pagina_worker.click("button:has-text('Aceptar')", timeout=3000)
+    except Exception:
+        pass
+
+    for selector in _CANDIDATOS_TAB_FECHAS:
+        tab = pagina_worker.locator(selector).first
+        try:
+            if await tab.count() == 0:
+                continue
+            await tab.click(timeout=10000)
+        except Exception:
+            continue
+        break
+
+    for selector in _CANDIDATOS_ENLACE_RESULTADOS_SUBASTA:
+        enlace = pagina_worker.locator(selector).first
+        try:
+            if await enlace.count() == 0:
+                continue
+            await enlace.click(timeout=10000)
+        except Exception:
+            continue
+        try:
+            await pagina_worker.wait_for_selector("table", timeout=TIMEOUT_ADJUDICACION_MS)
+        except PlaywrightTimeoutError:
+            pass
+        return True
+
+    return False
+
+
+def _es_proceso_consultoria(codigo: str) -> bool:
+    """Procesos de Consultoria (Concurso Publico de Consultoria): igual que
+    Licitacion/Subasta, el valor adjudicado real puede estar publicado en
+    "Ver Adjudicación Consultoría" (resumenAdjudicacionConsultoria.cpe)
+    antes de que exista "Resumen de Contrato" -- ver
+    _ir_a_adjudicacion_consultoria para la ruta de respaldo. A diferencia
+    de las otras tres modalidades, el valor final NO es el ofertado ni el
+    referencial sino el PRECIO NEGOCIADO (el Concurso Publico de
+    Consultoria siempre termina en una fase de negociacion) -- ver
+    _extraer_monto_consultoria sobre por que se toma la columna "Precio
+    Negociación" y nunca el "SubTotal" de la tabla referencial. Confirmado
+    contra una pagina real (CPC-MIMG-2026-002)."""
+    return codigo.strip().upper().startswith("CPC")
+
+
+# Mismo motivo que _CANDIDATOS_ENLACE_RESULTADOS_LICITACION: candidatos por
+# si el portal varia acentos/mayusculas entre procesos.
+_CANDIDATOS_ENLACE_ADJUDICACION_CONSULTORIA = [
+    "text=Ver Adjudicación Consultoría",
+    "text=Adjudicación Consultoría",
+    "a:has-text('Adjudicación Consultoría')",
+    "a:has-text('Adjudicaci')",
+]
+
+
+async def _ir_a_adjudicacion_consultoria(pagina_worker: Page) -> bool:
+    """Analogo a _ir_a_resumen_resultados_licitacion, pero para procesos de
+    Consultoria (ver _es_proceso_consultoria): abre la misma pestaña
+    "Fechas" (_CANDIDATOS_TAB_FECHAS, compartida con Licitacion/Subasta --
+    confirmado que el enlace de Consultoria vive en el mismo lugar) y
+    despues el enlace "Ver Adjudicación Consultoría", que lleva a
+    resumenAdjudicacionConsultoria.cpe ("Adjudicar a Proveedores"). Devuelve
+    False (sin lanzar) si no se encuentra la pestaña ni el enlace."""
+    try:
+        await pagina_worker.click("button:has-text('Aceptar')", timeout=3000)
+    except Exception:
+        pass
+
+    for selector in _CANDIDATOS_TAB_FECHAS:
+        tab = pagina_worker.locator(selector).first
+        try:
+            if await tab.count() == 0:
+                continue
+            await tab.click(timeout=10000)
+        except Exception:
+            continue
+        break
+
+    for selector in _CANDIDATOS_ENLACE_ADJUDICACION_CONSULTORIA:
+        enlace = pagina_worker.locator(selector).first
+        try:
+            if await enlace.count() == 0:
+                continue
+            await enlace.click(timeout=10000)
+        except Exception:
+            continue
+        try:
+            await pagina_worker.wait_for_selector("table", timeout=TIMEOUT_ADJUDICACION_MS)
+        except PlaywrightTimeoutError:
+            pass
+        return True
+
+    return False
+
+
+# Columnas (normalizadas via _normalizar) que solo aparecen en la tabla
+# "Consultoría Adjudicados" de resumenAdjudicacionConsultoria.cpe, nunca en
+# la tabla "Detalle: Consultoría" (referencial, con columna SubTotal) --
+# confirmado contra una pagina real (CPC-MIMG-2026-002). Mismo criterio que
+# _MARCADORES_TABLA_LICITACION_ADJUDICADA.
+_MARCADORES_TABLA_CONSULTORIA_ADJUDICADA = {"razonadjudicacion", "estado"}
+
+
+def _tabla_consultoria_adjudicados(tabla: pd.DataFrame) -> tuple[str, pd.DataFrame] | None:
+    """Analoga a _tabla_resultados_licitacion_adjudicados, pero busca la
+    columna "Precio Negociación" (normalizada: precionegociacion) en vez de
+    Subtotal -- en Consultoria el valor adjudicado real es el PRECIO
+    NEGOCIADO (regla explicita: el Concurso Publico de Consultoria siempre
+    termina en negociacion), nunca el SubTotal de la tabla referencial (que
+    en Consultoria tambien existe, con la misma forma de tabla, y es igual
+    al presupuesto). Exige ADEMAS al menos uno de
+    _MARCADORES_TABLA_CONSULTORIA_ADJUDICADA para no confundirla con
+    ninguna otra tabla que pudiera tener una columna de precio parecida.
+    Mismo quirk de encabezado-como-fila que las demas tablas de esta
+    pagina."""
+    columnas_planas = _aplanar_columnas(tabla.columns)
+    columna_precio = next((c for c in columnas_planas if _normalizar(c) == "precionegociacion"), None)
+    if columna_precio is not None and {_normalizar(c) for c in columnas_planas} & _MARCADORES_TABLA_CONSULTORIA_ADJUDICADA:
+        tabla = tabla.copy()
+        tabla.columns = columnas_planas
+        return columna_precio, tabla
+
+    if len(tabla) > 0:
+        primera_fila = [str(v) for v in tabla.iloc[0].tolist()]
+        columna_precio = next((v for v in primera_fila if _normalizar(v) == "precionegociacion"), None)
+        if columna_precio is not None and {_normalizar(v) for v in primera_fila} & _MARCADORES_TABLA_CONSULTORIA_ADJUDICADA:
+            tabla = tabla.iloc[1:].copy()
+            tabla.columns = primera_fila
+            return columna_precio, tabla.reset_index(drop=True)
+
+    return None
+
+
+def _extraer_monto_consultoria(html: str) -> float | None:
+    """Extrae el monto adjudicado real de un proceso de Consultoria (ver
+    _es_proceso_consultoria) desde resumenAdjudicacionConsultoria.cpe,
+    sumando la columna "Precio Negociación" de la tabla "Consultoría
+    Adjudicados" -- NUNCA el "SubTotal" de la tabla "Detalle: Consultoría"
+    (referencial, igual al presupuesto: tomarla por error dejaria el "% de
+    Ahorro" siempre en 0%, mismo riesgo que en Licitacion). Ver
+    _tabla_consultoria_adjudicados para como se distinguen. Devuelve None
+    si no aparece esa tabla especifica (mejor None que el valor referencial
+    equivocado) o si el HTML no se puede interpretar -- nunca lanza."""
+    try:
+        tablas = pd.read_html(StringIO(html))
+    except Exception:
+        return None
+
+    for tabla in tablas:
+        encontrada = _tabla_consultoria_adjudicados(tabla)
+        if encontrada is None:
+            continue
+        columna_precio, tabla_con_encabezado = encontrada
+        valores = tabla_con_encabezado[columna_precio].map(parsear_presupuesto).dropna().tolist()
+        if valores:
+            return float(sum(valores))
+
+    return None
+
+
 async def _obtener_montos_adjudicados(
     context: BrowserContext, mapa_urls: dict[str, str]
 ) -> tuple[dict[str, float | None], dict[str, str | None]]:
@@ -813,6 +1027,34 @@ async def _obtener_montos_adjudicados(
                         await pagina_worker.goto(url, timeout=TIMEOUT_ADJUDICACION_MS)
                         if await _ir_a_resumen_resultados_licitacion(pagina_worker):
                             monto = _extraer_monto_licitacion(await pagina_worker.content())
+                    montos[codigo] = monto
+                elif _es_proceso_subasta_inversa(codigo):
+                    monto = None
+                    if await _ir_a_resumen_de_contrato(pagina_worker):
+                        monto = _extraer_monto_adjudicado(await pagina_worker.content())
+                    if monto is None:
+                        # Intento 2 (respaldo): mismo criterio que Licitacion
+                        # -- "Resumen de Contrato" no existe todavia (tipico
+                        # en "Adjudicado - Registro de Contratos") o no trajo
+                        # valor -- se vuelve a la ficha general por si el
+                        # intento 1 navego a otra pagina, y se prueba la
+                        # ruta de resultados de Subasta.
+                        await pagina_worker.goto(url, timeout=TIMEOUT_ADJUDICACION_MS)
+                        if await _ir_a_resumen_resultados_subasta(pagina_worker):
+                            monto = _extraer_monto_adjudicado(await pagina_worker.content())
+                    montos[codigo] = monto
+                elif _es_proceso_consultoria(codigo):
+                    monto = None
+                    if await _ir_a_resumen_de_contrato(pagina_worker):
+                        monto = _extraer_monto_adjudicado(await pagina_worker.content())
+                    if monto is None:
+                        # Intento 2 (respaldo): mismo criterio que Licitacion/
+                        # Subasta -- se vuelve a la ficha general por si el
+                        # intento 1 navego a otra pagina, y se prueba la ruta
+                        # de Adjudicación Consultoría (precio negociado).
+                        await pagina_worker.goto(url, timeout=TIMEOUT_ADJUDICACION_MS)
+                        if await _ir_a_adjudicacion_consultoria(pagina_worker):
+                            monto = _extraer_monto_consultoria(await pagina_worker.content())
                     montos[codigo] = monto
                 elif await _ir_a_resumen_de_contrato(pagina_worker):
                     montos[codigo] = _extraer_monto_adjudicado(await pagina_worker.content())
