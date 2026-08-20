@@ -27,6 +27,7 @@ from scripts.scrape_portal import (  # noqa: E402
     _extraer_monto_desde_subtotal,
     _extraer_monto_licitacion,
     _extraer_motivo_estado,
+    _extraer_valor_oferta_mas_baja,
 )
 
 # Formato "una fila por adjudicatario" (resumenContractual1.cpe).
@@ -458,6 +459,12 @@ class TestEsProcesoConsultoria:
     def test_codigo_con_espacios_alrededor_tambien_cuenta(self):
         assert _es_proceso_consultoria("  CPC-MIMG-2026-002  ") is True
 
+    def test_codigo_lcc_es_consultoria(self):
+        assert _es_proceso_consultoria("LCC-MIMG-2025-007") is True
+
+    def test_codigo_lcc_en_minuscula_tambien_cuenta(self):
+        assert _es_proceso_consultoria("lcc-mimg-2025-007") is True
+
     def test_codigo_sie_no_es_consultoria(self):
         assert _es_proceso_consultoria("SIE-MIMG-2026-021") is False
 
@@ -551,6 +558,94 @@ class TestExtraerMontoConsultoria:
 
     def test_html_sin_tablas_no_lanza_excepcion(self):
         assert _extraer_monto_consultoria("<html><body><p>Sin tablas</p></body></html>") is None
+
+
+# Fragmentos derivados de un volcado REAL de resumenAdjudicacionConsultoria.cpe
+# de un proceso LCC (Lista Corta de Consultoria, proceso LCC-MIMG-2025-007):
+# misma plantilla exacta que CPC (mismas columnas, mismo formato de fila).
+# Monto Adjudicado real confirmado en el portal: $82.013,52 (Precio
+# Negociación) -- NI el referencial $100.572,64 (SubTotal de "Detalle:
+# Consultoría") NI el "Precio Ofertado" $82.591,46 (la oferta ANTES de
+# negociar, ver tambien HTML_EVALUACION_FINAL_LCC_REAL mas abajo).
+HTML_CONSULTORIA_ADJUDICADOS_LCC_REAL = """
+<table width="100%" border="1" cellpadding="0" cellspacing="0" class="licitacion_contenido_texto">
+    <tbody><tr>
+        <td class="licitacion_titulos"><div align="center">Producto</div></td>
+        <td class="licitacion_titulos"><div align="center">Descripción Consultoría</div></td>
+        <td class="licitacion_titulos"><div align="center">Proveedor</div></td>
+        <td class="licitacion_titulos"><div align="center">Cantidad</div></td>
+        <td class="licitacion_titulos"><div align="center">Precio Ofertado</div></td>
+        <td class="licitacion_titulos"><div align="center">Plazo Ofertado</div></td>
+        <td class="licitacion_titulos"><div align="center">Precio Negociación</div></td>
+        <td class="licitacion_titulos"><div align="center">Tiempo de Entrega</div></td>
+        <td class="licitacion_titulos"><div align="center">Razón Adjudicación</div></td>
+        <td class="licitacion_titulos"><div align="center">Estado</div></td>
+        <td class="licitacion_titulos"><div align="center">Acción</div></td>
+    </tr>
+    <tr>
+        <td>839900114</td>
+        <td>FISCALIZACION DE OBRAS Y SERVICIOS</td>
+        <td>CHICA GARCIA DANIEL EDUARDO</td>
+        <td>1</td>
+        <td>82591.46</td>
+        <td>720</td>
+        <td>82013.52</td>
+        <td>720</td>
+        <td>De conformidad con los pliegos.</td>
+        <td>Adjudicado</td>
+        <td></td>
+    </tr>
+</tbody></table>
+"""
+
+
+class TestExtraerMontoConsultoriaLCC:
+    """Blinda que la misma funcion (sin cambios) resuelve tambien Lista
+    Corta de Consultoria (LCC), no solo Concurso Publico (CPC) -- misma
+    plantilla de pagina, confirmado contra un proceso real."""
+
+    def test_toma_precio_negociacion_no_ofertado_ni_referencial(self):
+        html = "<html><body>" + HTML_CONSULTORIA_ADJUDICADOS_LCC_REAL + "</body></html>"
+        resultado = _extraer_monto_consultoria(html)
+        assert resultado == 82013.52
+        assert resultado != 100572.64  # referencial
+        assert resultado != 82591.46  # precio ofertado (antes de negociar)
+
+
+# Fragmento derivado de un volcado REAL de
+# resumenCalificacionFinalConsultoria.cpe ("Ver evaluación final") del
+# mismo proceso LCC-MIMG-2025-007 -- pagina de RESPALDO, solo se usa
+# cuando "Precio Negociación" todavia no existe (ver
+# _ir_a_evaluacion_final_consultoria). "VALOR DE LA OFERTA MÁS BAJA" real
+# confirmado en el portal: $82.591,46 (la oferta antes de negociar --
+# ojo, DISTINTO del Precio Negociación final $82.013,52).
+HTML_EVALUACION_FINAL_LCC_REAL = """
+<html><body>
+<table>
+<tr><td align="left">VALOR DE LA OFERTA MÁS BAJA</td><td align="left">82591.46</td></tr>
+</table>
+</body></html>
+"""
+
+HTML_EVALUACION_FINAL_SIN_ETIQUETA = """
+<html><body>
+<table><tr><td>Otra fila</td><td>Sin relacion</td></tr></table>
+</body></html>
+"""
+
+
+class TestExtraerValorOfertaMasBaja:
+    def test_extrae_el_valor_real_de_la_oferta_mas_baja(self):
+        assert _extraer_valor_oferta_mas_baja(HTML_EVALUACION_FINAL_LCC_REAL) == 82591.46
+
+    def test_sin_la_etiqueta_devuelve_none(self):
+        assert _extraer_valor_oferta_mas_baja(HTML_EVALUACION_FINAL_SIN_ETIQUETA) is None
+
+    def test_html_vacio_no_lanza_excepcion(self):
+        assert _extraer_valor_oferta_mas_baja("") is None
+
+    def test_html_sin_tablas_no_lanza_excepcion(self):
+        assert _extraer_valor_oferta_mas_baja("<html><body><p>Sin tablas</p></body></html>") is None
 
 
 # Cambio 10: capturar el texto completo (Razon/Fecha/Justificacion) de la

@@ -808,18 +808,22 @@ async def _ir_a_resumen_resultados_subasta(pagina_worker: Page) -> bool:
 
 
 def _es_proceso_consultoria(codigo: str) -> bool:
-    """Procesos de Consultoria (Concurso Publico de Consultoria): igual que
-    Licitacion/Subasta, el valor adjudicado real puede estar publicado en
-    "Ver Adjudicación Consultoría" (resumenAdjudicacionConsultoria.cpe)
-    antes de que exista "Resumen de Contrato" -- ver
-    _ir_a_adjudicacion_consultoria para la ruta de respaldo. A diferencia
-    de las otras tres modalidades, el valor final NO es el ofertado ni el
-    referencial sino el PRECIO NEGOCIADO (el Concurso Publico de
-    Consultoria siempre termina en una fase de negociacion) -- ver
-    _extraer_monto_consultoria sobre por que se toma la columna "Precio
-    Negociación" y nunca el "SubTotal" de la tabla referencial. Confirmado
-    contra una pagina real (CPC-MIMG-2026-002)."""
-    return codigo.strip().upper().startswith("CPC")
+    """Procesos de Consultoria -- Concurso Publico (prefijo CPC) y Lista
+    Corta (prefijo LCC, misma pagina y misma columna, confirmado contra
+    una pagina real: LCC-MIMG-2025-007). El valor adjudicado real puede
+    estar publicado en "Ver Adjudicación Consultoría"
+    (resumenAdjudicacionConsultoria.cpe) antes de que exista "Resumen de
+    Contrato" -- ver _ir_a_adjudicacion_consultoria para la ruta de
+    respaldo. A diferencia de las otras modalidades, el valor final NO es
+    el ofertado ni el referencial sino el PRECIO NEGOCIADO (Concurso
+    Publico y Lista Corta de Consultoria siempre terminan en una fase de
+    negociacion) -- ver _extraer_monto_consultoria sobre por que se toma
+    la columna "Precio Negociación" y nunca el "SubTotal" de la tabla
+    referencial. Confirmado contra paginas reales (CPC-MIMG-2026-002,
+    LCC-MIMG-2025-007). Si en el futuro aparece CDC (Contratacion Directa
+    de Consultoria), agregar aca tras verificar contra un proceso real."""
+    codigo_norm = codigo.strip().upper()
+    return codigo_norm.startswith("CPC") or codigo_norm.startswith("LCC")
 
 
 # Mismo motivo que _CANDIDATOS_ENLACE_RESULTADOS_LICITACION: candidatos por
@@ -839,7 +843,16 @@ async def _ir_a_adjudicacion_consultoria(pagina_worker: Page) -> bool:
     confirmado que el enlace de Consultoria vive en el mismo lugar) y
     despues el enlace "Ver Adjudicación Consultoría", que lleva a
     resumenAdjudicacionConsultoria.cpe ("Adjudicar a Proveedores"). Devuelve
-    False (sin lanzar) si no se encuentra la pestaña ni el enlace."""
+    False (sin lanzar) si no se encuentra la pestaña ni el enlace.
+
+    El contenido de la pestaña "Fechas" se arma por JS/AJAX DESPUES de que
+    el clic en la pestaña ya "termino" (Playwright considera el clic
+    exitoso apenas el elemento es accionable, no espera a que su contenido
+    termine de renderizarse) -- confirmado con un caso real
+    (LCC-MIMG-2025-007): buscar el enlace inmediatamente despues del clic
+    da count()==0 en todos los candidatos; esperando ~1.5s si aparece. Por
+    eso la pausa corta y tolerante entre el clic en la pestaña y la
+    busqueda del enlace, en vez de buscar de inmediato."""
     try:
         await pagina_worker.click("button:has-text('Aceptar')", timeout=3000)
     except Exception:
@@ -854,6 +867,8 @@ async def _ir_a_adjudicacion_consultoria(pagina_worker: Page) -> bool:
         except Exception:
             continue
         break
+
+    await pagina_worker.wait_for_timeout(1500)
 
     for selector in _CANDIDATOS_ENLACE_ADJUDICACION_CONSULTORIA:
         enlace = pagina_worker.locator(selector).first
@@ -933,6 +948,102 @@ def _extraer_monto_consultoria(html: str) -> float | None:
         valores = tabla_con_encabezado[columna_precio].map(parsear_presupuesto).dropna().tolist()
         if valores:
             return float(sum(valores))
+
+    return None
+
+
+# Mismo motivo que _CANDIDATOS_ENLACE_ADJUDICACION_CONSULTORIA.
+_CANDIDATOS_ENLACE_EVALUACION_FINAL_CONSULTORIA = [
+    "text=Ver evaluación final",
+    "text=evaluación final",
+    "a:has-text('evaluaci')",
+]
+
+
+async def _ir_a_evaluacion_final_consultoria(pagina_worker: Page) -> bool:
+    """Analoga a _ir_a_adjudicacion_consultoria, pero hacia "Ver evaluación
+    final" (resumenCalificacionFinalConsultoria.cpe) -- ruta de RESPALDO
+    para Consultoria (ver _extraer_valor_oferta_mas_baja), solo quando
+    _ir_a_adjudicacion_consultoria/_extraer_monto_consultoria no dieron
+    "Precio Negociación" (proceso sin negociacion registrada todavia).
+    Misma pausa tolerante tras el clic en "Fechas" que
+    _ir_a_adjudicacion_consultoria (ver esa funcion sobre por que hace
+    falta). Devuelve False (sin lanzar) si no se encuentra la pestaña ni
+    el enlace."""
+    try:
+        await pagina_worker.click("button:has-text('Aceptar')", timeout=3000)
+    except Exception:
+        pass
+
+    for selector in _CANDIDATOS_TAB_FECHAS:
+        tab = pagina_worker.locator(selector).first
+        try:
+            if await tab.count() == 0:
+                continue
+            await tab.click(timeout=10000)
+        except Exception:
+            continue
+        break
+
+    await pagina_worker.wait_for_timeout(1500)
+
+    for selector in _CANDIDATOS_ENLACE_EVALUACION_FINAL_CONSULTORIA:
+        enlace = pagina_worker.locator(selector).first
+        try:
+            if await enlace.count() == 0:
+                continue
+            await enlace.click(timeout=10000)
+        except Exception:
+            continue
+        try:
+            await pagina_worker.wait_for_selector("table", timeout=TIMEOUT_ADJUDICACION_MS)
+        except PlaywrightTimeoutError:
+            pass
+        return True
+
+    return False
+
+
+_ETIQUETA_OFERTA_MAS_BAJA_NORMALIZADA = "valordelaofertamasbaja"
+
+
+def _extraer_valor_oferta_mas_baja(html: str) -> float | None:
+    """Fallback de _extraer_monto_consultoria: extrae "VALOR DE LA OFERTA
+    MÁS BAJA" de resumenCalificacionFinalConsultoria.cpe -- la oferta
+    ANTES de negociar, distinta del "Precio Negociación" final (para
+    LCC-MIMG-2025-007, 82591.46 vs. 82013.52 -- confirmado que NO son el
+    mismo valor). Solo se usa cuando no existe "Precio Negociación"
+    todavia (proceso sin fase de negociacion registrada), nunca como
+    fuente primaria. Fila real: `<tr><td>VALOR DE LA OFERTA MÁS
+    BAJA</td><td>82591.46</td></tr>` -- mismo patron etiqueta+valor en la
+    misma fila que _valores_monto_adjudicacion_en_celdas, aca simplificado
+    a un solo valor esperado (no hay que sumar varias filas). Devuelve
+    None si no aparece la etiqueta o el HTML no se puede interpretar --
+    nunca lanza."""
+    try:
+        tablas = pd.read_html(StringIO(html))
+    except Exception:
+        return None
+
+    for tabla in tablas:
+        for _, fila in tabla.iterrows():
+            valores_fila = list(fila)
+            indice_etiqueta = next(
+                (
+                    i
+                    for i, celda in enumerate(valores_fila)
+                    if isinstance(celda, str) and _normalizar(celda) == _ETIQUETA_OFERTA_MAS_BAJA_NORMALIZADA
+                ),
+                None,
+            )
+            if indice_etiqueta is None:
+                continue
+            for i, celda in enumerate(valores_fila):
+                if i == indice_etiqueta:
+                    continue
+                numero = parsear_presupuesto(celda)
+                if numero is not None:
+                    return numero
 
     return None
 
@@ -1055,6 +1166,15 @@ async def _obtener_montos_adjudicados(
                         await pagina_worker.goto(url, timeout=TIMEOUT_ADJUDICACION_MS)
                         if await _ir_a_adjudicacion_consultoria(pagina_worker):
                             monto = _extraer_monto_consultoria(await pagina_worker.content())
+                    if monto is None:
+                        # Intento 3 (respaldo del respaldo): "Precio
+                        # Negociación" todavia no existe (sin fase de
+                        # negociacion registrada) -- se prueba la "VALOR DE
+                        # LA OFERTA MÁS BAJA" de "Ver evaluación final".
+                        # NUNCA el valor referencial.
+                        await pagina_worker.goto(url, timeout=TIMEOUT_ADJUDICACION_MS)
+                        if await _ir_a_evaluacion_final_consultoria(pagina_worker):
+                            monto = _extraer_valor_oferta_mas_baja(await pagina_worker.content())
                     montos[codigo] = monto
                 elif await _ir_a_resumen_de_contrato(pagina_worker):
                     montos[codigo] = _extraer_monto_adjudicado(await pagina_worker.content())
