@@ -65,7 +65,9 @@ class TestEsEstadoAdjudicable:
         [
             "Adjudicado - Registro de Contratos",
             "Ejecución de Contrato",
+            "En Recepción",
             "Finalizada",
+            "Finalizado por mutuo acuerdo",
             "adjudicado - registro de contratos",  # insensible a mayusculas
             "ADJUDICADO - REGISTRO DE CONTRATOS",
             "Adjudicado -",  # version truncada, ver NOMBRES_ESTADO_COMPLETOS en app_ui.py

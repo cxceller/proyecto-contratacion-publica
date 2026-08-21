@@ -29,13 +29,20 @@ from src import database  # noqa: E402
 # sin tildes) para los que el proceso puede tener un Monto de Adjudicacion
 # real que valga la pena ir a buscar -- confirmado contra los valores reales
 # de la columna `estado` en la base (ver NOMBRES_ESTADO_COMPLETOS en
-# app_ui.py para los mismos tres nombres completos). El resto de estados
+# app_ui.py para los mismos nombres completos). El resto de estados
 # (Desierta, Suspendido, Calificacion de Participantes, etc.) nunca tienen
 # fase contractual, asi que visitarlos es una peticion inutil al portal.
+# "En Recepcion" y "Finalizado por mutuo acuerdo" se agregan porque tambien
+# implican que el proceso ya paso por adjudicacion/contrato (recepcion de lo
+# contratado o cierre anticipado por acuerdo entre las partes), asi que
+# pueden tener Monto de Adjudicacion real igual que los tres estados
+# originales.
 _ESTADOS_ADJUDICABLES = (
     "adjudicado - registro",
     "ejecucion de contrato",
+    "en recepcion",
     "finalizada",
+    "finalizado por mutuo acuerdo",
 )
 
 
