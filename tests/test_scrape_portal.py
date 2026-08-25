@@ -465,6 +465,12 @@ class TestEsProcesoConsultoria:
     def test_codigo_lcc_en_minuscula_tambien_cuenta(self):
         assert _es_proceso_consultoria("lcc-mimg-2025-007") is True
 
+    def test_codigo_cdc_es_consultoria(self):
+        assert _es_proceso_consultoria("CDC-MIMG-2025-002") is True
+
+    def test_codigo_cdc_en_minuscula_tambien_cuenta(self):
+        assert _es_proceso_consultoria("cdc-mimg-2025-002") is True
+
     def test_codigo_sie_no_es_consultoria(self):
         assert _es_proceso_consultoria("SIE-MIMG-2026-021") is False
 

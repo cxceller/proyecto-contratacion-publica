@@ -808,22 +808,22 @@ async def _ir_a_resumen_resultados_subasta(pagina_worker: Page) -> bool:
 
 
 def _es_proceso_consultoria(codigo: str) -> bool:
-    """Procesos de Consultoria -- Concurso Publico (prefijo CPC) y Lista
-    Corta (prefijo LCC, misma pagina y misma columna, confirmado contra
-    una pagina real: LCC-MIMG-2025-007). El valor adjudicado real puede
+    """Procesos de Consultoria -- Concurso Publico (prefijo CPC), Lista
+    Corta (prefijo LCC) y Contratacion Directa (prefijo CDC): misma pagina
+    y misma columna en los tres, confirmado contra paginas reales
+    (LCC-MIMG-2025-007, CDC-MIMG-2025-002). El valor adjudicado real puede
     estar publicado en "Ver Adjudicación Consultoría"
     (resumenAdjudicacionConsultoria.cpe) antes de que exista "Resumen de
     Contrato" -- ver _ir_a_adjudicacion_consultoria para la ruta de
     respaldo. A diferencia de las otras modalidades, el valor final NO es
     el ofertado ni el referencial sino el PRECIO NEGOCIADO (Concurso
-    Publico y Lista Corta de Consultoria siempre terminan en una fase de
-    negociacion) -- ver _extraer_monto_consultoria sobre por que se toma
-    la columna "Precio Negociación" y nunca el "SubTotal" de la tabla
-    referencial. Confirmado contra paginas reales (CPC-MIMG-2026-002,
-    LCC-MIMG-2025-007). Si en el futuro aparece CDC (Contratacion Directa
-    de Consultoria), agregar aca tras verificar contra un proceso real."""
+    Publico, Lista Corta y Contratacion Directa de Consultoria siempre
+    terminan en una fase de negociacion) -- ver _extraer_monto_consultoria
+    sobre por que se toma la columna "Precio Negociación" y nunca el
+    "SubTotal" de la tabla referencial. Confirmado contra paginas reales
+    (CPC-MIMG-2026-002, LCC-MIMG-2025-007, CDC-MIMG-2025-002)."""
     codigo_norm = codigo.strip().upper()
-    return codigo_norm.startswith("CPC") or codigo_norm.startswith("LCC")
+    return codigo_norm.startswith("CPC") or codigo_norm.startswith("LCC") or codigo_norm.startswith("CDC")
 
 
 # Mismo motivo que _CANDIDATOS_ENLACE_RESULTADOS_LICITACION: candidatos por
