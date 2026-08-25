@@ -645,34 +645,34 @@ def _tarjeta_kpi_html(
     de render_contadores) que se muestra como una pildora pequeña y
     discreta DEBAJO del valor principal -- nunca junto al numero grande,
     para no competir con el, y en gris neutro (no en el color semantico
-    del icono/estado) para no sumar un significado nuevo de color."""
+    del icono/estado) para no sumar un significado nuevo de color.
+
+    Todo el HTML se arma en UNA sola linea (sin saltos de linea/lineas en
+    blanco internas): st.markdown(unsafe_allow_html=True) usa un parser
+    de Markdown, y una linea en blanco A MITAD del bloque (ej. insertando
+    aca un f-string multilinea con su propio salto de linea inicial,
+    como tenia antes la insignia) corta el bloque HTML en dos -- todo lo
+    que queda despues de esa linea en blanco deja de reconocerse como
+    HTML y se muestra como texto plano crudo con las etiquetas visibles."""
     atributo_titulo = f' title="{html.escape(ayuda)}"' if ayuda else ""
     icono_html = _span_icono_material(icono, color_icono) + " " if icono else ""
     insignia_html = (
-        f"""
-        <span style="display:inline-block; margin-top:0.4rem; padding:0.15rem 0.6rem;
-                    border-radius:999px; background-color:{COLOR_NEUTRO_BORDE};
-                    color:{COLOR_NEUTRO_TEXTO_SUAVE}; font-size:0.75rem; font-weight:600;
-                    line-height:1.4;">
-            {html.escape(insignia)}
-        </span>
-        """
+        f'<span style="display:inline-block;margin-top:0.4rem;padding:0.15rem 0.6rem;'
+        f"border-radius:999px;background-color:{COLOR_NEUTRO_BORDE};"
+        f"color:{COLOR_NEUTRO_TEXTO_SUAVE};font-size:0.75rem;font-weight:600;"
+        f'line-height:1.4;">{html.escape(insignia)}</span>'
         if insignia
         else ""
     )
-    return f"""
-    <div{atributo_titulo} style="background-color:{COLOR_LIENZO};
-                border:1px solid {COLOR_NEUTRO_BORDE}; border-radius:8px;
-                padding:1.25rem 1.5rem; margin-bottom:0.5rem;">
-        <div style="font-size:0.875rem; color:{COLOR_NEUTRO_TEXTO_SUAVE};">
-            {icono_html}{etiqueta}
-        </div>
-        <div style="font-size:2rem; font-weight:600; color:{COLOR_TEXTO_EJE}; line-height:1.3;">
-            {valor}
-        </div>
-        {insignia_html}
-    </div>
-    """
+    return (
+        f'<div{atributo_titulo} style="background-color:{COLOR_LIENZO};'
+        f"border:1px solid {COLOR_NEUTRO_BORDE};border-radius:8px;"
+        f'padding:1.25rem 1.5rem;margin-bottom:0.5rem;">'
+        f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};">{icono_html}{etiqueta}</div>'
+        f'<div style="font-size:2rem;font-weight:600;color:{COLOR_TEXTO_EJE};line-height:1.3;">{valor}</div>'
+        f"{insignia_html}"
+        f"</div>"
+    )
 
 
 def render_kpi_card(
