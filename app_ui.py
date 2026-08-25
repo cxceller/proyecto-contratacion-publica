@@ -1686,13 +1686,25 @@ def render_generador_reportes():
         )
 
 
-def _render_tarjeta_estado(columna, estado_categoria: str, conteos: dict) -> None:
+def _valor_con_participacion(cantidad: int, total: int) -> str:
+    """Formatea un conteo como '104 (32.4%)' -- % de participacion sobre
+    el total de procesos visibles (ver render_contadores), 1 decimal,
+    mismo criterio que la columna "% Participación" de render_tablas_
+    resumen. Sin porcentaje si total es 0 (filtro sin resultados):
+    mostrarlo implicaria una division por cero."""
+    valor = formatear_numero_ec(cantidad)
+    if total <= 0:
+        return valor
+    return f"{valor} ({cantidad / total * 100:.1f}%)"
+
+
+def _render_tarjeta_estado(columna, estado_categoria: str, conteos: dict, total: int) -> None:
     etiqueta_mostrar = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
     icono, color_icono = ICONOS_ESTADO.get(estado_categoria, (None, None))
     render_kpi_card(
         columna,
         etiqueta_mostrar,
-        formatear_numero_ec(conteos[estado_categoria]),
+        _valor_con_participacion(conteos[estado_categoria], total),
         icono=icono,
         color_icono=color_icono,
     )
@@ -1701,7 +1713,10 @@ def _render_tarjeta_estado(columna, estado_categoria: str, conteos: dict) -> Non
 def render_contadores(registros_totales: list[dict]):
     """Revelacion progresiva: por defecto solo Total + ESTADOS_DESTACADOS (4
     tarjetas), el resto de categorias queda dentro de un expander -- antes
-    se mostraban las ~12 categorias de una sola vez."""
+    se mostraban las ~12 categorias de una sola vez. Cada tarjeta de
+    estado (principales y las del expander) muestra ademas su % de
+    participacion sobre `total` -- ver _valor_con_participacion. "Total"
+    queda sin porcentaje (siempre seria 100%, no aporta informacion)."""
     total = len(registros_totales)
     st.subheader("Contador de contrataciones")
 
@@ -1722,13 +1737,13 @@ def render_contadores(registros_totales: list[dict]):
     # proposito (ver ICONOS_ESTADO).
     render_kpi_card(cols[0], "Total", formatear_numero_ec(total))
     for i, estado_categoria in enumerate(ESTADOS_DESTACADOS, start=1):
-        _render_tarjeta_estado(cols[i], estado_categoria, conteos)
+        _render_tarjeta_estado(cols[i], estado_categoria, conteos, total)
 
     etiquetas_resto = [e for e in ESTADOS if e not in ESTADOS_DESTACADOS] + ["Otros"]
     with st.expander("Ver todos los estados"):
         cols_resto = st.columns(4)
         for i, estado_categoria in enumerate(etiquetas_resto):
-            _render_tarjeta_estado(cols_resto[i % 4], estado_categoria, conteos)
+            _render_tarjeta_estado(cols_resto[i % 4], estado_categoria, conteos, total)
 
 
 def render_vaciar_base_datos():
@@ -2414,16 +2429,28 @@ def render_dashboard(registros_totales: list[dict], titulo: str, key_prefix: str
     identica entre las dos. Ninguna logica de agregacion vive aca, solo
     orquesta el render sobre lo que le pasen.
 
+    El contador de estados se ve primero (antes de los selectores de
+    filtro, que van debajo del divider), pero DEBE reflejar el filtro de
+    Año/Mes/Provincia igual que la fila de KPIs y el detalle -- por eso
+    se reserva su lugar con `st.container()` (contenedor_contadores) y
+    recien se llena mas abajo, ya con `df_filtrado` en mano: Streamlit
+    inserta el contenido de un container en la posicion donde se creo el
+    container, no donde se llena, asi que el orden visual no cambia.
+
     `key_prefix` evita que los widgets de filtro de ambas paginas
     compartan keys de session_state (ver render_filtros_dashboard) -- las
     pestañas de st.tabs no necesitan key propia (Streamlit no las
     identifica por session_state), asi que no hace falta prefijarlas."""
     st.header(titulo)
-    render_contadores(registros_totales)
+    contenedor_contadores = st.container()
     st.divider()
 
     df_totales = preparar_dataframe(registros_totales)
     df_filtrado = render_filtros_dashboard(df_totales, key_prefix=key_prefix)
+
+    with contenedor_contadores:
+        render_contadores(df_filtrado.to_dict("records"))
+
     render_kpis_dashboard(df_filtrado)
 
     _render_detalles_dashboard(df_filtrado)
