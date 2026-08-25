@@ -624,6 +624,7 @@ def _tarjeta_kpi_html(
     ayuda: str | None = None,
     icono: str | None = None,
     color_icono: str | None = None,
+    insignia: str | None = None,
 ) -> str:
     """Tarjeta KPI en HTML puro (no st.metric): mismo fondo/tipografia/
     bordes en toda la app (Dashboard, Procesos y Municipio de Guayaquil,
@@ -638,9 +639,27 @@ def _tarjeta_kpi_html(
     estado y no llevan icono): cuando se indican, se agregan ANTES de la
     etiqueta de texto (nunca en su reemplazo, para no depender solo del
     color/icono para distinguir estados -- ver render_contadores, el unico
-    caller que los pasa hoy)."""
+    caller que los pasa hoy).
+
+    `insignia` es un dato secundario opcional (hoy, el % de participacion
+    de render_contadores) que se muestra como una pildora pequeña y
+    discreta DEBAJO del valor principal -- nunca junto al numero grande,
+    para no competir con el, y en gris neutro (no en el color semantico
+    del icono/estado) para no sumar un significado nuevo de color."""
     atributo_titulo = f' title="{html.escape(ayuda)}"' if ayuda else ""
     icono_html = _span_icono_material(icono, color_icono) + " " if icono else ""
+    insignia_html = (
+        f"""
+        <span style="display:inline-block; margin-top:0.4rem; padding:0.15rem 0.6rem;
+                    border-radius:999px; background-color:{COLOR_NEUTRO_BORDE};
+                    color:{COLOR_NEUTRO_TEXTO_SUAVE}; font-size:0.75rem; font-weight:600;
+                    line-height:1.4;">
+            {html.escape(insignia)}
+        </span>
+        """
+        if insignia
+        else ""
+    )
     return f"""
     <div{atributo_titulo} style="background-color:{COLOR_LIENZO};
                 border:1px solid {COLOR_NEUTRO_BORDE}; border-radius:8px;
@@ -651,6 +670,7 @@ def _tarjeta_kpi_html(
         <div style="font-size:2rem; font-weight:600; color:{COLOR_TEXTO_EJE}; line-height:1.3;">
             {valor}
         </div>
+        {insignia_html}
     </div>
     """
 
@@ -662,14 +682,16 @@ def render_kpi_card(
     ayuda: str | None = None,
     icono: str | None = None,
     color_icono: str | None = None,
+    insignia: str | None = None,
 ) -> None:
     """Tarjeta KPI reutilizable: mismo componente para Dashboard
     (render_kpis_dashboard), Procesos y Municipio de Guayaquil
     (render_contadores, render_metricas_resumen), en vez de que cada
     pagina eligiera su propio estilo (st.metric vs. tarjeta HTML).
-    `icono`/`color_icono` son opcionales -- ver _tarjeta_kpi_html."""
+    `icono`/`color_icono`/`insignia` son opcionales -- ver
+    _tarjeta_kpi_html."""
     columna.markdown(
-        _tarjeta_kpi_html(etiqueta, valor, ayuda, icono=icono, color_icono=color_icono),
+        _tarjeta_kpi_html(etiqueta, valor, ayuda, icono=icono, color_icono=color_icono, insignia=insignia),
         unsafe_allow_html=True,
     )
 
@@ -1686,27 +1708,29 @@ def render_generador_reportes():
         )
 
 
-def _valor_con_participacion(cantidad: int, total: int) -> str:
-    """Formatea un conteo como '104 (32.4%)' -- % de participacion sobre
-    el total de procesos visibles (ver render_contadores), 1 decimal,
-    mismo criterio que la columna "% Participación" de render_tablas_
-    resumen. Sin porcentaje si total es 0 (filtro sin resultados):
-    mostrarlo implicaria una division por cero."""
-    valor = formatear_numero_ec(cantidad)
+def _insignia_participacion(cantidad: int, total: int) -> str | None:
+    """% de participacion de `cantidad` sobre `total` (1 decimal, ej.
+    '32.4%'), para mostrar como insignia separada del valor principal en
+    la tarjeta -- ver render_contadores y el parametro `insignia` de
+    render_kpi_card/_tarjeta_kpi_html. None (sin insignia) si total es 0
+    (filtro sin resultados): mostrarla implicaria una division por
+    cero."""
     if total <= 0:
-        return valor
-    return f"{valor} ({cantidad / total * 100:.1f}%)"
+        return None
+    return f"{cantidad / total * 100:.1f}%"
 
 
 def _render_tarjeta_estado(columna, estado_categoria: str, conteos: dict, total: int) -> None:
     etiqueta_mostrar = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
     icono, color_icono = ICONOS_ESTADO.get(estado_categoria, (None, None))
+    cantidad = conteos[estado_categoria]
     render_kpi_card(
         columna,
         etiqueta_mostrar,
-        _valor_con_participacion(conteos[estado_categoria], total),
+        formatear_numero_ec(cantidad),
         icono=icono,
         color_icono=color_icono,
+        insignia=_insignia_participacion(cantidad, total),
     )
 
 
@@ -1714,9 +1738,10 @@ def render_contadores(registros_totales: list[dict]):
     """Revelacion progresiva: por defecto solo Total + ESTADOS_DESTACADOS (4
     tarjetas), el resto de categorias queda dentro de un expander -- antes
     se mostraban las ~12 categorias de una sola vez. Cada tarjeta de
-    estado (principales y las del expander) muestra ademas su % de
-    participacion sobre `total` -- ver _valor_con_participacion. "Total"
-    queda sin porcentaje (siempre seria 100%, no aporta informacion)."""
+    estado (principales y las del expander) muestra ademas, como insignia
+    separada debajo del numero, su % de participacion sobre `total` --
+    ver _insignia_participacion. "Total" queda sin insignia (siempre
+    seria 100%, no aporta informacion)."""
     total = len(registros_totales)
     st.subheader("Contador de contrataciones")
 
