@@ -93,18 +93,26 @@ API_URL = os.environ.get("API_URL", "http://localhost:8000")
 COLOR_SIDEBAR_FONDO = "#1E293B"
 COLOR_SIDEBAR_TEXTO = "#CBD5E1"
 COLOR_SIDEBAR_TEXTO_ACTIVO = "#FFFFFF"
-COLOR_SIDEBAR_ACENTO = "#FF9800"  # mismo naranja de PALETA_VIVA, como acento de marca
+COLOR_SIDEBAR_ACENTO = "#2a78d6"  # azul primario (= primaryColor en .streamlit/config.toml), acento de marca/item activo
 
-# Paleta general de la interfaz (fuera de graficos): el naranja/rojo vibrante
-# se reserva para botones de accion primaria (type="primary", ya configurado
-# como primaryColor en .streamlit/config.toml) y para alertas -- el resto de
-# la UI usa estos tonos neutros. COLOR_PELIGRO es un rojo aparte, mas oscuro
-# y saturado que el naranja de marca, exclusivo para acciones destructivas
-# (Vaciar Base de Datos), para que nunca se confunda con una accion primaria
+# Paleta general de la interfaz (fuera de graficos): azul primario para
+# botones de accion primaria (type="primary", ya configurado como
+# primaryColor en .streamlit/config.toml) -- el resto de la UI usa estos
+# tonos neutros. COLOR_PELIGRO es el rojo critico de la paleta de estados
+# (ver ICONOS_ESTADO), exclusivo aca para acciones destructivas (Vaciar
+# Base de Datos), para que nunca se confunda con una accion primaria
 # normal (Generar Reporte, Guardar Items, etc.).
-COLOR_PELIGRO = "#DC2626"
+COLOR_PELIGRO = "#d03b3b"
 COLOR_NEUTRO_BORDE = "#E2E8F0"
 COLOR_NEUTRO_TEXTO_SUAVE = "#64748B"
+
+# Paleta semantica de estados: unica fuente de verdad para "ok"/"aviso"/
+# "critico" en toda la app (ICONOS_ESTADO reusa estos 3 tonos exactos, no
+# colores sueltos por estado) -- siempre junto a icono + etiqueta, nunca
+# color solo, para no depender del color para transmitir significado.
+COLOR_ESTADO_OK = "#0ca30c"
+COLOR_ESTADO_AVISO = "#fab219"
+COLOR_ESTADO_CRITICO = "#d03b3b"
 
 NAV_ITEMS = [
     ("Dashboard", ":material/monitoring:"),
@@ -216,22 +224,23 @@ NOMBRES_ESTADO_COMPLETOS = {
 # punto del loop antes de mapear al nombre a mostrar. "Otros" tiene entrada
 # propia (no es parte de ESTADOS, se agrega aparte en render_contadores);
 # "Total" NO tiene icono a proposito (es el agregado, no un estado
-# individual). Paleta Tailwind, consistente con el resto de colores ya
-# definidos en el archivo (COLOR_SIDEBAR_FONDO, COLOR_PELIGRO, etc.) --
-# los rojos de aca son tonos DISTINTOS a COLOR_PELIGRO, que segun su propio
-# comentario es "exclusivo para acciones destructivas" (Vaciar Base de
-# Datos) y no deberia reusarse para otra cosa.
+# individual). Solo 3 colores posibles -- COLOR_ESTADO_OK/_AVISO/_CRITICO --
+# en vez de un tono distinto por estado: el color pasa a comunicar
+# unicamente severidad (ok/aviso/critico), la categoria especifica la
+# distingue el icono + la etiqueta de texto (nunca el color solo). Los
+# rojos de aca son el mismo tono que COLOR_PELIGRO (critico) a proposito
+# -- misma severidad semantica, ya no tonos Tailwind sueltos.
 ICONOS_ESTADO = {
-    "Cancelado": ("cancel", "#EF4444"),  # red-500
-    "Finalizada": ("check_circle", "#16A34A"),  # green-600
-    "Ejecución de": ("engineering", "#2563EB"),  # blue-600
-    "Desierta": ("block", "#F97316"),  # orange-500
-    "En Recepción": ("inbox", "#2563EB"),  # blue-600
-    "Terminado U": ("report", "#991B1B"),  # red-800
-    "Adjudicado -": ("task_alt", "#16A34A"),  # green-600
-    "Adjudicada": ("task_alt", "#16A34A"),  # green-600
-    "Suspendido": ("pause_circle", "#F59E0B"),  # amber-500
-    "Por Adjudicar": ("hourglass_top", "#94A3B8"),  # slate-400
+    "Cancelado": ("cancel", COLOR_ESTADO_CRITICO),
+    "Finalizada": ("check_circle", COLOR_ESTADO_OK),
+    "Ejecución de": ("engineering", COLOR_ESTADO_OK),
+    "Desierta": ("block", COLOR_ESTADO_CRITICO),
+    "En Recepción": ("inbox", COLOR_ESTADO_AVISO),
+    "Terminado U": ("report", COLOR_ESTADO_CRITICO),
+    "Adjudicado -": ("task_alt", COLOR_ESTADO_OK),
+    "Adjudicada": ("task_alt", COLOR_ESTADO_OK),
+    "Suspendido": ("pause_circle", COLOR_ESTADO_AVISO),
+    "Por Adjudicar": ("hourglass_top", COLOR_ESTADO_AVISO),
     "Otros": ("more_horiz", COLOR_NEUTRO_TEXTO_SUAVE),
 }
 
@@ -261,18 +270,30 @@ MESES_ES = {
     9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
 }
 
-# Paleta viva del dashboard: se reparte automaticamente entre barras/segmentos
-# (color_discrete_sequence) para dar contraste y dinamismo visual, sin atarse
-# al significado de ninguna variable especifica.
-PALETA_VIVA = [
-    "#E91E63", "#FF9800", "#FFEB3B", "#8BC34A",
-    "#00BCD4", "#9C27B0", "#F44336", "#2196F3",
+# Paleta de datos del dashboard (graficos categoricos con muchos segmentos:
+# treemaps, Gantt por estado) -- familia de azules derivada del azul
+# primario (#2a78d6 = primaryColor), en vez de colores sueltos sin relacion
+# entre si, para que ningun grafico "compita" visualmente con el resto de
+# la app. Sigue siendo ciclica (color_discrete_sequence): con mas
+# categorias que colores, Plotly repite desde el principio.
+PALETA_DATOS = [
+    "#2a78d6", "#0f3d75", "#6fa8dc", "#164a8c",
+    "#9cc2ef", "#1a5aa8", "#4a90d9", "#cfe0f5",
 ]
-COLOR_LIENZO = "#FFFFFF"  # plot_bgcolor / paper_bgcolor: fondo claro fijo,
-                          # independiente del tema (claro u oscuro) de Streamlit
-COLOR_GRID = "#E0E0E0"  # gridlines grises muy tenues
-COLOR_AXIS = "black"  # linea solida de eje ("trazo de tinta")
-COLOR_TEXTO_EJE = "black"  # texto de ejes/fuente general, alto contraste sobre el lienzo claro
+COLOR_LIENZO = "#fcfcfb"  # plot_bgcolor / paper_bgcolor: mismo tono que
+                          # secondaryBackgroundColor (.streamlit/config.toml),
+                          # fijo independiente del tema claro/oscuro de Streamlit
+COLOR_GRID = "#e1e0d9"  # gridlines neutras, mismo calido que el fondo
+COLOR_AXIS = "#0b0b0b"  # linea solida de eje ("trazo de tinta"), = textColor
+COLOR_TEXTO_EJE = "#0b0b0b"  # texto de ejes/fuente general, = textColor (.streamlit/config.toml)
+
+# Patron "barra lider destacada" compartido por los graficos de ranking
+# (render_grafico_mensual, render_grafico_provincia, render_grafico_
+# comparativo): todas las barras en azul suave (el color no codifica
+# categoria, solo son "datos"), salvo la de mayor valor, que se resalta en
+# naranja de acento -- el unico uso de naranja fuera de una alerta.
+COLOR_BARRA_DATO = "#cfe0f5"
+COLOR_BARRA_DESTACADA = "#eb6834"
 
 # Opciones del selector "Comparar por" de render_grafico_comparativo: cada
 # etiqueta visible mapea a la columna real de df_filtrado por la que agrupar.
@@ -293,8 +314,6 @@ METRICAS_COMPARATIVAS = {
         "formato": formatear_moneda_ec, "es_moneda": True,
     },
 }
-COLOR_BARRA_RESALTADA = COLOR_SIDEBAR_ACENTO  # naranja de marca, para la categoria lider
-COLOR_BARRA_TENUE = "#B0BEC5"  # gris azulado para el resto de las barras
 
 # Capital y coordenadas (lat, lon) de cada una de las 24 provincias del
 # Ecuador, para ubicar el mapa de burbujas del Dashboard Analitico. Clave
@@ -738,6 +757,18 @@ def render_kpi_card(
     )
 
 
+ESTADOS_VALOR_ADJUDICADO = {
+    _normalizar_texto_provincia(estado).lower()
+    for estado in (
+        "Adjudicada",
+        "Adjudicado - Registro de Contratos",
+        "Ejecución de Contrato",
+        "Finalizada",
+        "En Recepción",
+    )
+}
+
+
 def render_kpis_dashboard(df: pd.DataFrame):
     """KPIs principales del Dashboard: Procesos, Presupuesto Total y Valor
     Adjudicado -- lo unico visible por defecto antes de expandir cualquier
@@ -745,7 +776,10 @@ def render_kpis_dashboard(df: pd.DataFrame):
     col1, col2, col3 = st.columns(3)
     presupuesto_total = df["presupuesto_referencial"].fillna(0).sum() if not df.empty else 0
     valor_adjudicado_total = (
-        df.loc[df["estado"].str.strip().str.lower().str.startswith("adjudicad", na=False), "presupuesto_referencial"]
+        df.loc[
+            df["estado"].map(_normalizar_texto_provincia).str.lower().isin(ESTADOS_VALOR_ADJUDICADO),
+            "presupuesto_referencial",
+        ]
         .fillna(0)
         .sum()
         if not df.empty
@@ -758,8 +792,9 @@ def render_kpis_dashboard(df: pd.DataFrame):
         "Valor Adjudicado (filtro actual)",
         formatear_moneda_ec(valor_adjudicado_total),
         ayuda=(
-            "Suma del Presupuesto Referencial de los procesos con estado "
-            "Adjudicada/Adjudicado dentro del filtro actual."
+            "Suma del Presupuesto Referencial de los procesos en estado "
+            "Adjudicada, Adjudicado - Registro de Contratos, Ejecución de "
+            "Contrato, Finalizada o En Recepción dentro del filtro actual."
         ),
     )
 
@@ -780,15 +815,22 @@ def render_grafico_mensual(df: pd.DataFrame):
         st.info("Los procesos filtrados no tienen fecha de publicación.")
         return
 
+    # Monocromo: el color deja de codificar la categoria (mes, una por
+    # barra) y pasa a codificar unicamente "es el mes de mayor presupuesto
+    # o no" -- ver COLOR_BARRA_DATO/COLOR_BARRA_DESTACADA.
+    indice_max = resumen["presupuesto_referencial"].idxmax()
+    colores_barras = [
+        COLOR_BARRA_DESTACADA if idx == indice_max else COLOR_BARRA_DATO
+        for idx in resumen.index
+    ]
+
     fig = px.bar(
         resumen,
         x="anio_mes",
         y="presupuesto_referencial",
-        color="anio_mes",
-        color_discrete_sequence=PALETA_VIVA,
     )
     fig.update_traces(
-        marker=dict(cornerradius=4, line=dict(width=0)),
+        marker=dict(color=colores_barras, cornerradius=4, line=dict(width=0)),
         hovertemplate="<b>$ %{y:,.2f}</b><br>%{x}<extra></extra>",
     )
     fig.update_xaxes(
@@ -832,16 +874,24 @@ def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
     # con mas presupuesto en la primera fila (arriba) para lectura inmediata.
     resumen = resumen.sort_values("presupuesto_referencial", ascending=False)
 
+    # Monocromo, mismo patron que render_grafico_mensual: el eje Y ya
+    # identifica cada provincia por su etiqueta, asi que un color distinto
+    # por barra no aportaba informacion -- solo se resalta la de mayor
+    # presupuesto.
+    indice_max = resumen["presupuesto_referencial"].idxmax()
+    colores_barras = [
+        COLOR_BARRA_DESTACADA if idx == indice_max else COLOR_BARRA_DATO
+        for idx in resumen.index
+    ]
+
     fig = px.bar(
         resumen,
         x="presupuesto_referencial",
         y="provincia_canton",
         orientation="h",
-        color="provincia_canton",
-        color_discrete_sequence=PALETA_VIVA,
     )
     fig.update_traces(
-        marker=dict(cornerradius=4, line=dict(width=0)),
+        marker=dict(color=colores_barras, cornerradius=4, line=dict(width=0)),
         hovertemplate="<b>$ %{x:,.2f}</b><br>%{y}<extra></extra>",
     )
     fig.update_xaxes(
@@ -863,8 +913,8 @@ def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
     presupuesto referencial total) via los selectores de
     DIMENSIONES_COMPARATIVAS/METRICAS_COMPARATIVAS, y se dibuja una barra
     por categoria, de mayor a menor, con la de mayor valor resaltada en
-    COLOR_BARRA_RESALTADA (naranja de marca) y el resto en
-    COLOR_BARRA_TENUE -- el valor tambien se anota como texto al final de
+    COLOR_BARRA_DESTACADA (naranja de acento) y el resto en
+    COLOR_BARRA_DATO -- el valor tambien se anota como texto al final de
     cada barra para no depender solo del color para distinguir al lider."""
     st.markdown("**Comparativa por ranking**")
     if df.empty:
@@ -893,7 +943,7 @@ def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
 
     valor_maximo = resumen["valor"].max()
     colores = [
-        COLOR_BARRA_RESALTADA if v == valor_maximo else COLOR_BARRA_TENUE
+        COLOR_BARRA_DESTACADA if v == valor_maximo else COLOR_BARRA_DATO
         for v in resumen["valor"]
     ]
     textos = [cfg["formato"](v) for v in resumen["valor"]]
@@ -974,7 +1024,7 @@ def _construir_mapa_burbujas(df_mapa: pd.DataFrame) -> go.Figure:
         lon="lon",
         size="procesos",
         color="presupuesto",
-        color_continuous_scale="Viridis",
+        color_continuous_scale="Blues",
         size_max=45,
         zoom=5.8,
         center={"lat": -1.5, "lon": -78.5},
@@ -993,7 +1043,7 @@ def _construir_mapa_coropletico(df_mapa: pd.DataFrame) -> go.Figure:
         locations="provincia_clave",
         featureidkey="properties.provincia_clave",
         color="presupuesto",
-        color_continuous_scale="Viridis",
+        color_continuous_scale="Blues",
         zoom=5.8,
         center={"lat": -1.5, "lon": -78.5},
         custom_data=_MAPA_CUSTOM_DATA,
@@ -1086,9 +1136,10 @@ def render_mapa_provincias(df: pd.DataFrame):
 def render_treemap_provincia_estado(df: pd.DataFrame):
     """Treemap jerarquico Provincia/Canton -> Estado del Proceso, con el
     conteo de procesos como area de cada rectangulo. El color se asigna
-    por Provincia/Canton (PALETA_VIVA, la misma paleta viva y ciclica que
-    ya usa `render_grafico_provincia`): cada provincia tiene un color
-    solido y distintivo, y sus estados hijos heredan ese mismo tono."""
+    por Provincia/Canton (PALETA_DATOS, familia de azules ciclica): cada
+    provincia tiene un tono distintivo, y sus estados hijos heredan ese
+    mismo tono -- a diferencia de ICONOS_ESTADO, aca el color identifica
+    la categoria (provincia), no la severidad del estado."""
     st.markdown("**Provincia/Cantón → Estado del Proceso (treemap)**")
     if df.empty:
         st.info("No hay datos para graficar con los filtros actuales.")
@@ -1107,7 +1158,7 @@ def render_treemap_provincia_estado(df: pd.DataFrame):
         path=["provincia_canton", "estado"],
         values="procesos",
         color="provincia_canton",
-        color_discrete_sequence=PALETA_VIVA,
+        color_discrete_sequence=PALETA_DATOS,
     )
     fig.update_traces(
         texttemplate="<b>%{label}</b><br>%{value} procesos",
@@ -1141,7 +1192,7 @@ def render_treemap_presupuesto_tipo(df: pd.DataFrame):
         path=["tipo_compra", "estado"],
         values="presupuesto_referencial",
         color="tipo_compra",
-        color_discrete_sequence=PALETA_VIVA,
+        color_discrete_sequence=PALETA_DATOS,
     )
     fig.update_traces(
         texttemplate="<b>%{label}</b><br>$ %{value:,.2f}",
@@ -1205,7 +1256,7 @@ def render_treemap_items_especificaciones_tecnicas(df_items: pd.DataFrame) -> No
         path=["descripcion"],
         values="valor_total",
         color="descripcion",
-        color_discrete_sequence=PALETA_VIVA,
+        color_discrete_sequence=PALETA_DATOS,
     )
     fig.update_traces(
         texttemplate="<b>%{label}</b><br>$ %{value:,.2f}",
@@ -1260,7 +1311,7 @@ def render_gantt_procesos(df: pd.DataFrame, limite: int = 25):
         x_end="fin",
         y="etiqueta",
         color="estado",
-        color_discrete_sequence=PALETA_VIVA,
+        color_discrete_sequence=PALETA_DATOS,
         custom_data=["dias_transcurridos", "entidad_contratante"],
     )
     fig.update_traces(
@@ -1353,7 +1404,10 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
             "adjudicado en los datos disponibles."
         )
 
-    col1, col2, col3 = st.columns(3)
+    if mostrar_monto_adjudicado:
+        col1, col2, col3, col4 = st.columns(4)
+    else:
+        col1, col2, col3 = st.columns(3)
     render_kpi_card(col1, "Número de Procesos", formatear_numero_ec(len(registros)))
     render_kpi_card(col2, "Presupuesto Total", formatear_moneda_ec(presupuesto_total))
     render_kpi_card(
@@ -1362,6 +1416,39 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
         formatear_moneda_ec(valor_adjudicado_total),
         ayuda=ayuda_valor_adjudicado,
     )
+
+    if mostrar_monto_adjudicado:
+        # "% de Ahorro General": mismos 5 estados que ESTADOS_VALOR_ADJUDICADO
+        # (ver render_kpis_dashboard), normalizados sin tildes/mayusculas
+        # con un set (no contains) para que "Ejecución de Contrato" calce
+        # igual que "ejecucion de contrato".
+        registros_ahorro = [
+            r
+            for r in registros
+            if _normalizar_texto_provincia(r.get("estado", "")).lower() in ESTADOS_VALOR_ADJUDICADO
+        ]
+        suma_adjudicado_ahorro = sum(r.get("monto_adjudicado") or 0 for r in registros_ahorro)
+        suma_presupuesto_ahorro = sum(r.get("presupuesto_referencial") or 0 for r in registros_ahorro)
+        # Signo invertido respecto a la resta literal (adjudicado/presupuesto - 1):
+        # un ahorro (adjudicado menor al presupuesto) debe verse positivo.
+        porcentaje_ahorro_general = (
+            (1 - suma_adjudicado_ahorro / suma_presupuesto_ahorro) * 100 if suma_presupuesto_ahorro else None
+        )
+        valor_ahorro_general = (
+            f"{porcentaje_ahorro_general:+.2f}".replace(".", ",") + "%"
+            if porcentaje_ahorro_general is not None
+            else "N/A"
+        )
+        render_kpi_card(
+            col4,
+            "% de Ahorro General",
+            valor_ahorro_general,
+            ayuda=(
+                "1 - (Suma del Monto Adjudicado / Suma del Presupuesto Referencial sin IVA), "
+                "sobre los procesos en estado Adjudicada, Adjudicado - Registro de Contratos, "
+                "Ejecución de Contrato, Finalizada o En Recepción."
+            ),
+        )
 
 
 def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool = False):
@@ -1769,8 +1856,8 @@ def render_vaciar_base_datos():
             color: #FFFFFF !important;
         }}
         .st-key-zona_peligro_vaciar_bd button[kind="primary"]:hover {{
-            background-color: #B91C1C !important;
-            border-color: #B91C1C !important;
+            background-color: #a62f2f !important;  /* COLOR_PELIGRO, mas oscuro para :hover */
+            border-color: #a62f2f !important;
         }}
         </style>
         """,
@@ -3592,7 +3679,7 @@ def _inyectar_estilos_especificaciones_tecnicas_cards() -> None:
         .st-key-especificaciones_tecnicas_metrica_sumatoria,
         .st-key-especificaciones_tecnicas_metrica_presupuesto {{
             border-color: {COLOR_SIDEBAR_ACENTO} !important;
-            background-color: #FFF7ED;
+            background-color: #eaf2fb;  /* tinte suave del mismo azul de COLOR_SIDEBAR_ACENTO */
         }}
         .st-key-especificaciones_tecnicas_metrica_sumatoria [data-testid="stMetricValue"] {{
             color: {COLOR_SIDEBAR_ACENTO};

@@ -1,11 +1,14 @@
-# Tema global de la app: neutro (gris/blanco) para toda la interfaz, con el
-# naranja institucional reservado como color de accion primaria (botones
-# type="primary", sidebar activo). El rojo de alerta/destructivo (ej. Vaciar
-# Base de Datos) se aplica aparte con CSS especifico (ver COLOR_PELIGRO en
-# app_ui.py), para que sea visualmente distinto de una accion primaria normal.
+# Tema global de la app: paleta unica compartida por todo (Streamlit +
+# graficos Plotly + CSS propio en app_ui.py). Regla: azul #2a78d6 (=
+# primaryColor) para datos y boton primario; naranja #eb6834 exclusivo
+# para destacar el maximo de un grafico o para alertas; neutros (fondo/
+# texto) segun este bloque; para estados usa verde #0ca30c (ok), ambar
+# #fab219 (aviso) y rojo #d03b3b (critico) -- siempre junto a icono +
+# etiqueta, nunca color solo (ver ICONOS_ESTADO en app_ui.py).
 [theme]
-primaryColor = "#FF9800"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F1F5F9"
-textColor = "#1E293B"
+base = "light"
+primaryColor = "#2a78d6"
+backgroundColor = "#f9f9f7"
+secondaryBackgroundColor = "#fcfcfb"
+textColor = "#0b0b0b"
 font = "sans serif"
