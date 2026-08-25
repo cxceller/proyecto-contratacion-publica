@@ -1267,6 +1267,16 @@ def render_tablas_resumen(df: pd.DataFrame):
         .rename(columns={"estado": "Estado", "Presupuesto_Total": "Presupuesto Total"})
         .sort_values("Presupuesto Total", ascending=False)
     )
+    # "% Participación" = Procesos de ese estado / total de procesos de ESTA
+    # tabla (no del df completo, aunque hoy coinciden -- resumen_estado ya
+    # agrupa el 100% de `df`) -- se calcula antes de formatear "Presupuesto
+    # Total" como texto, para sumar sobre el numero crudo.
+    total_procesos_estado = resumen_estado["Procesos"].sum()
+    resumen_estado.insert(
+        resumen_estado.columns.get_loc("Procesos") + 1,
+        "% Participación",
+        (resumen_estado["Procesos"] / total_procesos_estado * 100).map(lambda v: f"{v:.1f}%"),
+    )
     resumen_estado["Presupuesto Total"] = resumen_estado["Presupuesto Total"].map(formatear_moneda_ec)
     col1.caption("Por Estado del Proceso")
     # st.table (HTML estatico) en vez de st.dataframe: el componente
