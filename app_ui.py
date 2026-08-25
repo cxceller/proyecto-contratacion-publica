@@ -594,7 +594,7 @@ def render_filtros_dashboard(df: pd.DataFrame, key_prefix: str = "") -> pd.DataF
 
     `key_prefix` distingue las keys de session_state cuando esta misma
     funcion se llama mas de una vez en la app con datos distintos (ver
-    render_dashboard_analitico, reusado por el Dashboard general y por
+    render_dashboard, reusado por el Dashboard general y por
     Dashboard Municipio de Guayaquil) -- sin prefijo, ambas instancias
     compartirian las mismas keys y la seleccion de una pisaria a la otra."""
     col1, col2, col3, col4 = st.columns([1, 1, 2, 1])
@@ -2426,26 +2426,12 @@ def render_pagina_importacion_sercop() -> None:
         st.rerun()
 
 
-def render_dashboard_analitico(registros_totales: list[dict], key_prefix: str = "") -> None:
-    """Filtros (Año/Mes/Provincia) + KPIs + graficos Plotly en pestañas,
-    todo calculado sobre `registros_totales` -- reusado tal cual por el
-    Dashboard general (render_pagina_dashboard, todos los procesos) y por
-    Dashboard Municipio de Guayaquil (render_pagina_dashboard_municipio_
-    guayaquil, ya filtrado a esa entidad): ninguna logica de agregacion
-    vive aca, solo orquesta el render sobre el DataFrame que le pasen.
-
-    `key_prefix` evita que los widgets de filtro de ambas paginas
-    compartan keys de session_state (ver render_filtros_dashboard) -- las
-    pestañas de st.tabs no necesitan key propia (Streamlit no las
-    identifica por session_state), asi que no hace falta prefijarlas."""
-    st.header(":material/analytics: Dashboard Analítico")
-    df_totales = preparar_dataframe(registros_totales)
-    df_filtrado = render_filtros_dashboard(df_totales, key_prefix=key_prefix)
-    render_kpis_dashboard(df_filtrado)
-
-    # Revelacion progresiva: los 8 detalles se agrupan en 3 pestañas
-    # tematicas (Resúmenes/Territorio/Tiempo) en vez de 8 pestañas sueltas
-    # al mismo nivel -- cada grupo abre sus propias sub-pestañas anidadas.
+def _render_detalles_dashboard(df_filtrado: pd.DataFrame) -> None:
+    """Bloque "detalles" de render_dashboard: los 8 graficos/tablas de
+    detalle (incluido el grafico mensual, dentro del grupo "Tiempo") se
+    agrupan en 3 pestañas tematicas (Resúmenes/Territorio/Tiempo) en vez de
+    8 pestañas sueltas al mismo nivel -- cada grupo abre sus propias
+    sub-pestañas anidadas (revelacion progresiva)."""
     grupo_resumenes, grupo_territorio, grupo_tiempo = st.tabs(
         [":material/receipt_long: Resúmenes", ":material/public: Territorio", ":material/schedule: Tiempo"]
     )
@@ -2496,15 +2482,39 @@ def render_dashboard_analitico(registros_totales: list[dict], key_prefix: str = 
             render_gantt_procesos(df_filtrado)
 
 
-def render_pagina_dashboard(registros_totales: list[dict]) -> None:
-    """Revelacion progresiva: por defecto solo se ven los contadores y los
-    3 KPIs principales (Procesos, Presupuesto, Adjudicado); el resto del
-    detalle (evolucion mensual, provincia, mapa, treemap, tablas resumen)
-    queda agrupado en pestañas, para no abrumar con todo el dashboard de
-    una sola vez."""
+def render_dashboard(registros_totales: list[dict], titulo: str, key_prefix: str = "") -> None:
+    """Dashboard reutilizable: titulo -> contador de estados -> filtros
+    (Año/Mes/Provincia) -> fila de KPIs -> detalles en pestañas (ver
+    _render_detalles_dashboard). UNA sola implementacion para el Dashboard
+    general (render_pagina_dashboard, todos los procesos) y para Dashboard
+    Municipio de Guayaquil (render_pagina_dashboard_municipio_guayaquil,
+    ya filtrado a esa entidad) -- ambas paginas llaman a esta misma
+    funcion con su propio `registros_totales`/`titulo`/`key_prefix`, asi
+    que la ubicacion y el comportamiento de menus, botones y KPIs es
+    identica entre las dos. Ninguna logica de agregacion vive aca, solo
+    orquesta el render sobre lo que le pasen.
+
+    `key_prefix` evita que los widgets de filtro de ambas paginas
+    compartan keys de session_state (ver render_filtros_dashboard) -- las
+    pestañas de st.tabs no necesitan key propia (Streamlit no las
+    identifica por session_state), asi que no hace falta prefijarlas."""
+    st.header(titulo)
     render_contadores(registros_totales)
     st.divider()
-    render_dashboard_analitico(registros_totales, key_prefix="global_")
+
+    df_totales = preparar_dataframe(registros_totales)
+    df_filtrado = render_filtros_dashboard(df_totales, key_prefix=key_prefix)
+    render_kpis_dashboard(df_filtrado)
+
+    _render_detalles_dashboard(df_filtrado)
+
+
+def render_pagina_dashboard(registros_totales: list[dict]) -> None:
+    render_dashboard(
+        registros_totales,
+        titulo=":material/analytics: Dashboard Analítico",
+        key_prefix="global_",
+    )
 
 
 CLAVES_FILTRO_PROCESOS = [
@@ -4632,22 +4642,20 @@ def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None
 
 
 def render_pagina_dashboard_municipio_guayaquil(registros_totales: list[dict]) -> None:
-    """Mismo Contador de contrataciones + Dashboard Analitico que la
-    pagina "Dashboard" general (render_pagina_dashboard), reusando las
-    mismas funciones (render_contadores, render_dashboard_analitico) sin
-    duplicar logica -- la unica diferencia es que aca los registros ya
-    vienen acotados a Municipalidad de Guayaquil (mismo filtro que ya usa
-    render_pagina_municipalidad_guayaquil, via filtrar_por_entidad), asi
-    que los totales/graficos reflejan solo esa entidad."""
-    st.header(":material/analytics: Dashboard Municipio de Guayaquil")
+    """Mismo render_dashboard que la pagina "Dashboard" general
+    (render_pagina_dashboard) -- sin duplicar logica -- la unica
+    diferencia es que aca los registros se acotan primero a Municipalidad
+    de Guayaquil (mismo filtro que ya usa render_pagina_municipalidad_
+    guayaquil, via filtrar_por_entidad), asi que los totales/graficos
+    reflejan solo esa entidad."""
+    titulo = ":material/analytics: Dashboard Municipio de Guayaquil"
     registros_municipio = filtrar_por_entidad(registros_totales, ENTIDAD_MUNICIPALIDAD_GUAYAQUIL)
     if not registros_municipio:
+        st.header(titulo)
         st.info(f'No se encontraron procesos para "{ENTIDAD_MUNICIPALIDAD_GUAYAQUIL}".')
         return
 
-    render_contadores(registros_municipio)
-    st.divider()
-    render_dashboard_analitico(registros_municipio, key_prefix="gye_")
+    render_dashboard(registros_municipio, titulo=titulo, key_prefix="gye_")
 
 
 def render_pagina_configuracion() -> None:
