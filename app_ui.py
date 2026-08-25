@@ -199,6 +199,11 @@ ESTADOS = [
     "Por Adjudicar",
 ]
 
+# Subconjunto de ESTADOS visible por defecto en render_contadores (revelacion
+# progresiva: 4 tarjetas en vez de las ~12 de antes) -- las 3 categorias mas
+# consultadas de un vistazo, el resto queda dentro de un expander.
+ESTADOS_DESTACADOS = ["Adjudicada", "Ejecución de", "Desierta"]
+
 # Nombre completo (no truncado) de cada categoria de ESTADOS, para mostrar
 # en las tarjetas de render_contadores en vez del prefijo truncado
 # ("Ejecución de", "Terminado U", "Adjudicado -"). Confirmado contra los
@@ -1761,7 +1766,22 @@ def render_generador_reportes():
         )
 
 
+def _render_tarjeta_estado(columna, estado_categoria: str, conteos: dict) -> None:
+    etiqueta_mostrar = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
+    icono, color_icono = ICONOS_ESTADO.get(estado_categoria, (None, None))
+    render_kpi_card(
+        columna,
+        etiqueta_mostrar,
+        formatear_numero_ec(conteos[estado_categoria]),
+        icono=icono,
+        color_icono=color_icono,
+    )
+
+
 def render_contadores(registros_totales: list[dict]):
+    """Revelacion progresiva: por defecto solo Total + ESTADOS_DESTACADOS (4
+    tarjetas), el resto de categorias queda dentro de un expander -- antes
+    se mostraban las ~12 categorias de una sola vez."""
     total = len(registros_totales)
     st.subheader("Contador de contrataciones")
 
@@ -1777,21 +1797,18 @@ def render_contadores(registros_totales: list[dict]):
     # resultado"): se agrupan aqui para que el desglose siempre sume el Total.
     conteos["Otros"] = total - sum(conteos.values())
 
-    etiquetas = ESTADOS + ["Otros"]
     cols = st.columns(4)
     # "Total" es el agregado, no un estado individual -- sin icono a
     # proposito (ver ICONOS_ESTADO).
     render_kpi_card(cols[0], "Total", formatear_numero_ec(total))
-    for i, estado_categoria in enumerate(etiquetas, start=1):
-        etiqueta_mostrar = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
-        icono, color_icono = ICONOS_ESTADO.get(estado_categoria, (None, None))
-        render_kpi_card(
-            cols[i % 4],
-            etiqueta_mostrar,
-            formatear_numero_ec(conteos[estado_categoria]),
-            icono=icono,
-            color_icono=color_icono,
-        )
+    for i, estado_categoria in enumerate(ESTADOS_DESTACADOS, start=1):
+        _render_tarjeta_estado(cols[i], estado_categoria, conteos)
+
+    etiquetas_resto = [e for e in ESTADOS if e not in ESTADOS_DESTACADOS] + ["Otros"]
+    with st.expander("Ver todos los estados"):
+        cols_resto = st.columns(4)
+        for i, estado_categoria in enumerate(etiquetas_resto):
+            _render_tarjeta_estado(cols_resto[i % 4], estado_categoria, conteos)
 
 
 def render_vaciar_base_datos():
@@ -2425,40 +2442,57 @@ def render_dashboard_analitico(registros_totales: list[dict], key_prefix: str = 
     df_filtrado = render_filtros_dashboard(df_totales, key_prefix=key_prefix)
     render_kpis_dashboard(df_filtrado)
 
-    (
-        tab_mensual, tab_provincia, tab_treemap, tab_resumen, tab_presupuesto,
-        tab_items, tab_gantt, tab_comparativa,
-    ) = st.tabs(
-        [
-            ":material/calendar_month: Ver detalle por mes",
-            ":material/location_on: Ver detalle por provincia",
-            ":material/account_tree: Ver Provincia → Estado",
-            ":material/receipt_long: Ver resumen por estado y tipo de compra",
-            ":material/payments: Presupuesto por Tipo (Treemap)",
-            ":material/inventory_2: Presupuesto por Ítem (Especificaciones Técnicas)",
-            ":material/timeline: Cronograma de Procesos (Gantt)",
-            ":material/leaderboard: Comparativa (ranking)",
-        ]
+    # Revelacion progresiva: los 8 detalles se agrupan en 3 pestañas
+    # tematicas (Resúmenes/Territorio/Tiempo) en vez de 8 pestañas sueltas
+    # al mismo nivel -- cada grupo abre sus propias sub-pestañas anidadas.
+    grupo_resumenes, grupo_territorio, grupo_tiempo = st.tabs(
+        [":material/receipt_long: Resúmenes", ":material/public: Territorio", ":material/schedule: Tiempo"]
     )
-    with tab_mensual:
-        render_grafico_mensual(df_filtrado)
-    with tab_provincia:
-        render_grafico_provincia(df_filtrado)
-        render_mapa_provincias(df_filtrado)
-    with tab_treemap:
-        render_treemap_provincia_estado(df_filtrado)
-    with tab_resumen:
-        render_tablas_resumen(df_filtrado)
-    with tab_presupuesto:
-        render_treemap_presupuesto_tipo(df_filtrado)
-    with tab_items:
-        render_treemap_items_especificaciones_tecnicas(
-            st.session_state.get("especificaciones_tecnicas_items_df", _dataframe_items_especificaciones_tecnicas_vacio())
+
+    with grupo_resumenes:
+        tab_resumen, tab_presupuesto, tab_items, tab_comparativa = st.tabs(
+            [
+                ":material/receipt_long: Por estado y tipo de compra",
+                ":material/payments: Presupuesto por Tipo (Treemap)",
+                ":material/inventory_2: Presupuesto por Ítem (Especificaciones Técnicas)",
+                ":material/leaderboard: Comparativa (ranking)",
+            ]
         )
-    with tab_gantt:
-        render_gantt_procesos(df_filtrado)
-    with tab_comparativa:
-        render_grafico_comparativo(df_filtrado)
+        with tab_resumen:
+            render_tablas_resumen(df_filtrado)
+        with tab_presupuesto:
+            render_treemap_presupuesto_tipo(df_filtrado)
+        with tab_items:
+            render_treemap_items_especificaciones_tecnicas(
+                st.session_state.get("especificaciones_tecnicas_items_df", _dataframe_items_especificaciones_tecnicas_vacio())
+            )
+        with tab_comparativa:
+            render_grafico_comparativo(df_filtrado)
+
+    with grupo_territorio:
+        tab_provincia, tab_treemap = st.tabs(
+            [
+                ":material/location_on: Detalle por provincia",
+                ":material/account_tree: Provincia → Estado",
+            ]
+        )
+        with tab_provincia:
+            render_grafico_provincia(df_filtrado)
+            render_mapa_provincias(df_filtrado)
+        with tab_treemap:
+            render_treemap_provincia_estado(df_filtrado)
+
+    with grupo_tiempo:
+        tab_mensual, tab_gantt = st.tabs(
+            [
+                ":material/calendar_month: Detalle por mes",
+                ":material/timeline: Cronograma de Procesos (Gantt)",
+            ]
+        )
+        with tab_mensual:
+            render_grafico_mensual(df_filtrado)
+        with tab_gantt:
+            render_gantt_procesos(df_filtrado)
 
 
 def render_pagina_dashboard(registros_totales: list[dict]) -> None:
