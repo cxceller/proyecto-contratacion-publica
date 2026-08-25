@@ -657,18 +657,21 @@ def _tarjeta_kpi_html(
     atributo_titulo = f' title="{html.escape(ayuda)}"' if ayuda else ""
     icono_html = _span_icono_material(icono, color_icono) + " " if icono else ""
     insignia_html = (
-        f'<span style="display:inline-block;margin-top:0.4rem;padding:0.15rem 0.6rem;'
+        f'<div style="margin-top:auto;padding-top:0.4rem;">'
+        f'<span style="display:inline-block;padding:0.15rem 0.6rem;'
         f"border-radius:999px;background-color:{COLOR_NEUTRO_BORDE};"
         f"color:{COLOR_NEUTRO_TEXTO_SUAVE};font-size:0.75rem;font-weight:600;"
-        f'line-height:1.4;">{html.escape(insignia)}</span>'
+        f'line-height:1.4;">{html.escape(insignia)}</span></div>'
         if insignia
         else ""
     )
     return (
         f'<div{atributo_titulo} style="background-color:{COLOR_LIENZO};'
-        f"border:1px solid {COLOR_NEUTRO_BORDE};border-radius:8px;"
-        f'padding:1.25rem 1.5rem;margin-bottom:0.5rem;">'
-        f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};">{icono_html}{etiqueta}</div>'
+        f"border:1px solid {COLOR_NEUTRO_BORDE};border-radius:8px;box-sizing:border-box;"
+        f"padding:1.25rem 1.5rem;margin-bottom:0.5rem;"
+        f'display:flex;flex-direction:column;min-height:8.5rem;">'
+        f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};'
+        f'min-height:2.5rem;">{icono_html}{etiqueta}</div>'
         f'<div style="font-size:2rem;font-weight:600;color:{COLOR_TEXTO_EJE};line-height:1.3;">{valor}</div>'
         f"{insignia_html}"
         f"</div>"
@@ -709,9 +712,9 @@ ESTADOS_VALOR_ADJUDICADO = {
 
 
 def render_kpis_dashboard(df: pd.DataFrame):
-    """KPIs principales del Dashboard: Procesos, Presupuesto Total y Valor
-    Adjudicado -- lo unico visible por defecto antes de expandir cualquier
-    detalle (ver render_pagina_dashboard)."""
+    """KPIs principales del Dashboard: Procesos, Presupuesto Total y
+    Presupuesto en Contratación -- lo unico visible por defecto antes de
+    expandir cualquier detalle (ver render_pagina_dashboard)."""
     col1, col2, col3 = st.columns(3)
     presupuesto_total = df["presupuesto_referencial"].fillna(0).sum() if not df.empty else 0
     valor_adjudicado_total = (
@@ -728,12 +731,13 @@ def render_kpis_dashboard(df: pd.DataFrame):
     render_kpi_card(col2, "Presupuesto Total (filtro actual)", formatear_moneda_ec(presupuesto_total))
     render_kpi_card(
         col3,
-        "Valor Adjudicado (filtro actual)",
+        "Presupuesto en Contratación (filtro actual)",
         formatear_moneda_ec(valor_adjudicado_total),
         ayuda=(
-            "Suma del Presupuesto Referencial de los procesos en estado "
-            "Adjudicada, Adjudicado - Registro de Contratos, Ejecución de "
-            "Contrato, Finalizada o En Recepción dentro del filtro actual."
+            "Presupuesto Referencial (no el monto adjudicado real) de los procesos que "
+            "ya avanzaron a contratación: estados Adjudicada, Adjudicado - Registro de "
+            "Contratos, Ejecución de Contrato, Finalizada o En Recepción, dentro del "
+            "filtro actual."
         ),
     )
 
@@ -1324,19 +1328,22 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
     """Tarjetas de resumen sobre los resultados actualmente filtrados.
 
     `mostrar_monto_adjudicado` (default False, mismo criterio que
-    render_tabla_con_color -- solo Municipalidad de Guayaquil) cambia como
-    se calcula "Valor Adjudicado Total": con el campo real
-    `monto_adjudicado` (leido de la pagina de detalle de cada proceso
-    durante el scraping, ver scripts/scrape_portal.py) en vez del proxy
-    historico -- suma del Presupuesto Referencial de los procesos cuyo
-    estado empieza por "Adjudicad...", de cuando no existia ningun campo
-    de valor final adjudicado en el esquema. Ese proxy se mantiene para la
-    pestaña general "Procesos" (todas las entidades): `monto_adjudicado`
-    hoy solo se completa de forma confiable para Guayaquil."""
+    render_tabla_con_color -- solo Municipalidad de Guayaquil) separa DOS
+    metricas distintas por nombre, no las unifica: con el campo True usa
+    el Monto Adjudicado real (`monto_adjudicado`, leido de la pagina de
+    detalle de cada proceso durante el scraping, ver
+    scripts/scrape_portal.py) y la tarjeta se llama "Valor Adjudicado
+    Total"; con False (pestaña general "Procesos", todas las entidades,
+    donde `monto_adjudicado` hoy no se completa de forma confiable) usa
+    el Presupuesto Referencial de los mismos 5 estados que
+    ESTADOS_VALOR_ADJUDICADO (ver render_kpis_dashboard) y la tarjeta se
+    llama "Presupuesto en Contratación" -- para no hacer pasar un
+    presupuesto por un valor adjudicado real."""
     presupuesto_total = sum(r.get("presupuesto_referencial") or 0 for r in registros)
 
     if mostrar_monto_adjudicado:
         valor_adjudicado_total = sum(r.get("monto_adjudicado") or 0 for r in registros)
+        etiqueta_valor_adjudicado = "Valor Adjudicado Total"
         ayuda_valor_adjudicado = (
             "Suma del Monto Adjudicado real de cada proceso (leído de su página de "
             "detalle en el portal durante la importación)."
@@ -1345,12 +1352,13 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
         valor_adjudicado_total = sum(
             r.get("presupuesto_referencial") or 0
             for r in registros
-            if r.get("estado", "").strip().lower().startswith("adjudicad")
+            if _normalizar_texto_provincia(r.get("estado", "")).lower() in ESTADOS_VALOR_ADJUDICADO
         )
+        etiqueta_valor_adjudicado = "Presupuesto en Contratación"
         ayuda_valor_adjudicado = (
-            "Suma del Presupuesto Referencial de los procesos con estado "
-            "Adjudicada/Adjudicado. No hay un campo separado de valor final "
-            "adjudicado en los datos disponibles."
+            "Presupuesto Referencial (no el monto adjudicado real) de los procesos en "
+            "estado Adjudicada, Adjudicado - Registro de Contratos, Ejecución de "
+            "Contrato, Finalizada o En Recepción."
         )
 
     if mostrar_monto_adjudicado:
@@ -1361,7 +1369,7 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
     render_kpi_card(col2, "Presupuesto Total", formatear_moneda_ec(presupuesto_total))
     render_kpi_card(
         col3,
-        "Valor Adjudicado Total",
+        etiqueta_valor_adjudicado,
         formatear_moneda_ec(valor_adjudicado_total),
         ayuda=ayuda_valor_adjudicado,
     )
