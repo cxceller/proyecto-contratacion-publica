@@ -23,7 +23,8 @@ UI defaults to `API_URL=http://localhost:8000`; override via env var (not read f
 
 - `src/main.py` — FastAPI app, `/api/todos` + borradores (drafts) endpoints; also mounts the `src/api_reportes.py` router (not documented in README).
 - `src/database.py` (schema/connection), `src/models.py` (Pydantic schemas), `src/auth.py` (API-key auth).
-- `app_ui.py` — single-file Streamlit UI (~3.5k lines), talks to the API via `requests`. Has a custom neumorphist CSS block injected for styling — don't break it when touching layout/styles.
+- `services/sercop.py` — the only place that calls the FastAPI backend (via `requests`) or knows its URLs/endpoints; `app_ui.py` imports and calls these functions instead of talking to the API directly. `obtener_contrataciones` is `@st.cache_data(ttl=600)` (survives navigating between views); the borrador (draft) CRUD functions are deliberately uncached so a save/delete is reflected immediately on the next rerun.
+- `app_ui.py` — single-file Streamlit UI (~3.5k lines), consumes `services/sercop.py` for all backend I/O. Has a custom neumorphist CSS block injected for styling — don't break it when touching layout/styles.
 - `scripts/` — one module per concern, each paired with `tests/test_<nombre>.py`: `especificaciones_tecnicas_generator.py` (.docx generation), `report_generator.py`, `dashboard_analitico.py`, `formato_ec.py` (Ecuador number/currency formatting), `import_csv.py`, `scrape_portal.py` (Playwright, CAPTCHA-assisted), `importador_parametros.py` (importador híbrido de "Parámetros técnicos" en Especificaciones Técnicas: parser determinístico + respaldo vía API de Claude — ver Env vars), `importador_items.py` (mismo patrón híbrido para la tabla "Ítems": detección de encabezado + fuzzy matching de columnas vía `difflib`, con el catálogo CPC inyectado por `app_ui.py`, no cargado por el propio módulo), `lectura_archivos_tabulares.py` (lectura cruda de .xlsx/.csv/.txt con fallback de encoding, compartida por ambos importadores híbridos).
 - `data/cpc_n9.csv`, `data/provincias_ecuador.geojson` — static reference catalogs (CPC codes, province boundaries).
 
@@ -33,8 +34,8 @@ UI defaults to `API_URL=http://localhost:8000`; override via env var (not read f
 
 ## Env vars
 
-- `API_KEY` (in `.env`, repo root) — required for the API to accept requests. Auth is fail-closed: if unset, every protected endpoint returns 401 (see `src/auth.py`, uses `secrets.compare_digest`). Read by both `src/auth.py` and `app_ui.py`.
-- `API_URL` — optional, process env only, defaults to `http://localhost:8000`.
+- `API_KEY` (in `.env`, repo root) — required for the API to accept requests. Auth is fail-closed: if unset, every protected endpoint returns 401 (see `src/auth.py`, uses `secrets.compare_digest`). Read by both `src/auth.py` and `services/sercop.py`.
+- `API_URL` — optional, process env only, defaults to `http://localhost:8000`. Read by `services/sercop.py`.
 - `ANTHROPIC_API_KEY` (in `.env`, repo root) — only used by `scripts/importador_parametros.py` as the LLM fallback when the deterministic "Parámetros técnicos" file parser can't confidently interpret a file's structure. Not required for the app to run: the fast path never calls the API, and if the LLM path is needed but the key is missing/invalid, the uploader shows a retryable error instead of crashing.
 
 ## Testing

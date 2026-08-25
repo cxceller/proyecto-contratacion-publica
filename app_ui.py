@@ -1,6 +1,8 @@
 """Interfaz Streamlit para visualizar procesos de contratacion publica.
 
-Consume la API FastAPI (src/main.py) via requests. Arranque:
+Consume la API FastAPI (src/main.py) via services/sercop.py -- esta capa
+de UI no llama a `requests` ni conoce URLs/endpoints directamente, ver
+ese modulo. Arranque:
 
     uvicorn src.main:app --port 8000
     streamlit run app_ui.py --server.port 8501
@@ -9,7 +11,6 @@ import base64
 import html
 import io
 import json
-import os
 import re
 import subprocess
 import sys
@@ -22,7 +23,6 @@ from pathlib import Path
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
@@ -83,10 +83,17 @@ from scripts.importador_parametros import (
     importar_parametros,
 )
 from scripts.tinymce_editor import tinymce_editor
+from services.sercop import (
+    eliminar_borrador_especificaciones_tecnicas,
+    generar_reporte,
+    guardar_borrador_especificaciones_tecnicas,
+    listar_borradores_especificaciones_tecnicas,
+    obtener_borrador_especificaciones_tecnicas,
+    obtener_contrataciones,
+    vaciar_base_datos,
+)
 
 load_dotenv()
-
-API_URL = os.environ.get("API_URL", "http://localhost:8000")
 
 # Panel lateral de navegacion (estilo ERP: fondo oscuro, etiqueta de
 # seccion con acento de color, items con icono + texto claro).
@@ -439,101 +446,6 @@ def _formatear_porcentaje_ahorro(valor) -> str:
         return ""
     emoji = "🟢" if valor >= 0 else "🔴"
     return f"{emoji} {valor:.2f} %"
-
-
-def api_request(method: str, path: str, timeout: int = 10, **kwargs):
-    # Si la API exige X-API-Key (variable API_KEY configurada del lado del
-    # servidor -- ver src/auth.py), Streamlit debe mandar la misma clave via
-    # esta misma variable de entorno en su propio proceso.
-    api_key = os.environ.get("API_KEY")
-    if api_key:
-        headers = {"X-API-Key": api_key, **kwargs.pop("headers", {})}
-        kwargs["headers"] = headers
-    try:
-        response = requests.request(method, f"{API_URL}{path}", timeout=timeout, **kwargs)
-    except requests.exceptions.ConnectionError:
-        st.error(
-            f"No se pudo conectar a la API en {API_URL}. "
-            "¿Está corriendo `uvicorn src.main:app --port 8000`?"
-        )
-        return None
-    return response
-
-
-@st.cache_data(ttl=60)
-def obtener_contrataciones(status=None, fecha_inicio=None, fecha_fin=None, palabra_clave=None):
-    params = {}
-    if status:
-        # El query param se llama "estado" en la API (ver
-        # src/main.py::listar_contrataciones) -- se renombro para no
-        # colisionar con el modulo `status` de FastAPI importado ahi mismo.
-        params["estado"] = status
-    if fecha_inicio:
-        params["fecha_inicio"] = fecha_inicio.isoformat()
-    if fecha_fin:
-        params["fecha_fin"] = fecha_fin.isoformat()
-    if palabra_clave:
-        params["palabra_clave"] = palabra_clave
-
-    response = api_request("GET", "/api/todos", params=params)
-    if response is None:
-        return []
-    if response.status_code != 200:
-        st.error(f"Error al consultar la API: {response.status_code}")
-        return []
-    return response.json()
-
-
-# Sin @st.cache_data: a diferencia de obtener_contrataciones (datos del
-# portal, cambian poco), la lista de borradores debe reflejar de
-# inmediato cualquier guardado/eliminado hecho en el propio rerun
-# anterior -- un TTL, por corto que sea, mostraria el selectbox
-# desactualizado justo despues de guardar o borrar.
-def listar_borradores_especificaciones_tecnicas() -> list[dict]:
-    response = api_request("GET", "/api/borradores")
-    if response is None:
-        return []
-    if response.status_code != 200:
-        st.error(f"Error al consultar los borradores guardados: {response.status_code}")
-        return []
-    return response.json()
-
-
-def obtener_borrador_especificaciones_tecnicas(borrador_id: int) -> dict | None:
-    response = api_request("GET", f"/api/borradores/{borrador_id}")
-    if response is None:
-        return None
-    if response.status_code != 200:
-        st.error(f"Error al cargar el borrador: {response.status_code}")
-        return None
-    return response.json()
-
-
-def guardar_borrador_especificaciones_tecnicas(borrador_id: int | None, nombre_contratacion: str, datos_json: str) -> dict | None:
-    """Crea (borrador_id is None) o reemplaza (borrador_id dado) un
-    borrador. Siempre manda el registro completo -- no hay actualizacion
-    parcial de un borrador, ver BorradorContratacionUpsert."""
-    payload = {"nombre_contratacion": nombre_contratacion, "datos_json": datos_json}
-    if borrador_id is None:
-        response = api_request("POST", "/api/borradores", json=payload)
-    else:
-        response = api_request("PUT", f"/api/borradores/{borrador_id}", json=payload)
-    if response is None:
-        return None
-    if response.status_code not in (200, 201):
-        st.error(f"Error al guardar el progreso: {response.status_code} {response.text}")
-        return None
-    return response.json()
-
-
-def eliminar_borrador_especificaciones_tecnicas(borrador_id: int) -> bool:
-    response = api_request("DELETE", f"/api/borradores/{borrador_id}")
-    if response is None:
-        return False
-    if response.status_code != 204:
-        st.error(f"Error al eliminar la contratación: {response.status_code}")
-        return False
-    return True
 
 
 def extraer_tipo_compra(objeto_proceso: str) -> str:
@@ -1730,9 +1642,7 @@ def render_generador_reportes():
                 payload["lote_id"] = opciones_lote[etiqueta_lote_sel]
 
             with st.spinner("Generando reporte..."):
-                response = api_request(
-                    "POST", "/api/generar-reporte", json=payload, timeout=60
-                )
+                response = generar_reporte(payload)
 
             if response is not None:
                 if response.status_code == 200:
@@ -1846,7 +1756,7 @@ def render_vaciar_base_datos():
                 use_container_width=True,
             ):
                 with st.spinner("Vaciando la base de datos..."):
-                    response = api_request("DELETE", "/api/todos")
+                    response = vaciar_base_datos()
                 if response is None:
                     return
                 if response.status_code == 204:
