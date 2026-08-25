@@ -2259,17 +2259,18 @@ def render_importacion_sercop_sidebar() -> None:
     with st.sidebar:
         st.divider()
         st.caption("IMPORTACIÓN SERCOP")
-        sin_monto_adjudicado = st.checkbox(
-            "Omitir Monto de Adjudicación (más rápido)",
-            key="sercop_sin_monto_adjudicado",
-            help=(
-                "Salta la visita al detalle de cada proceso -- la fase mas lenta de la "
-                "importacion -- a cambio de no traer el Monto de Adjudicacion."
-            ),
-        )
+        with st.expander(":material/settings: Opciones avanzadas"):
+            sin_monto_adjudicado = st.checkbox(
+                "Carga rápida (sin monto de adjudicación)",
+                key="sercop_sin_monto_adjudicado",
+                help=(
+                    "Salta la visita al detalle de cada proceso -- la fase mas lenta de la "
+                    "importacion -- a cambio de no traer el Monto de Adjudicacion."
+                ),
+            )
         activo = st.session_state.pagina_activa == PAGINA_IMPORTACION_SERCOP
         if st.button(
-            ":material/travel_explore: Importar desde Portal SERCOP",
+            ":material/refresh: Actualizar contrataciones",
             key="sercop_importar_boton",
             use_container_width=True,
             type="primary" if activo else "secondary",
@@ -2302,7 +2303,7 @@ def render_pagina_importacion_sercop() -> None:
         else:
             st.info(
                 "Todavía no se ha iniciado ninguna importación en esta sesión. Usa el botón "
-                "'Importar desde Portal SERCOP' del menú lateral, o el botón de abajo, para empezar."
+                "'Actualizar contrataciones' del menú lateral, o el botón de abajo, para empezar."
             )
         if st.button(":material/play_arrow: Iniciar importación", key="sercop_import_iniciar_pagina"):
             _iniciar_importacion_sercop(
