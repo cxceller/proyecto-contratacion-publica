@@ -2563,6 +2563,20 @@ def filtrar_por_entidad(registros: list[dict], entidad: str) -> list[dict]:
     return [r for r in registros if _normalizar_texto_provincia(r.get("entidad_contratante")) == clave]
 
 
+def _anios_disponibles(registros: list[dict]) -> list[str]:
+    """Años presentes en fecha_publicacion (primeros 4 caracteres), sin
+    duplicados y ordenados del mas reciente al mas antiguo."""
+    anios = {(r.get("fecha_publicacion") or "")[:4] for r in registros if (r.get("fecha_publicacion") or "")[:4]}
+    return sorted(anios, reverse=True)
+
+
+def _filtrar_por_anio(registros: list[dict], anio: str | None) -> list[dict]:
+    """Filtra por año de fecha_publicacion. anio=None devuelve todo."""
+    if anio is None:
+        return registros
+    return [r for r in registros if (r.get("fecha_publicacion") or "")[:4] == anio]
+
+
 def _slug_nombre_archivo(texto: str) -> str:
     clave = _normalizar_texto_provincia(texto)  # sin tildes, mayusculas
     slug = re.sub(r"[^A-Za-z0-9]+", "_", clave).strip("_")
@@ -4609,11 +4623,24 @@ def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None
     st.header(":material/location_city: Municipalidad de Guayaquil")
     registros_municipio = filtrar_por_entidad(registros_totales, ENTIDAD_MUNICIPALIDAD_GUAYAQUIL)
     if registros_municipio:
-        render_contadores(registros_municipio)
-        st.divider()
-        render_metricas_resumen(registros_municipio, mostrar_monto_adjudicado=True)
-        render_tabla_con_color(registros_municipio, mostrar_monto_adjudicado=True)
-        render_actualizar_montos_adjudicados()
+        col_anio, _ = st.columns([1, 3])
+        anios = _anios_disponibles(registros_municipio)
+        anio_sel = col_anio.selectbox("Año", ["(Todos)"] + anios, key="muni_gye_anio")
+        anio_filtro = None if anio_sel == "(Todos)" else anio_sel
+        registros_filtrados = _filtrar_por_anio(registros_municipio, anio_filtro)
+
+        st.caption(
+            f"Mostrando {len(registros_filtrados)} de {len(registros_municipio)} contrataciones · Año: {anio_sel}"
+        )
+
+        if registros_filtrados:
+            render_contadores(registros_filtrados)
+            st.divider()
+            render_metricas_resumen(registros_filtrados, mostrar_monto_adjudicado=True)
+            render_tabla_con_color(registros_filtrados, mostrar_monto_adjudicado=True)
+            render_actualizar_montos_adjudicados()
+        else:
+            st.info(f"No se encontraron procesos para el año {anio_sel}.")
     else:
         st.info(f'No se encontraron procesos para "{ENTIDAD_MUNICIPALIDAD_GUAYAQUIL}".')
 
