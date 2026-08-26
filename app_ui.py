@@ -4660,7 +4660,7 @@ def main():
 
     render_navegacion_sidebar()
 
-    # obtener_contrataciones() esta cacheada (ttl=60s), pero igual evitamos
+    # obtener_contrataciones() esta cacheada (ttl=600s), pero igual evitamos
     # llamarla del todo en paginas que no la necesitan (Reportes solo pega a
     # /api/generar-reporte, Configuración solo a /api/todos DELETE). El
     # spinner solo se nota quando hay cache miss (round-trip real a la
