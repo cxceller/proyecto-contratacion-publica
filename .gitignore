@@ -21,6 +21,11 @@ debug_detalle_*.html
 # Capturas de pantalla por pagina generadas por scripts/scrape_portal.py
 capturas/
 
+# Texto de oficios SERCOP extraido por scripts/analizar_oficios_desierta.py
+# (opcion B: nunca se guarda el PDF, solo el texto plano -- igual asi, cache
+# local reutilizable, no un artefacto para versionar)
+data/oficios_txt/
+
 # Logs de cada corrida de Importación SERCOP (ver _iniciar_importacion_sercop en app_ui.py)
 logs/
 

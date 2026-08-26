@@ -15,17 +15,25 @@ RAG_BASE_URL = os.getenv("RAG_CONTRATACION_URL", "http://localhost:8001")
 RAG_TIMEOUT_S = float(os.getenv("RAG_CONTRATACION_TIMEOUT_S", "60"))
 
 
-def explicar_desierta(motivo_raw: str, objeto: str = "", codigo: str = "") -> dict | None:
-    """POST /explicar-desierta. Devuelve {'explicacion', 'causal_legal',
-    'fuentes'} o None si el RAG no esta disponible / no respondio 200 / el
-    motivo esta vacio. No lanza excepcion: ante cualquier fallo devuelve
-    None para que el lote de scripts/explicar_estado_desierta.py continue
-    con el resto de procesos en vez de interrumpirse (mismo criterio de
-    tolerancia a fallos que ya usaba la llamada directa a Claude que
-    reemplaza)."""
+def explicar_desierta(
+    motivo_raw: str, objeto: str = "", codigo: str = "", textos_oficios: list[str] | None = None
+) -> dict | None:
+    """POST /explicar-desierta. Devuelve {'explicacion', 'explicacion_tecnica',
+    'causal_legal', 'fuentes'} o None si el RAG no esta disponible / no
+    respondio 200 / el motivo esta vacio. No lanza excepcion: ante
+    cualquier fallo devuelve None para que el lote de
+    scripts/explicar_estado_desierta.py (o scripts/analizar_oficios_desierta.py)
+    continue con el resto de procesos en vez de interrumpirse.
+
+    `textos_oficios` (opcional, scripts/analizar_oficios_desierta.py): texto
+    completo de el/los oficio(s) del SERCOP ya descargados y extraidos --
+    el RAG lo usa como fuente primaria de 'explicacion_tecnica'. Sin este
+    argumento, el llamado se comporta igual que antes (solo 'explicacion')."""
     if not (motivo_raw or "").strip():
         return None
     payload = {"motivo_raw": motivo_raw, "objeto_proceso": objeto, "codigo": codigo}
+    if textos_oficios:
+        payload["textos_oficios"] = textos_oficios
     try:
         resp = requests.post(f"{RAG_BASE_URL}/explicar-desierta", json=payload, timeout=RAG_TIMEOUT_S)
     except requests.RequestException:
