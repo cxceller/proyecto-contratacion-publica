@@ -24,8 +24,10 @@ devuelve None y el proceso se cuenta como error sin interrumpir el lote.
 
 Uso:
     .venv/Scripts/python.exe scripts/explicar_estado_desierta.py
+    .venv/Scripts/python.exe scripts/explicar_estado_desierta.py --limite 1   # prueba controlada
 """
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -45,29 +47,41 @@ from src import database  # noqa: E402
 load_dotenv()
 
 
-def _procesos_pendientes() -> list[dict]:
+def _procesos_pendientes(limite: int | None = None) -> list[dict]:
     """Procesos "Desierta" con `motivo_estado_raw` ya capturado (ver
     Cambio 10) pero todavia sin `explicacion_estado` -- para no volver a
     gastar una llamada al RAG en procesos ya explicados. `status="Desierta"`
     en get_all_contrataciones ya filtra por prefijo de estado en SQL (ver
     src/database.py); el resto del filtro se aplica en Python, mismo
     patron que `_procesos_pendientes` en
-    scripts/actualizar_montos_adjudicados.py."""
+    scripts/actualizar_montos_adjudicados.py.
+
+    `limite` (default None = todos los pendientes) corta la lista a los
+    primeros N -- pensado para una corrida de prueba controlada (ej.
+    `--limite 1`) antes de lanzar el lote completo."""
     candidatos = database.get_all_contrataciones(status="Desierta")
-    return [r for r in candidatos if r.get("motivo_estado_raw") and not r.get("explicacion_estado")]
+    pendientes = [r for r in candidatos if r.get("motivo_estado_raw") and not r.get("explicacion_estado")]
+    return pendientes[:limite] if limite is not None else pendientes
 
 
-def enriquecer(explicar_fn=_explicar_desierta_rag) -> tuple[int, int]:
+def enriquecer(explicar_fn=_explicar_desierta_rag, limite: int | None = None) -> tuple[int, int]:
     """Devuelve (explicados, con_error). `explicar_fn` es inyectable para
     tests (ver tests/test_explicar_estado_desierta.py) -- mismo patron que
     antes usaba `cliente_llm`, ahora sobre la funcion que llama al RAG en
-    vez de un cliente Anthropic."""
-    procesos = _procesos_pendientes()
+    vez de un cliente Anthropic. `limite`, ver `_procesos_pendientes`.
+
+    Por cada proceso explicado imprime el JSON completo que devolvio el
+    RAG (explicacion, causal_legal, fuentes) -- no solo la explicacion --
+    para poder verificar a ojo, en una corrida con `--limite 1`, que el
+    RAG esta respondiendo con el formato esperado antes de lanzar el lote
+    completo."""
+    procesos = _procesos_pendientes(limite=limite)
     if not procesos:
         print("No hay procesos 'Desierta' pendientes de explicar.")
         return 0, 0
 
-    print(f"{len(procesos)} proceso(s) 'Desierta' pendiente(s) de explicar.")
+    sufijo_limite = f" (limite: {limite})" if limite is not None else ""
+    print(f"{len(procesos)} proceso(s) 'Desierta' pendiente(s) de explicar{sufijo_limite}.")
     explicados, con_error = 0, 0
     for proceso in procesos:
         resultado = explicar_fn(
@@ -81,7 +95,8 @@ def enriquecer(explicar_fn=_explicar_desierta_rag) -> tuple[int, int]:
             con_error += 1
             continue
         database.update_contratacion(proceso["id"], {"explicacion_estado": explicacion})
-        print(f"  {proceso['codigo']}: {explicacion}")
+        print(f"  {proceso['codigo']}:")
+        print("    " + json.dumps(resultado, ensure_ascii=False, indent=2).replace("\n", "\n    "))
         explicados += 1
 
     return explicados, con_error
@@ -89,8 +104,12 @@ def enriquecer(explicar_fn=_explicar_desierta_rag) -> tuple[int, int]:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.parse_args()
+    parser.add_argument(
+        "--limite", type=int, default=None,
+        help="Maximo de procesos a explicar en esta corrida (por defecto, todos los pendientes).",
+    )
+    args = parser.parse_args()
 
     inicio = time.time()
-    explicados, con_error = enriquecer()
+    explicados, con_error = enriquecer(limite=args.limite)
     print(f"\nCompleto en {time.time() - inicio:.0f}s: {explicados} explicado(s), {con_error} con error.")

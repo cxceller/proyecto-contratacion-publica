@@ -86,6 +86,21 @@ class TestEnriquecer:
         filas = database.get_all_contrataciones(status="Desierta")
         assert filas[0]["explicacion_estado"] == "Se declaró desierto porque las ofertas no eran válidas."
 
+    def test_limite_corta_el_lote_a_los_primeros_n_pendientes(self, db_temporal):
+        """`--limite 1` (prueba controlada antes del lote completo): con 3
+        procesos pendientes, solo se llama a explicar_fn una vez."""
+        _crear_proceso_desierta("SIE-010", "motivo uno")
+        _crear_proceso_desierta("SIE-011", "motivo dos")
+        _crear_proceso_desierta("SIE-012", "motivo tres")
+        explicar_fn = ExplicarDesiertaFalso(
+            respuestas=[{"explicacion": "Explicación única.", "causal_legal": "Art. 31 LOSNCP", "fuentes": []}]
+        )
+
+        explicados, con_error = enriquecer(explicar_fn=explicar_fn, limite=1)
+
+        assert (explicados, con_error) == (1, 0)
+        assert explicar_fn.llamadas == 1
+
     def test_pasa_motivo_objeto_y_codigo_a_explicar_fn(self, db_temporal):
         contratacion_id = database.upsert_contratacion(
             {
