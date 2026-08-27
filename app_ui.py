@@ -699,6 +699,216 @@ def render_kpi_card(
     )
 
 
+def _inyectar_estilos_kpi_tendencia() -> None:
+    """CSS para que render_kpi_card_tendencia (etiqueta+valor+badge en HTML
+    + sparkline via st.plotly_chart) tenga el mismo fondo/borde/padding que
+    _tarjeta_kpi_html, aunque ya no es un unico <div> HTML -- el sparkline
+    necesita su propio elemento Streamlit, asi que la tarjeta pasa a ser un
+    st.container(key=...) real que envuelve markdown + plotly_chart. Mismo
+    patron ".st-key-<key>" que el resto de la app (ver
+    _inyectar_estilos_especificaciones_tecnicas_cards), pero por SUBCADENA
+    ([class*=...]): cada tarjeta tiene su propia key (una por etiqueta, ver
+    render_kpi_card_tendencia), asi que una key fija no alcanzaria a todas.
+    Se llama en cada render (idempotente, mismo criterio que
+    _inyectar_estilos_sidebar): reinyectar el mismo <style> no tiene efecto
+    visible."""
+    st.markdown(
+        f"""
+        <style>
+        div[class*="st-key-kpi_tendencia_"] {{
+            background-color: {COLOR_LIENZO};
+            border: 1px solid {COLOR_NEUTRO_BORDE};
+            border-radius: 8px;
+            padding: 1.25rem 1.5rem 0.25rem 1.5rem;
+            margin-bottom: 0.5rem;
+        }}
+        div[class*="st-key-kpi_tendencia_"] .js-plotly-plot {{
+            margin-top: 0.2rem;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _figura_sparkline(serie: list[float]) -> go.Figure:
+    """Mini-grafico de linea (sin ejes/grid/leyenda/hover) para el
+    sparkline de render_kpi_card_tendencia -- misma paleta que el resto de
+    graficos (COLOR_SIDEBAR_ACENTO = "#2a78d6"), pero SIN
+    _aplicar_estilo_base: esa funcion fija una altura de 380px pensada
+    para graficos normales, no para un sparkline de ~48px dentro de una
+    tarjeta KPI."""
+    fig = go.Figure(
+        go.Scatter(
+            y=serie,
+            mode="lines",
+            line=dict(color=COLOR_SIDEBAR_ACENTO, width=2, shape="spline", smoothing=0.6),
+            fill="tozeroy",
+            fillcolor="rgba(42, 120, 214, 0.12)",
+            hoverinfo="skip",
+        )
+    )
+    fig.update_xaxes(visible=False, showgrid=False, fixedrange=True)
+    fig.update_yaxes(visible=False, showgrid=False, fixedrange=True)
+    fig.update_layout(
+        height=48,
+        margin=dict(l=0, r=0, t=2, b=2),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+    )
+    return fig
+
+
+def render_kpi_card_tendencia(
+    columna,
+    etiqueta: str,
+    valor: str,
+    serie: list[float] | None = None,
+    variacion_pct: float | None = None,
+    ayuda: str | None = None,
+) -> None:
+    """Tarjeta KPI con mini-sparkline (tendencia mensual) y badge de
+    variación porcentual vs. el periodo anterior, para los KPIs monetarios
+    (Presupuesto Total, Valor Adjudicado/Presupuesto en Contratación) de
+    Dashboard, Procesos y Municipio de Guayaquil -- ver
+    render_kpis_dashboard/render_metricas_resumen. El badge es verde con
+    "↑" si `variacion_pct` es >= 0, rojo con "↓" si es negativo (icono +
+    color, nunca color solo).
+
+    Si `serie` tiene menos de 2 puntos (sin historia suficiente para
+    graficar una tendencia) se omite el sparkline; si `variacion_pct` es
+    None (sin base para calcularlo, ej. periodo anterior en 0) se omite el
+    badge -- en ambos casos la tarjeta degrada a mostrar solo etiqueta +
+    valor, nunca un grafico vacio ni un badge sin sentido."""
+    with columna:
+        _inyectar_estilos_kpi_tendencia()
+        clave = "kpi_tendencia_" + re.sub(r"[^a-z0-9]+", "_", etiqueta.lower()).strip("_")
+        with st.container(key=clave):
+            atributo_titulo = f' title="{html.escape(ayuda)}"' if ayuda else ""
+            badge_html = ""
+            if variacion_pct is not None:
+                positivo = variacion_pct >= 0
+                color = COLOR_ESTADO_OK if positivo else COLOR_ESTADO_CRITICO
+                flecha = "↑" if positivo else "↓"
+                badge_html = (
+                    f'<span style="display:inline-block;padding:0.15rem 0.6rem;'
+                    f"border-radius:999px;background-color:{color}22;"
+                    f'color:{color};font-size:0.75rem;font-weight:700;line-height:1.4;">'
+                    f"{flecha} {abs(variacion_pct):.1f}%</span>"
+                )
+            st.markdown(
+                f'<div{atributo_titulo}>'
+                f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};'
+                f'min-height:2.5rem;">{etiqueta}</div>'
+                f'<div style="font-size:2rem;font-weight:600;color:{COLOR_TEXTO_EJE};'
+                f'line-height:1.3;">{valor}</div>'
+                f'<div style="min-height:1.6rem;margin-top:0.2rem;">{badge_html}</div>'
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            if serie and len(serie) >= 2:
+                st.plotly_chart(
+                    _figura_sparkline(serie),
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                    key=f"spark_{clave}",
+                )
+
+
+def _inyectar_estilos_gauge_ahorro() -> None:
+    """CSS para que el contenedor del gauge de "% de Ahorro General" (ver
+    render_metricas_resumen) tenga el mismo fondo/borde que el resto de
+    tarjetas KPI (_tarjeta_kpi_html). A diferencia de
+    _inyectar_estilos_kpi_tendencia (una key por etiqueta, selector por
+    subcadena) aca alcanza una key fija: solo existe una instancia de este
+    gauge por pagina."""
+    st.markdown(
+        f"""
+        <style>
+        div[class*="st-key-kpi_gauge_ahorro"] {{
+            background-color: {COLOR_LIENZO};
+            border: 1px solid {COLOR_NEUTRO_BORDE};
+            border-radius: 8px;
+            padding: 0.75rem 1rem 0 1rem;
+            margin-bottom: 0.5rem;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _figura_gauge_ahorro(porcentaje: float) -> go.Figure:
+    """Gauge (velocímetro) para "% de Ahorro General" -- reemplaza la
+    tarjeta plana solo cuando hay una base valida para calcularlo (ver
+    render_metricas_resumen, rama mostrar_monto_adjudicado=True; si
+    porcentaje_ahorro_general es None, esa función sigue mostrando "N/A"
+    en una tarjeta normal, sin gauge). Rango fijo 0-30: el ahorro
+    observado en este dataset no supera ese entorno; un valor fuera de
+    rango simplemente satura el gauge en el extremo, sin romper. Mismo
+    azul primario que el resto de la app (COLOR_SIDEBAR_ACENTO) para la
+    barra de progreso, y `separators=",."` (mismo truco que
+    _aplicar_estilo_base) para que el numero se lea con coma decimal,
+    convencion Ecuador, en vez del punto decimal por defecto de Plotly."""
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=porcentaje,
+            number={"suffix": "%", "valueformat": ".2f", "font": {"color": COLOR_TEXTO_EJE, "size": 28}},
+            gauge={
+                "axis": {"range": [0, 30], "tickcolor": COLOR_NEUTRO_TEXTO_SUAVE},
+                "bar": {"color": COLOR_SIDEBAR_ACENTO, "thickness": 0.3},
+                "bgcolor": COLOR_LIENZO,
+                "borderwidth": 0,
+            },
+        )
+    )
+    fig.update_layout(
+        height=190,
+        margin=dict(l=20, r=20, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),
+        separators=",.",
+    )
+    return fig
+
+
+def _serie_mensual_desde_df(df: pd.DataFrame, campo: str) -> list[float]:
+    """Suma de `campo` agregada por mes (columna "anio_mes", ya calculada
+    por preparar_dataframe), ordenada cronologicamente -- para el
+    sparkline de render_kpi_card_tendencia. Lista vacia si `df` esta vacio
+    o no tiene la columna "anio_mes" (ej. sin ningun registro con fecha de
+    publicacion valida)."""
+    if df.empty or "anio_mes" not in df.columns:
+        return []
+    return df.dropna(subset=["anio_mes"]).groupby("anio_mes")[campo].sum().sort_index().tolist()
+
+
+def _serie_mensual(registros: list[dict], campo: str) -> list[float]:
+    """Igual que _serie_mensual_desde_df, pero a partir de una lista de
+    registros crudos -- usado por render_metricas_resumen (Procesos y
+    Municipio de Guayaquil), que no arma un DataFrame con "anio_mes" como
+    si hace render_dashboard (ver preparar_dataframe)."""
+    if not registros:
+        return []
+    df = pd.DataFrame(registros)
+    if df.empty or "fecha_publicacion" not in df.columns or campo not in df.columns:
+        return []
+    df["anio_mes"] = pd.to_datetime(df["fecha_publicacion"], errors="coerce").dt.strftime("%Y-%m")
+    return _serie_mensual_desde_df(df, campo)
+
+
+def _variacion_pct_ultimo_periodo(serie: list[float]) -> float | None:
+    """% de variación del último periodo de `serie` respecto al anterior.
+    None si hay menos de 2 periodos o el periodo anterior es 0/vacío
+    (división por cero) -- en ese caso render_kpi_card_tendencia no
+    muestra badge."""
+    if len(serie) < 2 or not serie[-2]:
+        return None
+    return (serie[-1] - serie[-2]) / serie[-2] * 100
+
+
 ESTADOS_VALOR_ADJUDICADO = {
     _normalizar_texto_provincia(estado).lower()
     for estado in (
@@ -714,25 +924,38 @@ ESTADOS_VALOR_ADJUDICADO = {
 def render_kpis_dashboard(df: pd.DataFrame):
     """KPIs principales del Dashboard: Procesos, Presupuesto Total y
     Presupuesto en Contratación -- lo unico visible por defecto antes de
-    expandir cualquier detalle (ver render_pagina_dashboard)."""
+    expandir cualquier detalle (ver render_pagina_dashboard). Los dos KPIs
+    monetarios llevan ademas un mini-sparkline (tendencia mensual del
+    presupuesto) y un badge de variación vs. el mes anterior -- ver
+    render_kpi_card_tendencia."""
     col1, col2, col3 = st.columns(3)
     presupuesto_total = df["presupuesto_referencial"].fillna(0).sum() if not df.empty else 0
-    valor_adjudicado_total = (
-        df.loc[
-            df["estado"].map(_normalizar_texto_provincia).str.lower().isin(ESTADOS_VALOR_ADJUDICADO),
-            "presupuesto_referencial",
-        ]
-        .fillna(0)
-        .sum()
+    df_contratacion = (
+        df.loc[df["estado"].map(_normalizar_texto_provincia).str.lower().isin(ESTADOS_VALOR_ADJUDICADO)]
         if not df.empty
-        else 0
+        else df
     )
+    valor_adjudicado_total = (
+        df_contratacion["presupuesto_referencial"].fillna(0).sum() if not df_contratacion.empty else 0
+    )
+
+    serie_presupuesto = _serie_mensual_desde_df(df, "presupuesto_referencial")
+    serie_contratacion = _serie_mensual_desde_df(df_contratacion, "presupuesto_referencial")
+
     render_kpi_card(col1, "Procesos (filtro actual)", formatear_numero_ec(len(df)))
-    render_kpi_card(col2, "Presupuesto Total (filtro actual)", formatear_moneda_ec(presupuesto_total))
-    render_kpi_card(
+    render_kpi_card_tendencia(
+        col2,
+        "Presupuesto Total (filtro actual)",
+        formatear_moneda_ec(presupuesto_total),
+        serie=serie_presupuesto,
+        variacion_pct=_variacion_pct_ultimo_periodo(serie_presupuesto),
+    )
+    render_kpi_card_tendencia(
         col3,
         "Presupuesto en Contratación (filtro actual)",
         formatear_moneda_ec(valor_adjudicado_total),
+        serie=serie_contratacion,
+        variacion_pct=_variacion_pct_ultimo_periodo(serie_contratacion),
         ayuda=(
             "Presupuesto Referencial (no el monto adjudicado real) de los procesos que "
             "ya avanzaron a contratación: estados Adjudicada, Adjudicado - Registro de "
@@ -740,6 +963,141 @@ def render_kpis_dashboard(df: pd.DataFrame):
             "filtro actual."
         ),
     )
+
+
+def render_grafico_estado_clic(registros: list[dict]) -> str | None:
+    """Grafico de barras "Procesos por Estado" con clic-para-filtrar
+    (drill-down): usa el soporte nativo de seleccion de st.plotly_chart
+    (`on_select="rerun"`, Streamlit >= 1.35 -- sin necesitar streamlit-
+    echarts ni ninguna libreria externa) en vez de streamlit-echarts (ver
+    render_kpi_card_tendencia/_figura_gauge_ahorro sobre por que este
+    proyecto usa Plotly para todo lo interactivo, no ECharts).
+
+    Devuelve el nombre del estado clicado en ESTA ejecucion del script (o
+    None si no hay seleccion) -- no toca session_state ella misma, deja
+    que el caller (render_pagina_municipalidad_guayaquil) decida como
+    persistir/combinar el filtro; una sola responsabilidad (dibujar +
+    leer el evento).
+
+    Barras en azul suave (COLOR_BARRA_DATO) -- la del estado
+    ACTUALMENTE FILTRADO (session_state.filtro_estado_click, leido aca
+    solo para colorear, no para decidir el retorno) se resalta en
+    naranja de acento (COLOR_BARRA_DESTACADA), mismo patron "barra lider
+    destacada" que el resto de graficos de ranking de esta app, pero aca
+    lo que se resalta es la SELECCION activa, no el valor mas alto."""
+    conteos: dict[str, int] = {}
+    for r in registros:
+        estado = (r.get("estado") or "").strip()
+        if estado:
+            conteos[estado] = conteos.get(estado, 0) + 1
+    if not conteos:
+        st.info("No hay datos para graficar con los filtros actuales.")
+        return None
+
+    estados = sorted(conteos, key=lambda e: conteos[e], reverse=True)
+    valores = [conteos[e] for e in estados]
+    estado_activo = st.session_state.get("filtro_estado_click")
+    colores = [COLOR_BARRA_DESTACADA if e == estado_activo else COLOR_BARRA_DATO for e in estados]
+
+    fig = go.Figure(
+        go.Bar(
+            x=estados,
+            y=valores,
+            marker=dict(color=colores, cornerradius=4, line=dict(width=0)),
+            hovertemplate="<b>%{y} proceso(s)</b><br>%{x}<extra></extra>",
+        )
+    )
+    fig.update_xaxes(
+        showgrid=False, showline=True, linewidth=2, linecolor=COLOR_AXIS,
+        tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+    )
+    fig.update_yaxes(
+        showgrid=True, gridcolor=COLOR_GRID, zeroline=False,
+        showline=True, linewidth=2, linecolor=COLOR_AXIS,
+        tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+    )
+    _aplicar_estilo_base(fig, altura=320)
+
+    st.markdown("**Procesos por Estado** _(clic en una barra para filtrar)_")
+    # SIN config={"displayModeBar": False}: verificado en vivo que ese flag
+    # rompe la deteccion de clic/seleccion de Plotly en esta version de
+    # Streamlit (1.41.1) -- con el modebar oculto, plotly_click nunca se
+    # dispara, asi que el drill-down quedaria muerto. El modebar (zoom/pan/
+    # camara) queda visible como costo aceptado de esa limitacion.
+    evento = st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key="grafico_estado_clic",
+        on_select="rerun",
+        selection_mode="points",
+    )
+    puntos = evento.selection.points if evento and evento.selection else []
+    return puntos[0]["x"] if puntos else None
+
+
+# Etapas secuenciales del pipeline de contratacion, en orden de avance --
+# ver render_grafico_funnel_pipeline. "Desierta" NO es una etapa del
+# pipeline (un proceso Desierto no "avanza" a ningun estado posterior):
+# se muestra aparte, como fuga.
+ETAPAS_PIPELINE_CONTRATACION = [
+    "En Recepción",
+    "Adjudicada",
+    "Adjudicado - Registro de Contratos",
+    "Ejecución de Contrato",
+    "Finalizada",
+]
+# Familia de azules del mas oscuro (etapa inicial) al mas claro (etapa
+# final) -- mismo criterio "familia azul" que el resto de la paleta de
+# datos (PALETA_DATOS), pero en un degrade fijo de 5 pasos pensado para
+# que el embudo se lea de mas intenso a mas suave.
+COLORES_FUNNEL_PIPELINE = ["#0f3d75", "#1a5aa8", "#2a78d6", "#6fa8dc", "#cfe0f5"]
+
+
+def render_grafico_funnel_pipeline(registros: list[dict]) -> None:
+    """Embudo (funnel) del pipeline de contratacion: como avanzan los
+    procesos por las etapas de ETAPAS_PIPELINE_CONTRATACION. "Desierta"
+    no es una etapa del pipeline (un proceso declarado desierto no
+    avanza a ningun estado posterior) -- se muestra aparte, en una
+    tarjeta en color critico, como "fuga" del pipeline en vez de
+    mezclarse con las barras del embudo."""
+    conteos: dict[str, int] = {}
+    for r in registros:
+        estado = (r.get("estado") or "").strip()
+        if estado:
+            conteos[estado] = conteos.get(estado, 0) + 1
+
+    valores_pipeline = [conteos.get(etapa, 0) for etapa in ETAPAS_PIPELINE_CONTRATACION]
+    conteo_desierta = conteos.get("Desierta", 0)
+    if not any(valores_pipeline) and not conteo_desierta:
+        st.info("No hay datos para graficar con los filtros actuales.")
+        return
+
+    col_funnel, col_fuga = st.columns([3, 1])
+    with col_funnel:
+        st.markdown("**Pipeline de Contratación**")
+        fig = go.Figure(
+            go.Funnel(
+                y=ETAPAS_PIPELINE_CONTRATACION,
+                x=valores_pipeline,
+                marker=dict(color=COLORES_FUNNEL_PIPELINE),
+                textinfo="value+label",
+                textfont=dict(color=COLOR_TEXTO_EJE),
+                connector=dict(line=dict(color=COLOR_GRID, width=1)),
+                hovertemplate="<b>%{label}</b><br>%{value} proceso(s)<extra></extra>",
+            )
+        )
+        _aplicar_estilo_base(fig, altura=360)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with col_fuga:
+        st.markdown("**Fuga del pipeline**")
+        render_kpi_card(
+            col_fuga,
+            "Desierta",
+            formatear_numero_ec(conteo_desierta),
+            icono="block",
+            color_icono=COLOR_ESTADO_CRITICO,
+            ayuda="Procesos declarados desiertos: nunca avanzaron a ninguna etapa del pipeline.",
+        )
 
 
 def render_grafico_mensual(df: pd.DataFrame):
@@ -779,13 +1137,19 @@ def render_grafico_mensual(df: pd.DataFrame):
     fig.update_xaxes(
         showgrid=False, showline=True, linewidth=2, linecolor=COLOR_AXIS,
         tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+        # Rangeslider (zoom en el tiempo): util cuando el filtro de Año/Mes
+        # deja muchos meses en pantalla a la vez -- arrastrando los extremos
+        # se acota el rango visible sin perder el resto de la serie. Altura
+        # del grafico ampliada mas abajo (altura=440 en vez del default 380)
+        # para que el slider no le quite espacio a las barras.
+        rangeslider=dict(visible=True, thickness=0.08, bgcolor=COLOR_LIENZO, bordercolor=COLOR_GRID),
     )
     fig.update_yaxes(
         showgrid=True, gridcolor=COLOR_GRID, zeroline=False,
         showline=True, linewidth=2, linecolor=COLOR_AXIS,
         tickprefix="$ ", tickformat=",.0f", tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
     )
-    _aplicar_estilo_base(fig)
+    _aplicar_estilo_base(fig, altura=440)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
@@ -1342,35 +1706,53 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
     presupuesto_total = sum(r.get("presupuesto_referencial") or 0 for r in registros)
 
     if mostrar_monto_adjudicado:
-        valor_adjudicado_total = sum(r.get("monto_adjudicado") or 0 for r in registros)
+        registros_valor_adjudicado = registros
+        campo_valor_adjudicado = "monto_adjudicado"
         etiqueta_valor_adjudicado = "Valor Adjudicado Total"
         ayuda_valor_adjudicado = (
             "Suma del Monto Adjudicado real de cada proceso (leído de su página de "
             "detalle en el portal durante la importación)."
         )
     else:
-        valor_adjudicado_total = sum(
-            r.get("presupuesto_referencial") or 0
+        registros_valor_adjudicado = [
+            r
             for r in registros
             if _normalizar_texto_provincia(r.get("estado", "")).lower() in ESTADOS_VALOR_ADJUDICADO
-        )
+        ]
+        campo_valor_adjudicado = "presupuesto_referencial"
         etiqueta_valor_adjudicado = "Presupuesto en Contratación"
         ayuda_valor_adjudicado = (
             "Presupuesto Referencial (no el monto adjudicado real) de los procesos en "
             "estado Adjudicada, Adjudicado - Registro de Contratos, Ejecución de "
             "Contrato, Finalizada o En Recepción."
         )
+    valor_adjudicado_total = sum(r.get(campo_valor_adjudicado) or 0 for r in registros_valor_adjudicado)
+
+    # Sparkline + badge de variación de los dos KPIs monetarios (ver
+    # render_kpi_card_tendencia) -- misma logica que render_kpis_dashboard,
+    # a partir de la lista de registros (esta funcion no arma un DataFrame
+    # con "anio_mes" como si hace preparar_dataframe).
+    serie_presupuesto = _serie_mensual(registros, "presupuesto_referencial")
+    serie_valor_adjudicado = _serie_mensual(registros_valor_adjudicado, campo_valor_adjudicado)
 
     if mostrar_monto_adjudicado:
         col1, col2, col3, col4 = st.columns(4)
     else:
         col1, col2, col3 = st.columns(3)
     render_kpi_card(col1, "Número de Procesos", formatear_numero_ec(len(registros)))
-    render_kpi_card(col2, "Presupuesto Total", formatear_moneda_ec(presupuesto_total))
-    render_kpi_card(
+    render_kpi_card_tendencia(
+        col2,
+        "Presupuesto Total",
+        formatear_moneda_ec(presupuesto_total),
+        serie=serie_presupuesto,
+        variacion_pct=_variacion_pct_ultimo_periodo(serie_presupuesto),
+    )
+    render_kpi_card_tendencia(
         col3,
         etiqueta_valor_adjudicado,
         formatear_moneda_ec(valor_adjudicado_total),
+        serie=serie_valor_adjudicado,
+        variacion_pct=_variacion_pct_ultimo_periodo(serie_valor_adjudicado),
         ayuda=ayuda_valor_adjudicado,
     )
 
@@ -1391,21 +1773,28 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
         porcentaje_ahorro_general = (
             (1 - suma_adjudicado_ahorro / suma_presupuesto_ahorro) * 100 if suma_presupuesto_ahorro else None
         )
-        valor_ahorro_general = (
-            f"{porcentaje_ahorro_general:+.2f}".replace(".", ",") + "%"
-            if porcentaje_ahorro_general is not None
-            else "N/A"
+        ayuda_ahorro = (
+            "1 - (Suma del Monto Adjudicado / Suma del Presupuesto Referencial sin IVA), "
+            "sobre los procesos en estado Adjudicada, Adjudicado - Registro de Contratos, "
+            "Ejecución de Contrato, Finalizada o En Recepción."
         )
-        render_kpi_card(
-            col4,
-            "% de Ahorro General",
-            valor_ahorro_general,
-            ayuda=(
-                "1 - (Suma del Monto Adjudicado / Suma del Presupuesto Referencial sin IVA), "
-                "sobre los procesos en estado Adjudicada, Adjudicado - Registro de Contratos, "
-                "Ejecución de Contrato, Finalizada o En Recepción."
-            ),
-        )
+        if porcentaje_ahorro_general is not None:
+            _inyectar_estilos_gauge_ahorro()
+            with col4:
+                with st.container(key="kpi_gauge_ahorro"):
+                    st.markdown(
+                        f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};'
+                        f'padding-top:0.35rem;" title="{html.escape(ayuda_ahorro)}">% de Ahorro General</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.plotly_chart(
+                        _figura_gauge_ahorro(porcentaje_ahorro_general),
+                        use_container_width=True,
+                        config={"displayModeBar": False},
+                        key="gauge_ahorro",
+                    )
+        else:
+            render_kpi_card(col4, "% de Ahorro General", "N/A", ayuda=ayuda_ahorro)
 
 
 def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool = False):
@@ -4634,11 +5023,49 @@ def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None
         )
 
         if registros_filtrados:
-            render_contadores(registros_filtrados)
+            estado_clic = render_grafico_estado_clic(registros_filtrados)
+            if estado_clic and estado_clic != st.session_state.get("filtro_estado_click"):
+                st.session_state.filtro_estado_click = estado_clic
+                st.rerun()
+
             st.divider()
-            render_metricas_resumen(registros_filtrados, mostrar_monto_adjudicado=True)
-            render_tabla_con_color(registros_filtrados, mostrar_monto_adjudicado=True)
-            render_actualizar_montos_adjudicados()
+            # Usa registros_filtrados (solo filtro de Año), NO registros_finales
+            # (que ademas aplicaria el filtro de estado del clic): el funnel
+            # existe para mostrar el pipeline COMPLETO de una sola vez, encadenarlo
+            # al clic lo colapsaria a una sola etapa, perdiendo el sentido.
+            render_grafico_funnel_pipeline(registros_filtrados)
+            st.divider()
+
+            estado_filtro = st.session_state.get("filtro_estado_click")
+            registros_finales = registros_filtrados
+            if estado_filtro:
+                clave_estado_filtro = _normalizar_texto_provincia(estado_filtro)
+                registros_finales = [
+                    r
+                    for r in registros_filtrados
+                    if _normalizar_texto_provincia(r.get("estado", "")) == clave_estado_filtro
+                ]
+                col_chip, _ = st.columns([1, 3])
+                with col_chip:
+                    if st.button(f"Filtrado por estado: {estado_filtro} ✕", key="limpiar_filtro_estado_click"):
+                        st.session_state.pop("filtro_estado_click", None)
+                        # Tambien se limpia la seleccion propia del grafico (su
+                        # session_state por key): sin esto, el clic anterior
+                        # seguiria "activo" en el widget y este boton no
+                        # tendria efecto -- volveria a filtrar por el mismo
+                        # estado en el siguiente rerun (ver render_grafico_
+                        # estado_clic, que lee su propia seleccion cada vez).
+                        st.session_state.pop("grafico_estado_clic", None)
+                        st.rerun()
+
+            if registros_finales:
+                render_contadores(registros_finales)
+                st.divider()
+                render_metricas_resumen(registros_finales, mostrar_monto_adjudicado=True)
+                render_tabla_con_color(registros_finales, mostrar_monto_adjudicado=True)
+                render_actualizar_montos_adjudicados()
+            else:
+                st.info(f'No se encontraron procesos para el estado "{estado_filtro}".')
         else:
             st.info(f"No se encontraron procesos para el año {anio_sel}.")
     else:
