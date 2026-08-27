@@ -23,10 +23,11 @@ implementación de cada cosa, no importa por qué camino llegó la fila.
 
 El catálogo CPC (`catalogo_cpc: dict[str, str]`) se recibe por inyección de
 dependencia -- este módulo no sabe ni le importa cómo se carga (en
-app_ui.py vive `_cargar_catalogo_cpc()`, cacheada con `st.cache_data`); acá
-solo se usa para marcar códigos no reconocidos, igual que ya hace
-`_autocompletar_descripcion_cpc` en app_ui.py al guardar (ver ese módulo:
-esta es una conveniencia de UX inmediata, no un reemplazo de esa lógica).
+ui/especificaciones_tecnicas.py vive `_cargar_catalogo_cpc()`, cacheada con
+`st.cache_data`); acá solo se usa para marcar códigos no reconocidos, igual
+que ya hace `_autocompletar_descripcion_cpc` en ese mismo módulo al guardar
+(ver ese módulo: esta es una conveniencia de UX inmediata, no un reemplazo
+de esa lógica).
 
 "Tipo" (Bien/Servicio) se infiere de la descripción del producto/servicio
 por palabras clave (`_inferir_tipo`) en el camino rápido, y por el propio

@@ -9,8 +9,8 @@ pública ecuatoriana, con herramientas para cargar datos desde el portal SERCOP
 
 ```
 ┌─────────────────────┐        HTTP (X-API-Key)        ┌──────────────────────┐
-│   app_ui.py          │ ───────────────────────────▶  │   src/main.py (API)   │
-│   (Streamlit UI)      │ ◀───────────────────────────  │   FastAPI + SQLite    │
+│ app_ui.py + ui/       │ ───────────────────────────▶  │   src/main.py (API)   │
+│ (Streamlit UI)        │ ◀───────────────────────────  │   FastAPI + SQLite    │
 └─────────────────────┘                                 └──────────┬───────────┘
         │  usa                                                     │
         ▼                                                          ▼
@@ -50,11 +50,21 @@ pública ecuatoriana, con herramientas para cargar datos desde el portal SERCOP
 - **`auth.py`** — autenticación por API key (`X-API-Key`, `secrets.compare_digest`).
   Fail-closed: sin `API_KEY` configurada, todo endpoint protegido devuelve 401.
 
-### UI — `app_ui.py`
+### UI — `app_ui.py` + `ui/`
 
-Single-file Streamlit (~3.5k líneas). Todo el I/O contra el backend pasa por
+Streamlit (`app_ui.py`, ~3k líneas). Todo el I/O contra el backend pasa por
 `services/sercop.py` — la UI nunca llama a `requests` directamente. Incluye un
 bloque de CSS neumorphist inyectado para el estilo visual.
+
+El dominio "Especificaciones Técnicas" (borradores, patrón diccionario-sombra
+de estado, autocompletado CPC, constructor de la vista previa HTML, disparo de
+generación del `.docx`) vive separado en **`ui/especificaciones_tecnicas.py`**
+(~2.1k líneas), con las constantes de color/paleta compartidas en
+**`ui/tema.py`**. `app_ui.py` reimporta de ahí `render_formularios_y_registro`,
+`render_treemap_items_especificaciones_tecnicas` y
+`_dataframe_items_especificaciones_tecnicas_vacio` (esta última la usa la
+pestaña "Presupuesto por Ítem" del Dashboard). `_cargar_catalogo_cpc()`
+también vive en ese módulo, no en `app_ui.py`.
 
 ### Capa de servicios — `services/`
 
@@ -82,7 +92,7 @@ salvo cuando dependen de un servicio externo (`services/*`).
 | `actualizar_montos_adjudicados.py` | Actualiza montos adjudicados para procesos en estados adjudicables (incl. Recepción y mutuo acuerdo). |
 | `especificaciones_tecnicas_generator.py` | Genera el documento .docx "Especificaciones Técnicas" (antes "Anexo 1"). |
 | `importador_parametros.py` | Importador híbrido de "Parámetros técnicos": parser determinístico + respaldo vía API de Claude si no logra interpretar el archivo. |
-| `importador_items.py` | Mismo patrón híbrido para la tabla "Ítems": detección de encabezado + fuzzy matching de columnas (`difflib`), catálogo CPC inyectado por `app_ui.py`. |
+| `importador_items.py` | Mismo patrón híbrido para la tabla "Ítems": detección de encabezado + fuzzy matching de columnas (`difflib`), catálogo CPC inyectado por `ui/especificaciones_tecnicas.py`. |
 | `lectura_archivos_tabulares.py` | Lectura cruda de `.xlsx`/`.csv`/`.txt` con fallback de encoding, compartida por ambos importadores híbridos. |
 | `report_generator.py` | Generación de reportes (usado por `api_reportes.py`). |
 | `dashboard_analitico.py` | Lógica del dashboard analítico (pestaña "Dashboard Municipio de Guayaquil"). |
@@ -113,7 +123,7 @@ salvo cuando dependen de un servicio externo (`services/*`).
 
 ```
 proyecto_1/
-├── app_ui.py                          # UI Streamlit (single-file, ~3.5k líneas)
+├── app_ui.py                          # UI Streamlit (~3k líneas)
 ├── ARQUITECTURA.md
 ├── CLAUDE.md
 ├── README.md
@@ -121,6 +131,10 @@ proyecto_1/
 ├── .dockerignore
 ├── pyproject.toml                     # config de ruff
 ├── requirements.txt                   # UTF-16 (!)
+│
+├── ui/                                  # separado de app_ui.py en P0-1
+│   ├── tema.py                         # constantes COLOR_*/PALETA_DATOS compartidas
+│   └── especificaciones_tecnicas.py    # dominio "Especificaciones Técnicas" completo
 │
 ├── src/                                # API FastAPI
 │   ├── main.py                         # app, endpoints /api/todos y /api/borradores
