@@ -917,29 +917,36 @@ def render_grafico_estado_clic(registros: list[dict]) -> str | None:
         st.info("No hay datos para graficar con los filtros actuales.")
         return None
 
+    # Descendente + autorange="reversed" mas abajo: mismo criterio que
+    # render_grafico_comparativo/render_gantt_procesos, para que el estado
+    # con mas procesos quede arriba.
     estados = sorted(conteos, key=lambda e: conteos[e], reverse=True)
     valores = [conteos[e] for e in estados]
     estado_activo = st.session_state.get("filtro_estado_click")
     colores = [COLOR_BARRA_DESTACADA if e == estado_activo else COLOR_BARRA_DATO for e in estados]
 
+    # Horizontal (P1-3 del plan de mejoras): estados largos como "Adjudicado
+    # - Registro de Contratos" salian rotados a 45° en el eje X y costaban
+    # de leer -- en horizontal, la etiqueta completa se lee de corrido en
+    # el eje Y, sin rotar.
     fig = go.Figure(
         go.Bar(
-            x=estados,
-            y=valores,
+            x=valores,
+            y=estados,
+            orientation="h",
             marker=dict(color=colores, cornerradius=4, line=dict(width=0)),
-            hovertemplate="<b>%{y} proceso(s)</b><br>%{x}<extra></extra>",
+            hovertemplate="<b>%{y}</b><br>%{x} proceso(s)<extra></extra>",
         )
     )
     fig.update_xaxes(
-        showgrid=False, showline=True, linewidth=2, linecolor=COLOR_AXIS,
-        tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+        showgrid=True, gridcolor=COLOR_GRID, zeroline=False, showline=True,
+        linewidth=2, linecolor=COLOR_AXIS, tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
     )
     fig.update_yaxes(
-        showgrid=True, gridcolor=COLOR_GRID, zeroline=False,
-        showline=True, linewidth=2, linecolor=COLOR_AXIS,
-        tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+        autorange="reversed", showgrid=False, showline=True, linewidth=2,
+        linecolor=COLOR_AXIS, tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
     )
-    _aplicar_estilo_base(fig, altura=320)
+    _aplicar_estilo_base(fig, altura=max(320, 34 * len(estados)))
 
     st.markdown("**Procesos por Estado** _(clic en una barra para filtrar)_")
     # SIN config={"displayModeBar": False}: verificado en vivo que ese flag
@@ -955,7 +962,9 @@ def render_grafico_estado_clic(registros: list[dict]) -> str | None:
         selection_mode="points",
     )
     puntos = evento.selection.points if evento and evento.selection else []
-    return puntos[0]["x"] if puntos else None
+    # "y" (no "x"): el grafico es horizontal, la categoria (estado) vive en
+    # el eje Y -- ver orientation="h" mas arriba.
+    return puntos[0]["y"] if puntos else None
 
 
 # Etapas secuenciales del pipeline de contratacion, en orden de avance --
