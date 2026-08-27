@@ -2027,32 +2027,48 @@ def render_vaciar_base_datos():
     with st.container(key="zona_peligro_vaciar_bd", border=True):
         if not st.session_state.confirmar_vaciado:
             st.caption("Elimina **todos** los procesos de contratación de forma permanente.")
-            if st.button(":material/delete_forever: Vaciar Base de Datos", use_container_width=True):
+            if st.button(":material/delete_forever: Borrar todos los procesos importados", use_container_width=True):
                 st.session_state.confirmar_vaciado = True
                 st.rerun()
         else:
             st.error(
-                "Esto eliminará **todos** los procesos de contratación de la base "
-                "de datos de forma permanente. Esta acción no se puede deshacer.",
+                "Esto eliminará **todos** los procesos de contratación importados, de forma "
+                "permanente. Esta acción no se puede deshacer.",
                 icon="⚠️",
             )
-            confirmado = st.checkbox("Sí, entiendo y quiero vaciar la base de datos por completo")
+
+            # Respaldo CSV descargable ANTES de la confirmacion final -- red
+            # de seguridad de datos (P1-1 del plan de mejoras): borrar era
+            # irreversible sin ninguna forma de recuperar lo eliminado.
+            registros_respaldo = obtener_contrataciones()
+            if registros_respaldo:
+                st.download_button(
+                    ":material/download: Descargar respaldo (CSV) antes de borrar",
+                    pd.DataFrame(registros_respaldo).to_csv(index=False).encode("utf-8-sig"),
+                    f"respaldo_procesos_{date.today().isoformat()}.csv",
+                    "text/csv",
+                    use_container_width=True,
+                )
+
+            confirmado = st.checkbox("Sí, entiendo y quiero borrar todos los procesos importados")
 
             col_confirmar, col_cancelar = st.columns(2)
             if col_confirmar.button(
-                ":material/delete_forever: Confirmar vaciado definitivo",
+                ":material/delete_forever: Confirmar borrado definitivo",
                 type="primary",
                 disabled=not confirmado,
                 use_container_width=True,
             ):
-                with st.spinner("Vaciando la base de datos..."):
+                with st.spinner("Borrando los procesos importados..."):
                     response = vaciar_base_datos()
                 if response is None:
                     return
                 if response.status_code == 204:
                     st.session_state.confirmar_vaciado = False
                     st.session_state.resultados = None
-                    st.session_state.mensaje_vaciado = ":material/check_circle: Base de datos vaciada por completo."
+                    st.session_state.mensaje_vaciado = (
+                        ":material/check_circle: Todos los procesos importados fueron borrados."
+                    )
                     # obtener_contrataciones() esta cacheada 10 min (ver
                     # services/sercop.py): sin este .clear(), el Dashboard
                     # seguiria mostrando los procesos ya borrados hasta que
@@ -2060,7 +2076,7 @@ def render_vaciar_base_datos():
                     obtener_contrataciones.clear()
                     st.rerun()
                 else:
-                    st.error(f"Error al vaciar la base de datos: {response.status_code}")
+                    st.error(f"Error al borrar los procesos: {response.status_code}")
 
             if col_cancelar.button("Cancelar", use_container_width=True):
                 st.session_state.confirmar_vaciado = False
