@@ -59,7 +59,6 @@ NAV_ITEMS = [
     ("Procesos", ":material/assignment:"),
     ("Reportes", ":material/description:"),
     ("Municipalidad de Guayaquil", ":material/location_city:"),
-    ("Dashboard Municipio de Guayaquil", ":material/analytics:"),
     ("Configuración", ":material/settings:"),
 ]
 
@@ -402,27 +401,36 @@ def preparar_dataframe(registros: list[dict]) -> pd.DataFrame:
     return df
 
 
-CLAVES_FILTRO_DASHBOARD = ["dashboard_anio", "dashboard_mes", "dashboard_provincia"]
+CLAVES_FILTRO_DASHBOARD = ["dashboard_anio", "dashboard_mes", "dashboard_provincia", "dashboard_entidad"]
 
 
 def render_filtros_dashboard(df: pd.DataFrame, key_prefix: str = "") -> pd.DataFrame:
-    """Fila de filtros superiores (Año, Mes, Provincia/Cantón) que acota
-    todo lo que se muestra debajo: graficos, tablas y KPIs comparten el
-    mismo dataframe filtrado, para que las cifras siempre coincidan. Los
-    widgets tienen key propia para que "Limpiar filtros" pueda resetearlos
-    de verdad (no solo re-consultar datos), ver CLAVES_FILTRO_DASHBOARD.
+    """Fila de filtros superiores (Año, Mes, Provincia/Cantón, Entidad
+    Contratante) que acota todo lo que se muestra debajo: graficos, tablas
+    y KPIs comparten el mismo dataframe filtrado, para que las cifras
+    siempre coincidan. Los widgets tienen key propia para que "Limpiar
+    filtros" pueda resetearlos de verdad (no solo re-consultar datos), ver
+    CLAVES_FILTRO_DASHBOARD.
+
+    El filtro de Entidad Contratante (P0-2 del plan de mejoras) reemplaza
+    lo que antes era un item de menu aparte ("Dashboard Municipio de
+    Guayaquil", el mismo render_dashboard con los registros pre-filtrados a
+    esa entidad): ahora es un filtro mas de esta misma fila, sin duplicar
+    pagina ni logica -- "Municipalidad de Guayaquil" en este selectbox logra
+    la misma vista que antes tenia su propio item de navegacion.
 
     `key_prefix` distingue las keys de session_state cuando esta misma
-    funcion se llama mas de una vez en la app con datos distintos (ver
-    render_dashboard, reusado por el Dashboard general y por
-    Dashboard Municipio de Guayaquil) -- sin prefijo, ambas instancias
-    compartirian las mismas keys y la seleccion de una pisaria a la otra."""
-    col1, col2, col3, col4 = st.columns([1, 1, 2, 1])
+    funcion se llama mas de una vez en la app con datos distintos -- hoy
+    solo la usa render_pagina_dashboard, pero el prefijo se mantiene por si
+    algun otro caller la reusa mas adelante (evita que dos instancias
+    compartan keys y una seleccion pise a la otra)."""
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1.5, 1])
 
     if df.empty:
         col1.selectbox("Año", ["(Todos)"], disabled=True)
         col2.selectbox("Mes", ["(Todos)"], disabled=True)
         col3.multiselect("Provincia/Cantón", [], disabled=True, placeholder="Sin datos disponibles")
+        col4.selectbox("Entidad Contratante", ["(Todas)"], disabled=True)
         return df
 
     anios_disponibles = sorted(df["anio"].dropna().unique().astype(int), reverse=True)
@@ -442,7 +450,12 @@ def render_filtros_dashboard(df: pd.DataFrame, key_prefix: str = "") -> pd.DataF
         placeholder="Selecciona una o más provincias/cantones",
     )
 
-    with col4:
+    entidades_disponibles = sorted(df["entidad_contratante"].dropna().unique())
+    entidad_sel = col4.selectbox(
+        "Entidad Contratante", ["(Todas)"] + entidades_disponibles, key=f"{key_prefix}dashboard_entidad"
+    )
+
+    with col5:
         st.write("")  # alinea verticalmente el boton con los selectbox de arriba
         if st.button(
             ":material/filter_alt_off: Limpiar filtros",
@@ -461,6 +474,11 @@ def render_filtros_dashboard(df: pd.DataFrame, key_prefix: str = "") -> pd.DataF
         df_filtrado = df_filtrado[df_filtrado["mes_num"] == mes_num]
     if provincias_sel:
         df_filtrado = df_filtrado[df_filtrado["provincia_canton"].isin(provincias_sel)]
+    if entidad_sel != "(Todas)":
+        df_filtrado = df_filtrado[
+            df_filtrado["entidad_contratante"].map(_normalizar_texto_provincia)
+            == _normalizar_texto_provincia(entidad_sel)
+        ]
 
     return df_filtrado
 
@@ -2682,28 +2700,26 @@ def _render_detalles_dashboard(df_filtrado: pd.DataFrame) -> None:
 
 def render_dashboard(registros_totales: list[dict], titulo: str, key_prefix: str = "") -> None:
     """Dashboard reutilizable: titulo -> contador de estados -> filtros
-    (Año/Mes/Provincia) -> fila de KPIs -> detalles en pestañas (ver
-    _render_detalles_dashboard). UNA sola implementacion para el Dashboard
-    general (render_pagina_dashboard, todos los procesos) y para Dashboard
-    Municipio de Guayaquil (render_pagina_dashboard_municipio_guayaquil,
-    ya filtrado a esa entidad) -- ambas paginas llaman a esta misma
-    funcion con su propio `registros_totales`/`titulo`/`key_prefix`, asi
-    que la ubicacion y el comportamiento de menus, botones y KPIs es
-    identica entre las dos. Ninguna logica de agregacion vive aca, solo
-    orquesta el render sobre lo que le pasen.
+    (Año/Mes/Provincia/Entidad Contratante) -> fila de KPIs -> detalles en
+    pestañas (ver _render_detalles_dashboard). Ninguna logica de
+    agregacion vive aca, solo orquesta el render sobre lo que le pasen.
+
+    Hasta P0-2 del plan de mejoras existia un segundo caller ("Dashboard
+    Municipio de Guayaquil", un item de menu aparte que pre-filtraba los
+    registros a esa entidad antes de llamar aca) -- se elimino porque el
+    filtro de Entidad Contratante agregado a render_filtros_dashboard logra
+    la misma vista sin duplicar pagina ni logica de menu. `key_prefix`
+    queda igual por si en el futuro vuelve a haber mas de un caller (ver
+    render_filtros_dashboard, que lo usa para no compartir keys de
+    session_state entre instancias).
 
     El contador de estados se ve primero (antes de los selectores de
     filtro, que van debajo del divider), pero DEBE reflejar el filtro de
-    Año/Mes/Provincia igual que la fila de KPIs y el detalle -- por eso
-    se reserva su lugar con `st.container()` (contenedor_contadores) y
+    Año/Mes/Provincia/Entidad igual que la fila de KPIs y el detalle -- por
+    eso se reserva su lugar con `st.container()` (contenedor_contadores) y
     recien se llena mas abajo, ya con `df_filtrado` en mano: Streamlit
     inserta el contenido de un container en la posicion donde se creo el
-    container, no donde se llena, asi que el orden visual no cambia.
-
-    `key_prefix` evita que los widgets de filtro de ambas paginas
-    compartan keys de session_state (ver render_filtros_dashboard) -- las
-    pestañas de st.tabs no necesitan key propia (Streamlit no las
-    identifica por session_state), asi que no hace falta prefijarlas."""
+    container, no donde se llena, asi que el orden visual no cambia."""
     st.header(titulo)
     contenedor_contadores = st.container()
     st.divider()
@@ -2986,23 +3002,6 @@ def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None
     render_formularios_y_registro()
 
 
-def render_pagina_dashboard_municipio_guayaquil(registros_totales: list[dict]) -> None:
-    """Mismo render_dashboard que la pagina "Dashboard" general
-    (render_pagina_dashboard) -- sin duplicar logica -- la unica
-    diferencia es que aca los registros se acotan primero a Municipalidad
-    de Guayaquil (mismo filtro que ya usa render_pagina_municipalidad_
-    guayaquil, via filtrar_por_entidad), asi que los totales/graficos
-    reflejan solo esa entidad."""
-    titulo = ":material/analytics: Dashboard Municipio de Guayaquil"
-    registros_municipio = filtrar_por_entidad(registros_totales, ENTIDAD_MUNICIPALIDAD_GUAYAQUIL)
-    if not registros_municipio:
-        st.header(titulo)
-        st.info(f'No se encontraron procesos para "{ENTIDAD_MUNICIPALIDAD_GUAYAQUIL}".')
-        return
-
-    render_dashboard(registros_municipio, titulo=titulo, key_prefix="gye_")
-
-
 def render_pagina_configuracion() -> None:
     st.header(":material/settings: Configuración")
     render_vaciar_base_datos()
@@ -3045,10 +3044,6 @@ def main():
         with st.spinner("Cargando datos de la Municipalidad de Guayaquil..."):
             registros = obtener_contrataciones()
         render_pagina_municipalidad_guayaquil(registros)
-    elif pagina == "Dashboard Municipio de Guayaquil":
-        with st.spinner("Cargando datos del dashboard..."):
-            registros = obtener_contrataciones()
-        render_pagina_dashboard_municipio_guayaquil(registros)
     elif pagina == "Configuración":
         render_pagina_configuracion()
     elif pagina == PAGINA_IMPORTACION_SERCOP:
