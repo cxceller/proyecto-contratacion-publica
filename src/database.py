@@ -222,7 +222,7 @@ def insert_contratacion(data: dict[str, Any]) -> int:
         conn.close()
 
 
-def upsert_contratacion(data: dict[str, Any]) -> int:
+def upsert_contratacion(data: dict[str, Any], conn: sqlite3.Connection | None = None) -> int:
     """INSERT o, si ya existe una fila con el mismo `codigo`
     (idx_contrataciones_codigo_unico, ver init_db), UPDATE de esa fila en
     vez de insertar una copia nueva. Usado por importar_dataframe (scripts/
@@ -245,8 +245,17 @@ def upsert_contratacion(data: dict[str, Any]) -> int:
     aca a proposito -- no es parte de lo que trae el scraper, la completa
     aparte scripts/explicar_estado_desierta.py via update_contratacion, y
     un re-scrape no deberia borrarla.
+
+    `conn` (opcional): reutiliza una conexion ya abierta en vez de abrir y
+    cerrar una nueva -- pensado para scripts/import_csv.py::importar_dataframe,
+    que en otro caso pagaba una conexion (connect + PRAGMAs + close) POR
+    FILA del lote a importar (cientos por corrida). Sin `conn`, se comporta
+    exactamente igual que antes (abre y cierra su propia conexion), asi que
+    los demas callers (API, tests) no cambian.
     Devuelve el `id` de la fila (nueva o la ya existente que se actualizo)."""
-    conn = get_connection()
+    conn_propia = conn is None
+    if conn is None:
+        conn = get_connection()
     try:
         cursor = conn.execute(
             """
@@ -287,7 +296,8 @@ def upsert_contratacion(data: dict[str, Any]) -> int:
         conn.commit()
         return contratacion_id
     finally:
-        conn.close()
+        if conn_propia:
+            conn.close()
 
 
 def get_all_contrataciones(

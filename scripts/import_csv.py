@@ -153,58 +153,66 @@ def importar_dataframe(
     database.init_db()
 
     importados, con_error = 0, 0
-    for i, fila in df.iterrows():
-        datos = {
-            "codigo": str(fila.get("codigo", "")).strip(),
-            "entidad_contratante": str(fila.get("entidad_contratante", "")).strip(),
-            "objeto_proceso": str(fila.get("objeto_proceso", "")).strip(),
-            "estado": str(fila.get("estado", "")).strip(),
-            "provincia_canton": (
-                str(fila["provincia_canton"]).strip()
-                if "provincia_canton" in df.columns and pd.notna(fila.get("provincia_canton"))
-                else None
-            ),
-            "presupuesto_referencial": (
-                parsear_presupuesto(fila.get("presupuesto_referencial"))
-                if "presupuesto_referencial" in df.columns
-                else None
-            ),
-            "fecha_publicacion": (
-                parsear_fecha(fila.get("fecha_publicacion"))
-                if "fecha_publicacion" in df.columns
-                else None
-            ),
-            "palabra_clave": palabra_clave,
-            "url": (
-                str(fila["url"]).strip()
-                if "url" in df.columns and pd.notna(fila.get("url"))
-                else None
-            ),
-            "lote_id": lote_id,
-            "monto_adjudicado": (
-                parsear_presupuesto(fila.get("monto_adjudicado"))
-                if "monto_adjudicado" in df.columns
-                else None
-            ),
-            "motivo_estado_raw": (
-                str(fila["motivo_estado_raw"]).strip()
-                if "motivo_estado_raw" in df.columns and pd.notna(fila.get("motivo_estado_raw"))
-                else None
-            ),
-        }
+    # Una sola conexion para todo el lote (ver database.upsert_contratacion,
+    # parametro `conn`): sin esto, cada fila pagaba su propia conexion
+    # (connect + PRAGMAs + close) -- cientos por corrida de import_csv.py/
+    # scrape_portal.py.
+    conn = database.get_connection()
+    try:
+        for i, fila in df.iterrows():
+            datos = {
+                "codigo": str(fila.get("codigo", "")).strip(),
+                "entidad_contratante": str(fila.get("entidad_contratante", "")).strip(),
+                "objeto_proceso": str(fila.get("objeto_proceso", "")).strip(),
+                "estado": str(fila.get("estado", "")).strip(),
+                "provincia_canton": (
+                    str(fila["provincia_canton"]).strip()
+                    if "provincia_canton" in df.columns and pd.notna(fila.get("provincia_canton"))
+                    else None
+                ),
+                "presupuesto_referencial": (
+                    parsear_presupuesto(fila.get("presupuesto_referencial"))
+                    if "presupuesto_referencial" in df.columns
+                    else None
+                ),
+                "fecha_publicacion": (
+                    parsear_fecha(fila.get("fecha_publicacion"))
+                    if "fecha_publicacion" in df.columns
+                    else None
+                ),
+                "palabra_clave": palabra_clave,
+                "url": (
+                    str(fila["url"]).strip()
+                    if "url" in df.columns and pd.notna(fila.get("url"))
+                    else None
+                ),
+                "lote_id": lote_id,
+                "monto_adjudicado": (
+                    parsear_presupuesto(fila.get("monto_adjudicado"))
+                    if "monto_adjudicado" in df.columns
+                    else None
+                ),
+                "motivo_estado_raw": (
+                    str(fila["motivo_estado_raw"]).strip()
+                    if "motivo_estado_raw" in df.columns and pd.notna(fila.get("motivo_estado_raw"))
+                    else None
+                ),
+            }
 
-        try:
-            validado = ContratacionCreate(**datos)
-        except ValidationError as exc:
-            con_error += 1
-            print(f"Fila {i + 2}: omitida ({exc.error_count()} error(es) de validacion)")
-            continue
+            try:
+                validado = ContratacionCreate(**datos)
+            except ValidationError as exc:
+                con_error += 1
+                print(f"Fila {i + 2}: omitida ({exc.error_count()} error(es) de validacion)")
+                continue
 
-        data = validado.model_dump()
-        if data.get("fecha_publicacion") is not None:
-            data["fecha_publicacion"] = data["fecha_publicacion"].isoformat()
-        database.upsert_contratacion(data)
-        importados += 1
+            data = validado.model_dump()
+            if data.get("fecha_publicacion") is not None:
+                data["fecha_publicacion"] = data["fecha_publicacion"].isoformat()
+            database.upsert_contratacion(data, conn=conn)
+            importados += 1
+    finally:
+        conn.close()
 
     return importados, con_error
 
