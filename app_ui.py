@@ -690,14 +690,28 @@ def render_kpi_card_tendencia(
     serie: list[float] | None = None,
     variacion_pct: float | None = None,
     ayuda: str | None = None,
+    sentido: str = "neutro",
 ) -> None:
     """Tarjeta KPI con mini-sparkline (tendencia mensual) y badge de
     variación porcentual vs. el periodo anterior, para los KPIs monetarios
     (Presupuesto Total, Valor Adjudicado/Presupuesto en Contratación) de
     Dashboard, Procesos y Municipio de Guayaquil -- ver
-    render_kpis_dashboard/render_metricas_resumen. El badge es verde con
-    "↑" si `variacion_pct` es >= 0, rojo con "↓" si es negativo (icono +
-    color, nunca color solo).
+    render_kpis_dashboard/render_metricas_resumen.
+
+    `sentido` (P1-4 del plan de mejoras) decide el color del badge:
+    - "neutro" (default): gris (COLOR_NEUTRO_TEXTO_SUAVE) con la flecha
+      ↑/↓ segun el signo, sin verde/rojo -- para metricas donde subir o
+      bajar NO es intrinsecamente bueno/malo, solo describe cuanta
+      actividad hubo el periodo (hoy, los 3 unicos callers: Presupuesto
+      Total, Presupuesto en Contratación, Valor Adjudicado Total -- que
+      un mes tenga menos presupuesto publicado no es "malo", es solo
+      menos actividad ese periodo).
+    - "positivo_sube": verde con "↑" si `variacion_pct` es >= 0, rojo con
+      "↓" si es negativo -- reservado para metricas donde la direccion SI
+      implica bueno/malo (ej. una futura tendencia de "% de Ahorro", hoy
+      mostrado aparte como gauge sin badge, ver _figura_gauge_ahorro). En
+      ambos modos, el icono (↑/↓) siempre acompaña al color -- nunca
+      color solo.
 
     Si `serie` tiene menos de 2 puntos (sin historia suficiente para
     graficar una tendencia) se omite el sparkline; si `variacion_pct` es
@@ -712,8 +726,11 @@ def render_kpi_card_tendencia(
             badge_html = ""
             if variacion_pct is not None:
                 positivo = variacion_pct >= 0
-                color = COLOR_ESTADO_OK if positivo else COLOR_ESTADO_CRITICO
                 flecha = "↑" if positivo else "↓"
+                if sentido == "neutro":
+                    color = COLOR_NEUTRO_TEXTO_SUAVE
+                else:
+                    color = COLOR_ESTADO_OK if positivo else COLOR_ESTADO_CRITICO
                 badge_html = (
                     f'<span style="display:inline-block;padding:0.15rem 0.6rem;'
                     f"border-radius:999px;background-color:{color}22;"
