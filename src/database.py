@@ -1,8 +1,11 @@
 """Conexion a SQLite (sqlite3 estandar) e inicializacion de esquema."""
+import logging
 import sqlite3
 import unicodedata
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / "contrataciones.db")
 
@@ -119,7 +122,28 @@ def init_db() -> None:
         # quedan `codigo` duplicados sin limpiar (hay que deduplicar antes
         # de que esto se ejecute; no se hace aca automaticamente para no
         # borrar filas de produccion sin que alguien lo revise primero).
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_contrataciones_codigo_unico ON contrataciones(codigo)")
+        #
+        # Blindado en try/except: si una BD legada TODAVIA tiene `codigo`
+        # duplicados, este CREATE lanza sqlite3.IntegrityError -- sin este
+        # try/except, como init_db corre en el lifespan de FastAPI, eso
+        # tumba el arranque completo de la API con un traceback opaco en
+        # vez de dejar el problema (dedupe manual pendiente) documentado
+        # en el log y seguir sirviendo el resto de la app.
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_contrataciones_codigo_unico ON contrataciones(codigo)"
+            )
+        except sqlite3.IntegrityError:
+            duplicados = conn.execute(
+                "SELECT codigo, COUNT(*) AS cantidad FROM contrataciones GROUP BY codigo HAVING cantidad > 1"
+            ).fetchall()
+            logger.error(
+                "No se pudo crear idx_contrataciones_codigo_unico: hay codigo(s) duplicado(s) "
+                "en la base (%s). Dedupliquelos manualmente; hasta entonces, upsert_contratacion "
+                "(que depende de este indice para su ON CONFLICT) puede insertar filas repetidas "
+                "en vez de actualizar la existente.",
+                [row["codigo"] for row in duplicados],
+            )
 
         # estado, fecha_publicacion y palabra_clave son las columnas que
         # mas se usan para filtrar (dashboard, endpoint de reportes,

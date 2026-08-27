@@ -2210,6 +2210,11 @@ def render_vaciar_base_datos():
                     st.session_state.confirmar_vaciado = False
                     st.session_state.resultados = None
                     st.session_state.mensaje_vaciado = ":material/check_circle: Base de datos vaciada por completo."
+                    # obtener_contrataciones() esta cacheada 10 min (ver
+                    # services/sercop.py): sin este .clear(), el Dashboard
+                    # seguiria mostrando los procesos ya borrados hasta que
+                    # expire el TTL.
+                    obtener_contrataciones.clear()
                     st.rerun()
                 else:
                     st.error(f"Error al vaciar la base de datos: {response.status_code}")
@@ -2743,6 +2748,11 @@ def render_pagina_importacion_sercop() -> None:
                 f"{_formatear_duracion_es(transcurrido_s)}: {importados} registro(s) insertado(s) en "
                 f"{paginas} página(s) de resultados."
             )
+            # obtener_contrataciones() esta cacheada 10 min (ver
+            # services/sercop.py): sin este .clear(), el Dashboard/Procesos
+            # seguirian mostrando los datos previos a la importacion hasta
+            # que expire el TTL.
+            obtener_contrataciones.clear()
         else:
             st.warning(
                 ":material/info: La importación terminó sin errores, pero no se insertó ningún "
@@ -4992,6 +5002,11 @@ def render_actualizar_montos_adjudicados() -> None:
                 f":material/check_circle: {actualizados} proceso(s) actualizado(s) en "
                 f"{_formatear_duracion_es(transcurrido_s)}. {sin_adjudicar} sin adjudicar todavía."
             )
+            # obtener_contrataciones() esta cacheada 10 min (ver
+            # services/sercop.py): sin este .clear(), Municipalidad de
+            # Guayaquil (KPIs, tabla, gauge de ahorro) seguiria mostrando los
+            # montos adjudicados previos hasta que expire el TTL.
+            obtener_contrataciones.clear()
         else:
             st.info(
                 f":material/info: Ningún proceso nuevo para actualizar "
