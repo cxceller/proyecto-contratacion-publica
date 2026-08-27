@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 from scripts.dashboard_analitico import construir_datos_gantt_procesos, construir_datos_treemap_presupuesto
 from scripts.formato_ec import formatear_moneda_ec, formatear_numero_ec
 from services.sercop import generar_reporte, obtener_contrataciones, vaciar_base_datos
+from ui.componentes import boton_limpiar_filtros
 from ui.especificaciones_tecnicas import (
     _dataframe_items_especificaciones_tecnicas_vacio,
     render_formularios_y_registro,
@@ -457,14 +458,10 @@ def render_filtros_dashboard(df: pd.DataFrame, key_prefix: str = "") -> pd.DataF
 
     with col5:
         st.write("")  # alinea verticalmente el boton con los selectbox de arriba
-        if st.button(
-            ":material/filter_alt_off: Limpiar filtros",
+        boton_limpiar_filtros(
+            [f"{key_prefix}{clave}" for clave in CLAVES_FILTRO_DASHBOARD],
             key=f"{key_prefix}dashboard_limpiar_filtros",
-            use_container_width=True,
-        ):
-            for clave in CLAVES_FILTRO_DASHBOARD:
-                st.session_state.pop(f"{key_prefix}{clave}", None)
-            st.rerun()
+        )
 
     df_filtrado = df
     if anio_sel != "(Todos)":
@@ -1871,10 +1868,7 @@ def render_generador_reportes():
         "reportes_fecha_fin",
         "reportes_lote_id",
     ]
-    if st.button(":material/filter_alt_off: Limpiar filtros", key="reportes_limpiar_filtros"):
-        for clave in claves_filtro_reportes:
-            st.session_state.pop(clave, None)
-        st.rerun()
+    boton_limpiar_filtros(claves_filtro_reportes, key="reportes_limpiar_filtros")
 
     with st.form("form_generar_reporte"):
         palabras_clave_texto = st.text_input(
@@ -2768,7 +2762,12 @@ def render_pagina_procesos(registros_totales: list[dict]) -> None:
 
     col_buscar, col_limpiar, _ = st.columns([1, 1, 4])
     buscar = col_buscar.button(":material/search: Buscar", type="primary", use_container_width=True)
-    limpiar = col_limpiar.button(":material/filter_alt_off: Limpiar filtros", use_container_width=True)
+    with col_limpiar:
+        boton_limpiar_filtros(
+            CLAVES_FILTRO_PROCESOS,
+            key="procesos_limpiar_filtros",
+            on_clear=lambda: st.session_state.update(resultados=None),
+        )
 
     if buscar:
         with st.spinner("Buscando procesos..."):
@@ -2778,11 +2777,6 @@ def render_pagina_procesos(registros_totales: list[dict]) -> None:
                 fecha_fin=fecha_fin,
                 palabra_clave=palabra_clave_filtro or None,
             )
-    if limpiar:
-        st.session_state.resultados = None
-        for clave in CLAVES_FILTRO_PROCESOS:
-            st.session_state.pop(clave, None)
-        st.rerun()
 
     st.divider()
     registros_mostrar = (
