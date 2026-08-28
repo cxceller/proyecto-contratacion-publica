@@ -59,4 +59,19 @@ COLOR_BARRA_DESTACADA = "#eb6834"
 # Antes cada una tenia su propia altura (8.5rem / sin min-height, crecia
 # con el sparkline / sin min-height tampoco) y quedaban desalineadas en la
 # misma fila -- una sola constante evita que vuelvan a divergir.
-ALTURA_KPI_REM = 11.5
+#
+# 12.25rem (no 11.5rem): la tarjeta con sparkline necesita ~192.6px de
+# contenido propio (label + valor + badge + mini-grafico) -- con un piso
+# de 11.5rem (184px) quedaba MAS ALTA que sus vecinas (que sin contenido
+# extra se quedan clavadas en el piso), no igualada. `height: 100%` no es
+# alternativa viable aca: Streamlit envuelve cada tarjeta en varios niveles
+# de contenedores internos (stVerticalBlock, stVerticalBlockBorderWrapper,
+# etc.) sin altura propia entre la tarjeta y la columna que si se estira
+# (`[data-testid="stColumn"]`, via align-items:stretch) -- un `height:100%`
+# ahi se resuelve contra un padre en "auto" y no tiene efecto (confirmado
+# midiendo con getBoundingClientRect en vivo), y forzarlo con !important
+# en esos selectores genericos de Streamlit afectaria TODA la app, no solo
+# estas tarjetas. Con 12.25rem (196px, ~3px de margen sobre los 192.6px
+# reales) las 3 tarjetas quedan gobernadas por el mismo piso y terminan a
+# la misma altura, sin pelear la cascada de Streamlit.
+ALTURA_KPI_REM = 12.25

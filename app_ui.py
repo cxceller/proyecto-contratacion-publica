@@ -644,7 +644,21 @@ def _inyectar_estilos_kpi_tendencia() -> None:
     (8.5rem fijo) en la misma fila. `overflow: hidden` + `display:flex`
     con el sparkline en `margin-top:auto` evita ademas que el sparkline
     (fill="tozeroy", pegado al padding inferior) cruce el borde de la
-    tarjeta -- confirmado en vivo antes de este cambio."""
+    tarjeta -- confirmado en vivo antes de este cambio.
+
+    Se probo tambien `height: 100%` para que la tarjeta se estirara exacto
+    a lo que mida la columna de Streamlit -- NO funciona: entre esta
+    tarjeta y `[data-testid="stColumn"]` (el unico nivel que Streamlit
+    estira via align-items:stretch) hay varios wrappers internos
+    (stVerticalBlockBorderWrapper, stVerticalBlock, etc.) sin altura
+    propia, asi que el 100% se resuelve contra un padre en "auto" y no
+    tiene efecto (confirmado midiendo con getBoundingClientRect en vivo).
+    Forzarlo con !important en esos selectores genericos de Streamlit
+    afectaria TODA la app (cualquier st.container/st.columns), no solo
+    estas tarjetas -- demasiado riesgo para un ajuste cosmetico. Por eso
+    la alineacion depende solo de ALTURA_KPI_REM: un piso lo bastante alto
+    para que el contenido real de las 3 tarjetas (simple/sparkline/gauge)
+    quede exactamente en ese piso, sin pelear la cascada de Streamlit."""
     st.markdown(
         f"""
         <style>
@@ -785,7 +799,19 @@ def _inyectar_estilos_gauge_ahorro() -> None:
     valor que _tarjeta_kpi_html/_inyectar_estilos_kpi_tendencia): en
     Municipalidad de Guayaquil esta tarjeta comparte fila con una simple
     (Número de Procesos) y dos con sparkline -- sin esta altura minima
-    compartida, las 4 quedaban desalineadas entre si."""
+    compartida, las 4 quedaban desalineadas entre si.
+
+    `display:flex; flex-direction:column; justify-content:center`
+    (agregado despues, mismo criterio que _tarjeta_kpi_html/
+    _inyectar_estilos_kpi_tendencia): el gauge en si (_figura_gauge_ahorro)
+    tiene una altura de chart FIJA en pixeles menor que `ALTURA_KPI_REM`,
+    asi que centrar verticalmente el label+chart dentro del piso minimo
+    evita que quede todo pegado arriba con un hueco abajo. (Se probo
+    tambien `height: 100%` para estirar esta tarjeta exacto a la altura
+    de la columna -- no funciona, ver el mismo comentario en
+    _inyectar_estilos_kpi_tendencia: los wrappers internos de Streamlit
+    entre esta tarjeta y `[data-testid="stColumn"]` no tienen altura
+    propia, asi que el 100% no tiene de donde resolver.)"""
     st.markdown(
         f"""
         <style>
@@ -796,7 +822,11 @@ def _inyectar_estilos_gauge_ahorro() -> None:
             padding: 0.75rem 1rem 0 1rem;
             margin-bottom: 0.5rem;
             min-height: {ALTURA_KPI_REM}rem;
+            box-sizing: border-box;
             overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
         }}
         </style>
         """,
