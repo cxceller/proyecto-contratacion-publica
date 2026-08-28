@@ -748,9 +748,20 @@ def render_kpi_card_tendencia(
     graficar una tendencia) se omite el sparkline; si `variacion_pct` es
     None (sin base para calcularlo, ej. periodo anterior en 0) se omite el
     badge -- en ambos casos la tarjeta degrada a mostrar solo etiqueta +
-    valor, nunca un grafico vacio ni un badge sin sentido."""
+    valor, nunca un grafico vacio ni un badge sin sentido.
+
+    `_inyectar_estilos_kpi_tendencia()` se llama ANTES de `with columna:`
+    (mismo patron que `_inyectar_estilos_gauge_ahorro()`/col4 en
+    render_pagina_municipalidad_guayaquil), no dentro -- un `st.markdown`
+    dentro de `with columna:` reserva su propio elemento (con el gap
+    vertical por defecto entre elementos de Streamlit) DENTRO de esa
+    columna especifica, empujando el resto del contenido ~16px hacia
+    abajo. Eso rompia la alineacion con las tarjetas simples de la misma
+    fila (que no tienen ese elemento extra) aunque ambas midieran la
+    misma altura -- confirmado midiendo `top`/`bottom` con
+    getBoundingClientRect en vivo: mismo `height`, `top` distinto."""
+    _inyectar_estilos_kpi_tendencia()
     with columna:
-        _inyectar_estilos_kpi_tendencia()
         clave = "kpi_tendencia_" + re.sub(r"[^a-z0-9]+", "_", etiqueta.lower()).strip("_")
         with st.container(key=clave):
             atributo_titulo = f' title="{html.escape(ayuda)}"' if ayuda else ""
