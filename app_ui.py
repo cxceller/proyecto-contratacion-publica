@@ -34,6 +34,7 @@ from ui.especificaciones_tecnicas import (
     render_treemap_items_especificaciones_tecnicas,
 )
 from ui.tema import (
+    ALTURA_KPI_REM,
     COLOR_AXIS,
     COLOR_BARRA_DATO,
     COLOR_BARRA_DESTACADA,
@@ -592,7 +593,7 @@ def _tarjeta_kpi_html(
         f'<div{atributo_titulo} style="background-color:{COLOR_LIENZO};'
         f"border:1px solid {COLOR_NEUTRO_BORDE};border-radius:8px;box-sizing:border-box;"
         f"padding:1.25rem 1.5rem;margin-bottom:0.5rem;"
-        f'display:flex;flex-direction:column;min-height:8.5rem;">'
+        f'display:flex;flex-direction:column;min-height:{ALTURA_KPI_REM}rem;">'
         f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};'
         f'min-height:2.5rem;">{icono_html}{etiqueta}</div>'
         f'<div style="font-size:2rem;font-weight:600;color:{COLOR_TEXTO_EJE};line-height:1.3;">{valor}</div>'
@@ -634,7 +635,16 @@ def _inyectar_estilos_kpi_tendencia() -> None:
     render_kpi_card_tendencia), asi que una key fija no alcanzaria a todas.
     Se llama en cada render (idempotente, mismo criterio que
     _inyectar_estilos_sidebar): reinyectar el mismo <style> no tiene efecto
-    visible."""
+    visible.
+
+    `min-height: {ALTURA_KPI_REM}rem` (P1-6 del plan de mejoras, mismo
+    valor que _tarjeta_kpi_html/_inyectar_estilos_gauge_ahorro): antes esta
+    tarjeta no tenia altura minima propia, crecia con el contenido + el
+    sparkline (~11rem) y quedaba desalineada frente a las tarjetas simples
+    (8.5rem fijo) en la misma fila. `overflow: hidden` + `display:flex`
+    con el sparkline en `margin-top:auto` evita ademas que el sparkline
+    (fill="tozeroy", pegado al padding inferior) cruce el borde de la
+    tarjeta -- confirmado en vivo antes de este cambio."""
     st.markdown(
         f"""
         <style>
@@ -642,11 +652,15 @@ def _inyectar_estilos_kpi_tendencia() -> None:
             background-color: {COLOR_LIENZO};
             border: 1px solid {COLOR_NEUTRO_BORDE};
             border-radius: 8px;
-            padding: 1.25rem 1.5rem 0.25rem 1.5rem;
+            padding: 1.25rem 1.5rem 0.75rem 1.5rem;
             margin-bottom: 0.5rem;
+            min-height: {ALTURA_KPI_REM}rem;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
         }}
         div[class*="st-key-kpi_tendencia_"] .js-plotly-plot {{
-            margin-top: 0.2rem;
+            margin-top: auto;
         }}
         </style>
         """,
@@ -675,7 +689,10 @@ def _figura_sparkline(serie: list[float]) -> go.Figure:
     fig.update_yaxes(visible=False, showgrid=False, fixedrange=True)
     fig.update_layout(
         height=48,
-        margin=dict(l=0, r=0, t=2, b=2),
+        # b=6 (no 2): colchon extra para que el area rellena
+        # (fill="tozeroy") no quede pegada al borde inferior real de la
+        # tarjeta -- ver _inyectar_estilos_kpi_tendencia (P1-6).
+        margin=dict(l=0, r=0, t=2, b=6),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
@@ -762,7 +779,13 @@ def _inyectar_estilos_gauge_ahorro() -> None:
     tarjetas KPI (_tarjeta_kpi_html). A diferencia de
     _inyectar_estilos_kpi_tendencia (una key por etiqueta, selector por
     subcadena) aca alcanza una key fija: solo existe una instancia de este
-    gauge por pagina."""
+    gauge por pagina.
+
+    `min-height: {ALTURA_KPI_REM}rem` (P1-6 del plan de mejoras, mismo
+    valor que _tarjeta_kpi_html/_inyectar_estilos_kpi_tendencia): en
+    Municipalidad de Guayaquil esta tarjeta comparte fila con una simple
+    (Número de Procesos) y dos con sparkline -- sin esta altura minima
+    compartida, las 4 quedaban desalineadas entre si."""
     st.markdown(
         f"""
         <style>
@@ -772,6 +795,8 @@ def _inyectar_estilos_gauge_ahorro() -> None:
             border-radius: 8px;
             padding: 0.75rem 1rem 0 1rem;
             margin-bottom: 0.5rem;
+            min-height: {ALTURA_KPI_REM}rem;
+            overflow: hidden;
         }}
         </style>
         """,
@@ -805,7 +830,12 @@ def _figura_gauge_ahorro(porcentaje: float) -> go.Figure:
         )
     )
     fig.update_layout(
-        height=190,
+        # 148 (no 190): con el label + padding del contenedor, 190 hacia
+        # que la tarjeta completa (232px) superara claramente el resto de
+        # tarjetas KPI de la misma fila (~184-192px, ver ALTURA_KPI_REM en
+        # ui/tema.py, P1-6 del plan de mejoras) -- 148 deja el total
+        # alineado con sus vecinas.
+        height=148,
         margin=dict(l=20, r=20, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),

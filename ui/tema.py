@@ -52,3 +52,11 @@ COLOR_TEXTO_EJE = "#0b0b0b"  # texto de ejes/fuente general, = textColor (.strea
 # naranja de acento -- el unico uso de naranja fuera de una alerta.
 COLOR_BARRA_DATO = "#cfe0f5"
 COLOR_BARRA_DESTACADA = "#eb6834"
+
+# Altura minima comun a los TRES tipos de tarjeta KPI (P1-6 del plan de
+# mejoras): simple (_tarjeta_kpi_html), con sparkline
+# (_inyectar_estilos_kpi_tendencia) y gauge (_inyectar_estilos_gauge_ahorro).
+# Antes cada una tenia su propia altura (8.5rem / sin min-height, crecia
+# con el sparkline / sin min-height tampoco) y quedaban desalineadas en la
+# misma fila -- una sola constante evita que vuelvan a divergir.
+ALTURA_KPI_REM = 11.5
