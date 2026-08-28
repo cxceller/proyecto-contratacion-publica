@@ -109,6 +109,22 @@ def init_db() -> None:
             # pasar, pero NULL es la señal correcta de pendiente en
             # cualquier caso).
             conn.execute("ALTER TABLE contrataciones ADD COLUMN explicacion_estado TEXT")
+        if "monto_origen" not in columnas:
+            # Solo se completa para procesos que scripts/completar_montos_resolucion_pdf.py
+            # tuvo que resolver leyendo el PDF "Resolucion de Adjudicacion"
+            # (procesos "Adjudicada" sin contrato registrado todavia, que
+            # scripts/scrape_portal.py/actualizar_montos_adjudicados.py no
+            # pueden completar por no existir aun la pagina "Resumen de
+            # Contrato") -- NULL para el resto (el camino normal via HTML,
+            # la mayoria de los casos). Sirve de rastro de auditoria: un
+            # monto leido de un PDF paso por parseo de texto/regex, mas
+            # propenso a error que una tabla HTML estructurada.
+            conn.execute("ALTER TABLE contrataciones ADD COLUMN monto_origen TEXT")
+        if "monto_pdf_url" not in columnas:
+            # URL del PDF de donde se leyo monto_adjudicado cuando
+            # monto_origen = "resolucion_pdf" -- para poder verificar el
+            # dato contra la fuente sin tener que volver a buscarlo.
+            conn.execute("ALTER TABLE contrataciones ADD COLUMN monto_pdf_url TEXT")
 
         # Un mismo `codigo` de proceso reaparece en cada busqueda que se
         # solape con una anterior (el portal solo permite buscar 6 meses
