@@ -1103,7 +1103,15 @@ def render_grafico_funnel_pipeline(registros: list[dict]) -> None:
                 textinfo="value+label",
                 textfont=dict(color=COLOR_TEXTO_EJE),
                 connector=dict(line=dict(color=COLOR_GRID, width=1)),
-                hovertemplate="<b>%{label}</b><br>%{value} proceso(s)<extra></extra>",
+                # %{y}/%{x} (no %{label}/%{value}): con go.Funnel, la version
+                # de Plotly.js que empaqueta Streamlit no sustituye los alias
+                # %{label}/%{value} en hovertemplate (quedan literales en el
+                # tooltip, confirmado pasando el cursor sobre el grafico en
+                # vivo) aunque textinfo="value+label" (mecanismo distinto,
+                # sin plantilla) si funciona -- %{y}/%{x} son los nombres de
+                # atributo reales de este trace (y=ETAPAS_PIPELINE_CONTRATACION,
+                # x=valores_pipeline) y si se interpolan.
+                hovertemplate="<b>%{y}</b><br>%{x} proceso(s)<extra></extra>",
             )
         )
         _aplicar_estilo_base(fig, altura=360)
