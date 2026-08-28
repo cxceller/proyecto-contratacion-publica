@@ -320,6 +320,12 @@ EMOJI_ESTADO = {
     "cancelado": ("⭕", "Cancelado"),
     "suspendido": ("🟠", "Suspendido"),
     "adjudicado - registro de contratos": ("🟩", "Adjudicado - Registro de Contratos"),
+    # Doble emoji (🟩🟩/✅✅ vs. el 🟩 simple de "Adjudicado - Registro de
+    # Contratos" y el ✅ simple de "En Recepción" mas abajo) a proposito --
+    # para que "Adjudicada" y "Finalizada" se distingan de esos dos estados
+    # a simple vista en la tabla, no por error de copiar/pegar.
+    "adjudicada": ("🟩🟩", "Adjudicada"),
+    "finalizada": ("✅✅", "Finalizada"),
     "por adjudicar": ("🍏", "Por Adjudicar"),
     "preguntas, respuestas y aclaraciones": ("🟡", "Preguntas, Respuestas y Aclaraciones"),
     "en recepción": ("✅", "En Recepción"),
