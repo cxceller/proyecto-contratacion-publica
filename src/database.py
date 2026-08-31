@@ -1,5 +1,6 @@
 """Conexion a SQLite (sqlite3 estandar) e inicializacion de esquema."""
 import logging
+import os
 import sqlite3
 import unicodedata
 from pathlib import Path
@@ -7,7 +8,18 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / "contrataciones.db")
+# En Cloud Run (K_SERVICE lo setea la plataforma) /app queda de root -- COPY . .
+# corre antes de USER appuser en el Dockerfile -- y el proceso corre como
+# appuser sin permiso de escritura ahi, asi que el default pasa a /tmp (el
+# unico directorio garantizado escribible, pero efimero: se borra en cada
+# reinicio/redeploy del contenedor -- ver start.sh/scripts/descargar_snapshot_db.py
+# y la seccion Deployment de CLAUDE.md).
+_DEFAULT_DB_PATH = (
+    "/tmp/sercop.db"
+    if os.environ.get("K_SERVICE")
+    else str(Path(__file__).resolve().parent.parent / "data" / "contrataciones.db")
+)
+DB_PATH = os.environ.get("DB_PATH", _DEFAULT_DB_PATH)
 
 
 def _normalizar_para_busqueda(texto: str | None) -> str:
@@ -26,6 +38,9 @@ def _normalizar_para_busqueda(texto: str | None) -> str:
 
 
 def get_connection() -> sqlite3.Connection:
+    dirname = os.path.dirname(DB_PATH)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
     # timeout=10: si otra conexion (API, Streamlit, scripts de scraping/
     # importacion) tiene una escritura en curso, espera hasta 10s por el
     # lock en vez de fallar de inmediato con "database is locked".
@@ -45,7 +60,6 @@ def _columnas_existentes(conn: sqlite3.Connection) -> set[str]:
 
 
 def init_db() -> None:
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = get_connection()
     try:
         conn.execute(
