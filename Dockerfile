@@ -10,6 +10,6 @@ COPY . .
 RUN useradd --create-home appuser
 USER appuser
 
-EXPOSE 8501
+EXPOSE 8080
 
-CMD ["streamlit", "run", "app_ui.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["sh", "-c", "streamlit run app_ui.py --server.port=${PORT:-8080} --server.address=0.0.0.0"]
