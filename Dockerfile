@@ -12,4 +12,7 @@ USER appuser
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "streamlit run app_ui.py --server.port=${PORT:-8080} --server.address=0.0.0.0"]
+COPY --chown=appuser:appuser start.sh .
+RUN chmod +x start.sh
+
+CMD ["./start.sh"]
