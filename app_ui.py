@@ -3128,8 +3128,37 @@ def render_pagina_configuracion() -> None:
     render_vaciar_base_datos()
 
 
+def _deshabilitar_traduccion_automatica() -> None:
+    """Evita que Google Translate (activado por el usuario en Chrome)
+    traduzca la pagina: los iconos de Material Symbols son ligaduras de
+    texto (Streamlit renderiza el nombre del icono, ej. "settings", y la
+    fuente lo dibuja como glifo) -- si el navegador los traduce ("ajustes"
+    en vez de "settings"), la fuente no tiene esa ligadura y el icono se ve
+    como texto crudo. El titulo/logo en español tambien queda mal
+    traducido de paso. `<meta name="google" content="notranslate">`
+    conviene ponerlo en <head>, pero Streamlit no lo expone -- se inserta
+    via `components.html` (accede a `window.parent.document`, confirmado
+    en un test aislado -- ver _revelar_sidebar_cuando_cargue_fuente_iconos;
+    un <script> insertado por st.markdown(unsafe_allow_html=True) NO se
+    ejecuta)."""
+    components.html(
+        """
+        <script>
+        const meta = window.parent.document.createElement('meta');
+        meta.name = 'google';
+        meta.content = 'notranslate';
+        window.parent.document.head.appendChild(meta);
+        window.parent.document.documentElement.setAttribute('translate', 'no');
+        window.parent.document.documentElement.classList.add('notranslate');
+        </script>
+        """,
+        height=0,
+    )
+
+
 def main():
     st.set_page_config(page_title="SERCOP Analytics", layout="wide")
+    _deshabilitar_traduccion_automatica()
     _inyectar_precarga_fuente_iconos()
     _inyectar_estilos_sidebar()
     _revelar_sidebar_cuando_cargue_fuente_iconos()
