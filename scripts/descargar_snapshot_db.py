@@ -21,7 +21,7 @@ import requests
 DESTINO = "/tmp/sercop.db"
 METADATA_TOKEN_URL = (
     "http://metadata.google.internal/computeMetadata/v1/"
-    "instance/service-account/token"
+    "instance/service-accounts/default/token"
 )
 
 
