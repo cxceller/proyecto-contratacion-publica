@@ -44,3 +44,40 @@ def ejecutar_html_invisible(codigo_html: str) -> None:
         st.iframe(codigo_html, height=1)
     else:  # pragma: no cover -- solo Streamlit < 1.56
         components.html(codigo_html, height=0)
+
+
+# JavaScript PROPIO que corre en un iframe invisible (acceso al documento padre). Constantes
+# (no literales sueltos) para poder calcular su hash SHA-256 y permitirlas en la CSP sin
+# 'unsafe-inline' -- ver scripts/calcular_hashes_csp.py y la seccion "HTTPS Load Balancer" del README.
+# Evita que Google Translate mangle los iconos (ligaduras de texto de Material Symbols).
+SCRIPT_NO_TRADUCIR = """
+const meta = window.parent.document.createElement('meta');
+meta.name = 'google';
+meta.content = 'notranslate';
+window.parent.document.head.appendChild(meta);
+window.parent.document.documentElement.setAttribute('translate', 'no');
+window.parent.document.documentElement.classList.add('notranslate');
+"""
+
+# Revela el contenido del sidebar (opacity:1) cuando la fuente de iconos ya cargo, para evitar el
+# flash del nombre crudo del icono. Con try/except y respaldo si `document.fonts` no existe.
+SCRIPT_REVELAR_SIDEBAR = """
+(function () {
+    function revelar() {
+        try {
+            var el = window.parent.document.querySelector('[data-testid="stSidebarUserContent"]');
+            if (el) { el.style.opacity = '1'; }
+        } catch (e) { /* nada mas que hacer desde aca */ }
+    }
+    try {
+        window.parent.document.fonts.ready.then(revelar);
+    } catch (e) {
+        revelar();
+    }
+})();
+"""
+
+
+def ejecutar_script_invisible(js: str) -> None:
+    """Ejecuta `js` (constante propia, ver arriba) en un iframe invisible."""
+    ejecutar_html_invisible(f"<script>{js}</script>")

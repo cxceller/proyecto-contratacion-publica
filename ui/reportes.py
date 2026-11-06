@@ -28,7 +28,12 @@ from scripts.formato_ec import limpiar_texto_libre
 from scripts.reportes_generator import generar_reporte
 from src import database
 from src.logging_config import obtener_logger
-from ui.componentes import boton_limpiar_filtros, ejecutar_html_invisible
+from ui.componentes import (
+    SCRIPT_NO_TRADUCIR,
+    SCRIPT_REVELAR_SIDEBAR,
+    boton_limpiar_filtros,
+    ejecutar_script_invisible,
+)
 from ui.tema import COLOR_SIDEBAR_ACENTO, COLOR_SIDEBAR_FONDO, COLOR_SIDEBAR_TEXTO, COLOR_SIDEBAR_TEXTO_ACTIVO
 
 load_dotenv()
@@ -143,43 +148,14 @@ def inyectar_estilos_sidebar() -> None:
 def revelar_sidebar_cuando_cargue_fuente_iconos() -> None:
     """Ver app_ui.py::_revelar_sidebar_cuando_cargue_fuente_iconos
     (copiada tal cual)."""
-    ejecutar_html_invisible(
-        """
-        <script>
-        (function () {
-            function revelar() {
-                try {
-                    var el = window.parent.document.querySelector('[data-testid="stSidebarUserContent"]');
-                    if (el) { el.style.opacity = '1'; }
-                } catch (e) { /* nada mas que hacer desde aca */ }
-            }
-            try {
-                window.parent.document.fonts.ready.then(revelar);
-            } catch (e) {
-                revelar();
-            }
-        })();
-        </script>
-        """,
-    )
+    ejecutar_script_invisible(SCRIPT_REVELAR_SIDEBAR)
 
 
 def deshabilitar_traduccion_automatica() -> None:
     """Ver app_ui.py::_deshabilitar_traduccion_automatica (copiada tal
     cual: evita que Google Translate mangle los iconos de Material
     Symbols, que son ligaduras de texto)."""
-    ejecutar_html_invisible(
-        """
-        <script>
-        const meta = window.parent.document.createElement('meta');
-        meta.name = 'google';
-        meta.content = 'notranslate';
-        window.parent.document.head.appendChild(meta);
-        window.parent.document.documentElement.setAttribute('translate', 'no');
-        window.parent.document.documentElement.classList.add('notranslate');
-        </script>
-        """,
-    )
+    ejecutar_script_invisible(SCRIPT_NO_TRADUCIR)
 
 
 def _url_preload_fuente_material_symbols() -> str | None:

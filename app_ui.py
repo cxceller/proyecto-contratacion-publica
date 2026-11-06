@@ -34,7 +34,12 @@ from scripts.formato_ec import (
 from services.sercop import obtener_contrataciones, reset_completo
 from src.logging_config import obtener_logger
 from ui.autenticacion import confirmar_con_clave, requerir_login
-from ui.componentes import boton_limpiar_filtros, ejecutar_html_invisible
+from ui.componentes import (
+    SCRIPT_NO_TRADUCIR,
+    SCRIPT_REVELAR_SIDEBAR,
+    boton_limpiar_filtros,
+    ejecutar_script_invisible,
+)
 from ui.especificaciones_tecnicas import (
     _dataframe_items_especificaciones_tecnicas_vacio,
     render_formularios_y_registro,
@@ -2572,25 +2577,7 @@ def _revelar_sidebar_cuando_cargue_fuente_iconos() -> None:
     muy viejos) -- la red de seguridad puramente CSS de
     _inyectar_estilos_sidebar cubre, ademas, el caso de que este script ni
     siquiera llegue a ejecutarse."""
-    ejecutar_html_invisible(
-        """
-        <script>
-        (function () {
-            function revelar() {
-                try {
-                    var el = window.parent.document.querySelector('[data-testid="stSidebarUserContent"]');
-                    if (el) { el.style.opacity = '1'; }
-                } catch (e) { /* nada mas que hacer desde aca */ }
-            }
-            try {
-                window.parent.document.fonts.ready.then(revelar);
-            } catch (e) {
-                revelar();
-            }
-        })();
-        </script>
-        """,
-    )
+    ejecutar_script_invisible(SCRIPT_REVELAR_SIDEBAR)
 
 
 def render_navegacion_sidebar() -> None:
@@ -3323,18 +3310,7 @@ def _deshabilitar_traduccion_automatica() -> None:
     en un test aislado -- ver _revelar_sidebar_cuando_cargue_fuente_iconos;
     un <script> insertado por st.markdown(unsafe_allow_html=True) NO se
     ejecuta)."""
-    ejecutar_html_invisible(
-        """
-        <script>
-        const meta = window.parent.document.createElement('meta');
-        meta.name = 'google';
-        meta.content = 'notranslate';
-        window.parent.document.head.appendChild(meta);
-        window.parent.document.documentElement.setAttribute('translate', 'no');
-        window.parent.document.documentElement.classList.add('notranslate');
-        </script>
-        """,
-    )
+    ejecutar_script_invisible(SCRIPT_NO_TRADUCIR)
 
 
 def main():

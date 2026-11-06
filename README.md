@@ -299,3 +299,138 @@ Hoy es suficiente porque el acceso está protegido con IAP, que filtra antes de 
 el servicio pasa a usar varias instancias (escalado > 1), el contador debe pasar a almacenamiento compartido**
 (Firestore, Cloud SQL o Redis/Memorystore): de lo contrario un atacante obtiene 5 intentos por instancia y por ventana, y
 el bloqueo se pierde al reciclarse la instancia. Hasta entonces, fija `--max-instances=1` o mantén IAP activo.
+
+## HTTPS Load Balancer con IAP, cabeceras de seguridad y Cloud Armor (solo documentación)
+
+> Esta sección **no se ejecuta desde el repo**: son los pasos para montar, delante de Cloud Run, un Application Load
+> Balancer externo con IAP, cabeceras de respuesta y rate limiting. Sustituye `PROYECTO`, `REGION`, `SERVICIO`,
+> `app.ejemplo.com` y los correos.
+
+### 0. Cloud Run solo accesible por el Load Balancer
+
+```bash
+gcloud run services update SERVICIO --region REGION --project=PROYECTO \
+  --ingress=internal-and-cloud-load-balancing --no-allow-unauthenticated
+# Comprobar que no quedan allUsers/allAuthenticatedUsers (ver "Cloud Run: comprobar que el servicio no es público")
+```
+
+### 1. NEG serverless, backend service y balanceador
+
+```bash
+gcloud compute network-endpoint-groups create sercop-neg --region=REGION --project=PROYECTO \
+  --network-endpoint-type=serverless --cloud-run-service=SERVICIO
+
+gcloud compute backend-services create sercop-backend --global --project=PROYECTO \
+  --load-balancing-scheme=EXTERNAL_MANAGED --protocol=HTTPS
+gcloud compute backend-services add-backend sercop-backend --global --project=PROYECTO \
+  --network-endpoint-group=sercop-neg --network-endpoint-group-region=REGION
+
+gcloud compute addresses create sercop-ip --global --project=PROYECTO
+gcloud compute ssl-certificates create sercop-cert --project=PROYECTO --domains=app.ejemplo.com --global
+gcloud compute url-maps create sercop-map --project=PROYECTO --default-service=sercop-backend
+gcloud compute target-https-proxies create sercop-proxy --project=PROYECTO \
+  --url-map=sercop-map --ssl-certificates=sercop-cert
+gcloud compute forwarding-rules create sercop-https --global --project=PROYECTO \
+  --load-balancing-scheme=EXTERNAL_MANAGED --address=sercop-ip --target-https-proxy=sercop-proxy --ports=443
+```
+
+Apunta el DNS de `app.ejemplo.com` a la IP reservada. El WebSocket de Streamlit (`/_stcore/stream`) funciona por este
+balanceador; si hay cortes, sube el timeout del backend (`gcloud compute backend-services update sercop-backend --global --timeout=3600`).
+
+### 2. IAP delante del backend service
+
+```bash
+gcloud compute backend-services update sercop-backend --global --project=PROYECTO --iap=enabled
+gcloud iap web add-iam-policy-binding --resource-type=backend-services --service=sercop-backend --project=PROYECTO \
+  --member="user:persona@dominio.com" --role="roles/iap.httpsResourceAccessor"
+```
+
+(Requiere la pantalla de consentimiento OAuth del proyecto configurada.) IAP autentica antes de llegar a la app; el login de
+la app sigue siendo una segunda capa.
+
+### 3. Cabeceras de respuesta personalizadas
+
+La CSP se **genera** con el repo (incluye los hashes SHA-256 de los scripts inline y el `connect-src` del WebSocket) y debe
+**regenerarse cada vez que cambie la versión de Streamlit** o los scripts de `ui/componentes.py`:
+
+```bash
+CSP="$(.venv/Scripts/python.exe scripts/calcular_hashes_csp.py --dominio app.ejemplo.com --frame-ancestors self)"
+
+gcloud compute backend-services update sercop-backend --global --project=PROYECTO \
+  --custom-response-header="Content-Security-Policy: ${CSP}" \
+  --custom-response-header="X-Content-Type-Options: nosniff" \
+  --custom-response-header="Strict-Transport-Security: max-age=31536000; includeSubDomains" \
+  --custom-response-header="Referrer-Policy: strict-origin-when-cross-origin" \
+  --custom-response-header="Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), interest-cohort=()"
+```
+
+Qué dice la CSP y por qué (probada localmente, ver más abajo):
+
+| Directiva | Valor | Motivo |
+|---|---|---|
+| `script-src` | `'self' 'wasm-unsafe-eval'` + hashes | Sin `'unsafe-inline'` ni `'unsafe-eval'`. Los hashes cubren los scripts inline de `index.html` de Streamlit y los 2 scripts de iframes invisibles; el cliente de Streamlit compila WebAssembly (protobuf). |
+| `style-src` | `'self' 'unsafe-inline' https://fonts.googleapis.com` | Streamlit (emotion), Plotly y TinyMCE escriben estilos inline; la fuente Inter de `estilos_sercop.py` viene de Google Fonts. |
+| `font-src` / `img-src` | `'self' data: …` / `'self' data: blob:` + CARTO | Fuentes de Google y de Material Symbols; imágenes pegadas en TinyMCE (`data:`); teselas del mapa. |
+| `connect-src` | `'self' wss://DOMINIO` + `basemaps.cartocdn.com` | WebSocket de Streamlit y el mapa del Dashboard (estilo y teselas vectoriales de CARTO). |
+| `worker-src` | `'self' blob:` | Web workers de Streamlit/Plotly. |
+| `frame-src` | `'self' blob: data:` | Iframe del componente TinyMCE (mismo origen) y los `srcdoc` de `st.iframe`. |
+| `object-src` / `base-uri` / `form-action` | `'none'` / `'self'` / `'self'` | Endurecimiento estándar. |
+| `frame-ancestors` | `'self'` (o `'none'`, ver abajo) | Anticlickjacking: ningún otro sitio puede embeber la app. |
+
+**`frame-ancestors 'none'` y el editor TinyMCE.** Streamlit carga el editor en un iframe **del mismo origen** (`/component/…`), y
+`frame-ancestors 'none'` también bloquea ese iframe: el editor no aparece. Probado: hay dos opciones válidas.
+
+1. **Sencilla (recomendada):** `frame-ancestors 'self'` en todo (`--frame-ancestors self`). Sigue impidiendo que *otros sitios*
+   embeban la app; solo permite que la app se embeba a sí misma.
+2. **Estricta:** mantener `'none'` (`--frame-ancestors none`) y crear un segundo backend service (`sercop-backend-componentes`,
+   mismo NEG, con la CSP en `'self'`), enrutando solo `/component/*` a él con un `path-matcher` del URL map:
+   `gcloud compute url-maps add-path-matcher sercop-map --default-service=sercop-backend --path-matcher-name=componentes --backend-service-path-rules="/component/*=sercop-backend-componentes"`.
+
+Si más adelante empaquetas la fuente Inter y el mapa base en local, puedes quitar `fonts.googleapis.com`, `fonts.gstatic.com` y
+CARTO de la política.
+
+### 4. Cloud Armor: rate limiting por IP
+
+```bash
+gcloud compute security-policies create sercop-armor --project=PROYECTO --description="SERCOP: rate limiting por IP"
+
+# 300 peticiones/minuto por IP; por encima, 429. (Una carga de página de Streamlit hace decenas de peticiones estáticas.)
+gcloud compute security-policies rules create 1000 --security-policy=sercop-armor --project=PROYECTO \
+  --expression="true" --action=throttle \
+  --rate-limit-threshold-count=300 --rate-limit-threshold-interval-sec=60 \
+  --conform-action=allow --exceed-action=deny-429 --enforce-on-key=IP
+
+# Opcional: baneo temporal de las IPs que insisten tras superar el límite
+gcloud compute security-policies rules create 900 --security-policy=sercop-armor --project=PROYECTO \
+  --expression="true" --action=rate-based-ban \
+  --rate-limit-threshold-count=900 --rate-limit-threshold-interval-sec=60 \
+  --ban-duration-sec=600 --conform-action=allow --exceed-action=deny-429 --enforce-on-key=IP
+
+gcloud compute backend-services update sercop-backend --global --project=PROYECTO --security-policy=sercop-armor
+```
+
+Límite importante: los intentos de contraseña viajan por el **WebSocket** (una única petición HTTP abierta), así que Cloud Armor
+**no puede contar los intentos de login**. El freno real a la fuerza bruta es el bloqueo temporal de la app (ver «Bloqueo de
+login») e IAP; Cloud Armor limita el volumen de conexiones y peticiones por IP.
+
+### 5. Verificar
+
+```bash
+curl -sI https://app.ejemplo.com | grep -iE "content-security-policy|strict-transport|x-content-type|referrer-policy|permissions-policy"
+```
+
+Con IAP activo, sin sesión la respuesta es una redirección a Google: comprueba las cabeceras ya autenticado (herramientas del
+navegador → Red → documento) o con un token de IAP.
+
+### Prueba local de la CSP (lo que se comprobó antes de documentarla)
+
+Un proxy de pruebas añadió estas mismas cabeceras a **todas** las respuestas (páginas y componentes) y se recorrió la app real
+(Streamlit 1.67) con Chromium, registrando cada violación (`securitypolicyviolation`):
+
+- WebSocket (login, navegación, reruns) ✔ · gráficos Plotly y el mapa de CARTO ✔ · `st.dataframe` ✔ · pestañas y expanders ✔
+- Estilos inline de Streamlit (sidebar con degradado, tarjetas) ✔ · iframes invisibles `srcdoc` con sus scripts ✔
+- Editor TinyMCE vendorizado, dentro de la app y suelto ✔ (con `frame-ancestors 'self'`, o `'none'` + excepción en `/component/`;
+  con `'none'` en todo el editor no carga)
+- **0 violaciones de CSP** y las 5 cabeceras presentes. Para conseguirlo: el script del componente TinyMCE se movió a
+  `assets/tinymce_editor/editor.js` y los scripts de iframes invisibles son constantes hasheables (`ui/componentes.py`).
+- En la consola aparece un `404` de «Download Button source»; ocurre **también sin CSP** (no está relacionado).
