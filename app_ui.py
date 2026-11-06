@@ -2331,17 +2331,22 @@ def render_vaciar_base_datos():
     # Contenedor con borde rojo (CSS scoped via st.container(key=...), que
     # Streamlit expone como la clase ".st-key-<key>") para que la zona de
     # peligro sea inconfundible a simple vista frente al resto de la UI
-    # (neutra) y frente a botones de accion normal (naranja, type="primary"
+    # (neutra) y frente a botones de accion normal (azul, type="primary"
     # sin este contenedor). El boton real de borrado solo aparece
     # habilitado tras el checkbox + la palabra de confirmacion.
     with st.container(key="zona_peligro_vaciar_bd", border=True):
         if not st.session_state.confirmar_vaciado:
-            st.caption(
-                "Reset completo: elimina **todos** los procesos de contratación "
-                "importados, los reportes (.docx) generados en la pestaña Reportes "
-                "y, si lo marcás, la carpeta de capturas. De forma permanente."
+            # HTML propio y estatico (sin datos dinamicos): texto oscuro, no el gris tenue de st.caption.
+            st.markdown(
+                '<div class="aviso-peligro">Reset completo: elimina <strong>todos</strong> los procesos de contratación '
+                "importados, los reportes (.docx) generados en la pestaña Reportes y, si lo marcás, la carpeta de "
+                "capturas. <strong>De forma permanente.</strong></div>",
+                unsafe_allow_html=True,
             )
-            if st.button(":material/delete_forever: Borrar todos los procesos importados", width="stretch"):
+            # type="primary" + el CSS de abajo = boton ROJO (peligro), inconfundible frente a las acciones normales.
+            if st.button(
+                ":material/delete_forever: Borrar todos los procesos importados", type="primary", width="stretch"
+            ):
                 st.session_state.confirmar_vaciado = True
                 st.rerun()
         else:
@@ -2464,6 +2469,16 @@ def render_vaciar_base_datos():
             background-color: {COLOR_PELIGRO} !important;
             border-color: {COLOR_PELIGRO} !important;
             color: #FFFFFF !important;
+        }}
+        .st-key-zona_peligro_vaciar_bd .aviso-peligro {{
+            color: #7f1d1d;  /* ~9:1 sobre blanco (el gris de st.caption daba ~3:1) */
+            font-size: 0.9rem;
+            line-height: 1.5;
+            margin-bottom: 0.75rem;
+        }}
+        .st-key-zona_peligro_vaciar_bd button[kind="primary"]:focus-visible {{
+            outline: 3px solid #f5b5b5;
+            outline-offset: 2px;
         }}
         .st-key-zona_peligro_vaciar_bd button[kind="primary"]:hover {{
             background-color: #a62f2f !important;  /* COLOR_PELIGRO, mas oscuro para :hover */
