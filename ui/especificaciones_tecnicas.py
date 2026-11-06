@@ -210,7 +210,7 @@ def _cargar_catalogo_cpc() -> dict[str, str]:
     Presupuesto" ya renderizada -- un spinner ahi se veria como un salto
     visual, no como una carga inicial de pagina."""
     df = pd.read_csv(CATALOGO_CPC_PATH, dtype=str)
-    return dict(zip(df["codigo_cpc"].str.strip(), df["descripcion_cpc"].str.strip()))
+    return dict(zip(df["codigo_cpc"].str.strip(), df["descripcion_cpc"].str.strip(), strict=False))
 
 
 COLUMNAS_VISIBLES_ITEMS_ESPECIFICACIONES_TECNICAS = [
