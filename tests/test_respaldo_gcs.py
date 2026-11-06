@@ -126,6 +126,7 @@ class TestResetEnCloudRun:
     def test_sin_bucket_configurado_aborta_y_no_borra(self, entorno, monkeypatch):
         monkeypatch.setenv("K_SERVICE", "sercop")
         monkeypatch.delenv("SERCOP_DB_BUCKET", raising=False)
+        monkeypatch.delenv("SERCOP_BACKUP_BUCKET", raising=False)
         with pytest.raises(RespaldoRemotoError):
             reset.ejecutar_reset_completo()
         assert _filas(database.DB_PATH) == 4
@@ -295,3 +296,72 @@ class TestClienteHttpReal:
         with pytest.raises(RespaldoRemotoError) as exc:
             respaldo_gcs.subir_respaldo(carpeta, "20250101_000000", cliente=respaldo_gcs.ClienteGCS("mi-bucket"))
         assert "secreta" not in str(exc.value)
+
+
+class TestBucketDeRespaldos:
+    """SERCOP_BACKUP_BUCKET (bucket separado) y, por compatibilidad, SERCOP_DB_BUCKET como respaldo."""
+
+    @pytest.fixture(autouse=True)
+    def _limpio(self, monkeypatch):
+        monkeypatch.delenv("SERCOP_BACKUP_BUCKET", raising=False)
+        monkeypatch.delenv("SERCOP_DB_BUCKET", raising=False)
+
+    def test_usa_el_bucket_de_respaldos_aunque_exista_el_del_snapshot(self, monkeypatch):
+        monkeypatch.setenv("SERCOP_DB_BUCKET", "bucket-snapshot")
+        monkeypatch.setenv("SERCOP_BACKUP_BUCKET", "bucket-respaldos")
+        assert respaldo_gcs.bucket_de_respaldos() == "bucket-respaldos"
+        assert respaldo_gcs.crear_cliente().bucket == "bucket-respaldos"
+
+    def test_sin_bucket_de_respaldos_cae_al_del_snapshot(self, monkeypatch):
+        monkeypatch.setenv("SERCOP_DB_BUCKET", "bucket-snapshot")
+        assert respaldo_gcs.crear_cliente().bucket == "bucket-snapshot"
+
+    def test_variable_vacia_o_con_espacios_cuenta_como_no_definida(self, monkeypatch):
+        monkeypatch.setenv("SERCOP_DB_BUCKET", "bucket-snapshot")
+        monkeypatch.setenv("SERCOP_BACKUP_BUCKET", "   ")
+        assert respaldo_gcs.bucket_de_respaldos() == "bucket-snapshot"
+
+    def test_ninguna_definida_falla_con_mensaje_generico(self):
+        with pytest.raises(RespaldoRemotoError) as exc:
+            respaldo_gcs.crear_cliente()
+        assert "SERCOP_BACKUP_BUCKET" in str(exc.value)
+
+    @pytest.mark.parametrize("malo", ["UPPER", "a/b", "x?alt=media", "../b"])
+    def test_bucket_de_respaldos_invalido_se_rechaza(self, monkeypatch, malo):
+        monkeypatch.setenv("SERCOP_BACKUP_BUCKET", malo)
+        with pytest.raises(RespaldoRemotoError):
+            respaldo_gcs.crear_cliente()
+
+    def test_el_reset_sube_al_bucket_de_respaldos_no_al_del_snapshot(self, entorno, monkeypatch):
+        usados = []
+
+        def fabrica_de_clientes_falsos():
+            usados.append(respaldo_gcs.bucket_de_respaldos())
+            return ClienteFalso()
+
+        monkeypatch.setenv("K_SERVICE", "sercop")
+        monkeypatch.setenv("SERCOP_DB_BUCKET", "bucket-snapshot")
+        monkeypatch.setenv("SERCOP_BACKUP_BUCKET", "bucket-respaldos")
+        monkeypatch.setattr(respaldo_gcs, "crear_cliente", fabrica_de_clientes_falsos)
+        reset.ejecutar_reset_completo()
+        assert usados == ["bucket-respaldos"]
+
+    def test_la_url_de_subida_apunta_al_bucket_de_respaldos(self, monkeypatch):
+        urls = []
+
+        def post(url, params=None, data=None, headers=None, timeout=None):
+            urls.append(url)
+            return _Resp({"md5Hash": _md5(data)})
+
+        monkeypatch.setattr(respaldo_gcs, "_obtener_token", lambda: "tok")
+        monkeypatch.setattr(respaldo_gcs.requests, "post", post)
+        monkeypatch.setenv("SERCOP_DB_BUCKET", "bucket-snapshot")
+        monkeypatch.setenv("SERCOP_BACKUP_BUCKET", "bucket-respaldos")
+        respaldo_gcs.crear_cliente().subir("respaldos/x/y.db", b"abc")
+        assert urls == ["https://storage.googleapis.com/upload/storage/v1/b/bucket-respaldos/o"]
+
+    def test_el_script_del_snapshot_sigue_usando_solo_su_variable(self):
+        from pathlib import Path
+
+        fuente = (Path(__file__).resolve().parent.parent / "scripts" / "descargar_snapshot_db.py").read_text(encoding="utf-8")
+        assert "SERCOP_BACKUP_BUCKET" not in fuente and "SERCOP_DB_BUCKET" in fuente

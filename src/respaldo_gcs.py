@@ -3,7 +3,8 @@
 En Cloud Run el sistema de archivos del contenedor es efimero: un respaldo
 guardado solo en disco se pierde al reciclarse la instancia. Por eso, cuando
 corre ahi (variable K_SERVICE), `src/reset.py` SUBE el respaldo al mismo bucket
-del snapshot (SERCOP_DB_BUCKET) bajo `respaldos/<AAAAMMDD_HHMMSS>/...` ANTES de
+de respaldos (SERCOP_BACKUP_BUCKET; si no esta definida, por compatibilidad se usa
+SERCOP_DB_BUCKET, el del snapshot) bajo `respaldos/<AAAAMMDD_HHMMSS>/...` ANTES de
 borrar nada, y aborta si la subida falla o su checksum no coincide
 (fail-closed). En local no se usa.
 
@@ -78,7 +79,9 @@ class ClienteGCS:
 
     def __init__(self, bucket: str, prefijo: str = PREFIJO_POR_DEFECTO) -> None:
         if not PATRON_BUCKET.match(bucket or ""):
-            raise RespaldoRemotoError("SERCOP_DB_BUCKET no esta configurado o tiene un formato invalido.")
+            raise RespaldoRemotoError(
+                "El bucket de respaldos (SERCOP_BACKUP_BUCKET) no esta configurado o tiene un formato invalido."
+            )
         self.bucket = bucket
         self.prefijo = prefijo
         self._token: str | None = None
@@ -148,8 +151,14 @@ class ClienteGCS:
         return respuesta.content
 
 
+def bucket_de_respaldos() -> str:
+    """Bucket donde se guardan los respaldos: SERCOP_BACKUP_BUCKET (recomendado: un bucket SEPARADO del
+    snapshot, con retencion) y, si no esta definida o esta vacia, SERCOP_DB_BUCKET por compatibilidad."""
+    return (os.environ.get("SERCOP_BACKUP_BUCKET") or "").strip() or (os.environ.get("SERCOP_DB_BUCKET") or "").strip()
+
+
 def crear_cliente() -> ClienteGCS:
-    return ClienteGCS(os.environ.get("SERCOP_DB_BUCKET", ""), _prefijo())
+    return ClienteGCS(bucket_de_respaldos(), _prefijo())
 
 
 def subir_respaldo(carpeta: Path, nombre: str, cliente=None) -> str:

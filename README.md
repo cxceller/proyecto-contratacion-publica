@@ -264,46 +264,67 @@ Valida la ruta (solo carpetas dentro de `respaldos/`) y `PRAGMA integrity_check`
 eso existe la copia previa) y copia los `.docx` que falten (`--sobrescribir-reportes` para pisar los existentes).
 Las capturas (`capturas/`) no se respaldan en el reset: si marcaste borrarlas, hay que volver a generarlas.
 
-### Respaldos del reset en Cloud Run (Cloud Storage)
+### Respaldos del reset en Cloud Run (bucket separado)
 
 En Cloud Run el disco del contenedor es efímero, así que cuando corre ahí (`K_SERVICE` definido) el reset **sube el
-respaldo a Cloud Storage antes de borrar nada**: `gs://$SERCOP_DB_BUCKET/respaldos/<AAAAMMDD_HHMMSS>/contrataciones.db`
+respaldo a Cloud Storage antes de borrar nada**: `gs://$SERCOP_BACKUP_BUCKET/respaldos/<AAAAMMDD_HHMMSS>/contrataciones.db`
 (y `reportes/*.docx`, si había). Cada archivo se verifica por checksum MD5; si la subida falla, el bucket no está
 configurado o el checksum no coincide, el reset **aborta sin borrar nada** (la UI muestra «no se borró nada»; el detalle
 técnico queda solo en el log). En local el reset sigue guardando solo en `respaldos/`.
 
-- **Permisos (mínimo privilegio):** a la cuenta de servicio del servicio solo `roles/storage.objectCreator` (crea los
-  respaldos) y `roles/storage.objectViewer` (lista y lee el snapshot y los respaldos). **No** uses `objectAdmin`: con él
-  una cuenta comprometida podría borrar o reemplazar los respaldos. Los respaldos tienen nombre único
-  (`respaldos/<AAAAMMDD_HHMMSS>/`), por lo que nunca hace falta sobrescribir ni borrar. Opcional:
-  `SERCOP_RESPALDOS_PREFIX` (por defecto `respaldos/`) y `RESPALDOS_DIR` (carpeta temporal local, por defecto `/tmp/respaldos`).
+**Dos buckets, dos políticas** (solo texto, no se ejecuta aquí):
+
+| | Bucket del **snapshot** (`SERCOP_DB_BUCKET`) | Bucket de **respaldos** (`SERCOP_BACKUP_BUCKET`) |
+|---|---|---|
+| Contenido | `contrataciones.db` (se reemplaza al refrescar datos) | `respaldos/<ts>/…` (nombres únicos, nunca se sobrescriben) |
+| Protección | **Versionado** + ciclo de vida que borra versiones *no actuales* a los 30 días | **Retención de 30 días** (nada se borra ni reemplaza antes) |
+| Cuenta de servicio de la app | `roles/storage.objectViewer` (solo lee) | `roles/storage.objectCreator` + `roles/storage.objectViewer` |
+
+`SERCOP_BACKUP_BUCKET` es opcional: **si no está definida se usa `SERCOP_DB_BUCKET`** (compatibilidad; entonces el snapshot y
+los respaldos comparten bucket y no se puede aplicar retención sin impedir el refresco del snapshot). Se recomienda definirla.
+Otras variables opcionales: `SERCOP_RESPALDOS_PREFIX` (por defecto `respaldos/`) y `RESPALDOS_DIR` (carpeta temporal local,
+por defecto `/tmp/respaldos`).
+
+**1. Bucket de respaldos con retención de 30 días**
+
+```bash
+gcloud storage buckets create gs://BUCKET-RESPALDOS --project=PROYECTO --location=REGION \
+  --uniform-bucket-level-access --public-access-prevention
+gcloud storage buckets update gs://BUCKET-RESPALDOS --project=PROYECTO --retention-period=30d
+# (Opcional e IRREVERSIBLE) bloquear la política para que nadie pueda acortarla: gcloud storage buckets update gs://BUCKET-RESPALDOS --lock-retention-period
+
+# Mínimo privilegio: crear y leer/listar. NO uses objectAdmin (podría borrar o reemplazar respaldos).
+gcloud storage buckets add-iam-policy-binding gs://BUCKET-RESPALDOS --project=PROYECTO \
+  --member="serviceAccount:CUENTA-DE-SERVICIO@PROYECTO.iam.gserviceaccount.com" --role="roles/storage.objectCreator"
+gcloud storage buckets add-iam-policy-binding gs://BUCKET-RESPALDOS --project=PROYECTO \
+  --member="serviceAccount:CUENTA-DE-SERVICIO@PROYECTO.iam.gserviceaccount.com" --role="roles/storage.objectViewer"
+
+# Decirle a la app qué bucket usar
+gcloud run services update SERVICIO --region REGION --project=PROYECTO \
+  --update-env-vars="SERCOP_BACKUP_BUCKET=BUCKET-RESPALDOS"
+```
+
+Como los respaldos tienen nombre único, `objectCreator` basta (no hay que sobrescribir). La retención impide borrarlos antes de
+tiempo incluso con credenciales comprometidas; pasados los 30 días se pueden borrar con normalidad.
+
+**2. Bucket del snapshot: versionado y ciclo de vida de 30 días**
+
+```bash
+# ciclo.json: borra las versiones NO actuales con más de 30 días (la versión vigente nunca se toca)
+cat > ciclo.json <<'EOF'
+{"rule": [{"action": {"type": "Delete"}, "condition": {"isLive": false, "daysSinceNoncurrentTime": 30}}]}
+EOF
+gcloud storage buckets update gs://BUCKET-SNAPSHOT --project=PROYECTO --versioning --lifecycle-file=ciclo.json
+```
+
+Con esto, reemplazar el snapshot (`gcloud storage cp data/contrataciones.db gs://BUCKET-SNAPSHOT/contrataciones.db`) conserva la
+versión anterior 30 días, y el refresco no choca con ninguna retención. La cuenta de servicio de la app solo necesita
+`roles/storage.objectViewer` en este bucket.
+
+- **Listar y restaurar desde el bucket de respaldos** (desde un equipo con acceso al bucket; detén antes la app):
 
   ```bash
-  gcloud storage buckets add-iam-policy-binding gs://BUCKET --project=PROYECTO \
-    --member="serviceAccount:CUENTA-DE-SERVICIO@PROYECTO.iam.gserviceaccount.com" --role="roles/storage.objectCreator"
-  gcloud storage buckets add-iam-policy-binding gs://BUCKET --project=PROYECTO \
-    --member="serviceAccount:CUENTA-DE-SERVICIO@PROYECTO.iam.gserviceaccount.com" --role="roles/storage.objectViewer"
-  ```
-
-- **Versionado y retención del bucket** (los respaldos contienen datos personales; solo texto, no se ejecuta aquí):
-
-  ```bash
-  # Versionado: un objeto borrado o reemplazado se conserva como versión no actual.
-  gcloud storage buckets update gs://BUCKET --project=PROYECTO --versioning
-
-  # Retención: ningún objeto puede borrarse ni reemplazarse durante 30 días (protege ante borrados accidentales o maliciosos).
-  gcloud storage buckets update gs://BUCKET --project=PROYECTO --retention-period=30d
-  ```
-
-  Ojo: la retención también aplica al snapshot `contrataciones.db` del **mismo** bucket, y para refrescarlo hay que
-  reemplazarlo (`gcloud storage cp`), lo que falla dentro del periodo. Si compartes bucket, usa **versionado + una regla de
-  ciclo de vida** (`gcloud storage buckets update gs://BUCKET --lifecycle-file=ciclo.json`, con una regla `Delete` para
-  `isLive: false` y `daysSinceNoncurrentTime: 90`) y reserva la retención para un bucket de respaldos dedicado
-  (apuntando `SERCOP_DB_BUCKET` a él y manteniendo el snapshot aparte).
-- **Listar y restaurar desde el bucket** (desde un equipo con acceso al bucket; detén antes la app):
-
-  ```bash
-  export SERCOP_DB_BUCKET=nombre-del-bucket
+  export SERCOP_BACKUP_BUCKET=nombre-del-bucket-de-respaldos
   export GCS_ACCESS_TOKEN="$(gcloud auth print-access-token)"
   .venv/Scripts/python.exe scripts/restaurar_respaldo.py --origen gcs --listar
   .venv/Scripts/python.exe scripts/restaurar_respaldo.py --origen gcs 20260101_120000              # solo informa
@@ -313,8 +334,8 @@ técnico queda solo en el log). En local el reset sigue guardando solo en `respa
   Baja el respaldo, verifica sus checksums y restaura la BD **local** (guardando antes la actual en
   `respaldos/pre_restauracion_<ts>/`).
 - **Devolver los datos a producción:** la BD de Cloud Run vive en `/tmp` de cada instancia y se repone desde el
-  snapshot del bucket al arrancar. Para restaurar en producción, sube la BD restaurada como nuevo snapshot
-  (`gsutil cp data/contrataciones.db gs://BUCKET/contrataciones.db`) y recicla las instancias
+  snapshot al arrancar. Para restaurar en producción, sube la BD restaurada como nuevo snapshot
+  (`gcloud storage cp data/contrataciones.db gs://BUCKET-SNAPSHOT/contrataciones.db`) y recicla las instancias
   (`gcloud run services update SERVICIO --region REGION --update-env-vars="ROTACION=$(date +%s)"`).
 
 ### Bloqueo de login: por instancia (límite conocido)

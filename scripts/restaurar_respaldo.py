@@ -12,8 +12,8 @@ Uso (desde la raiz del proyecto):
     .venv/Scripts/python.exe scripts/restaurar_respaldo.py 20260101_120000 --confirmar
 
 Origen: por defecto "local" (carpeta respaldos/) y "gcs" cuando corre en Cloud Run
-(K_SERVICE). `--origen gcs` baja el respaldo del bucket SERCOP_DB_BUCKET
-(prefijo respaldos/), verifica sus checksums y restaura desde esa copia. Desde un
+(K_SERVICE). `--origen gcs` baja el respaldo del bucket SERCOP_BACKUP_BUCKET
+(o SERCOP_DB_BUCKET si aquella no esta definida; prefijo respaldos/), verifica sus checksums y restaura desde esa copia. Desde un
 equipo local hace falta un token: `export GCS_ACCESS_TOKEN=$(gcloud auth print-access-token)`.
 
 Detiene antes la app (API y Streamlit): restaurar mientras otra conexion
