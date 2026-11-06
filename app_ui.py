@@ -2327,22 +2327,7 @@ def _inyectar_estilos_complementarios() -> None:
             to {{ opacity: 1; transform: translateY(0); }}
         }}
 
-        /* BaseWeb (Streamlit < 1.6x) y React Aria (1.67): el contenedor visible del
-        text_input es el div que envuelve al <input>. */
-        [data-testid="stMain"] [data-testid="stTextInput"] [data-baseweb="input"],
-        [data-testid="stMain"] [data-testid="stTextInput"] div:has(> input),
-        [data-testid="stMain"] [data-testid="stDateInput"] [data-baseweb="input"] {{
-            background: var(--card);
-            border: 1px solid var(--line-strong);
-            border-radius: var(--r-md);
-            transition: border-color 0.25s, box-shadow 0.25s;
-        }}
-        [data-testid="stMain"] [data-testid="stTextInput"] [data-baseweb="input"]:focus-within,
-        [data-testid="stMain"] [data-testid="stTextInput"] div:has(> input):focus-within,
-        [data-testid="stMain"] [data-testid="stDateInput"] [data-baseweb="input"]:focus-within {{
-            border-color: var(--accent);
-            box-shadow: 0 0 0 4px var(--accent-soft);
-        }}
+        /* Campos de texto/fecha: los estiliza estilos_sercop.py (ver alli). */
 
         [data-testid="stMain"] .stButton > button,
         [data-testid="stMain"] .stDownloadButton > button {{

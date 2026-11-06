@@ -152,6 +152,27 @@ html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):
 [data-testid="stMultiSelect"] [data-baseweb="tag"],
 [data-testid="stMultiSelect"] [data-tag]{ background:var(--accent-soft) !important; color:var(--accent) !important; border-radius:8px !important; }
 
+/* ───────── Campos de texto (text_input, también type="password") ─────────
+   Streamlit 1.67: el borde vive en [data-testid="stTextInputRootElement"] (contiene el <input> y, en
+   contraseñas, el botón del "ojito"). Un solo borde; el foco solo lo engrosa (sin halo de 4px, que se leía
+   como doble borde). Se mantiene el selector BaseWeb para versiones anteriores. */
+[data-testid="stTextInput"] [data-testid="stTextInputRootElement"],
+[data-testid="stTextInput"] div[data-baseweb="input"]{
+  background:var(--card) !important; border:1px solid var(--line-strong) !important; border-radius:var(--r-md) !important;
+  box-shadow:none !important; align-items:center;
+  transition:border-color .25s var(--ease), box-shadow .25s var(--ease);
+}
+[data-testid="stTextInput"] [data-testid="stTextInputRootElement"]:hover,
+[data-testid="stTextInput"] div[data-baseweb="input"]:hover{ border-color:rgba(15,23,42,.22) !important; }
+[data-testid="stTextInput"] [data-testid="stTextInputRootElement"]:focus-within,
+[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within{
+  border-color:var(--accent) !important; box-shadow:0 0 0 1px var(--accent) !important;
+}
+/* el input y el ojito no repiten borde ni fondo */
+[data-testid="stTextInput"] input{ border:none !important; box-shadow:none !important; background:transparent !important; }
+/* "Press Enter to submit form" flota sobre el campo (y sobre el ojito): los formularios ya tienen botón de envío */
+[data-testid="stForm"] [data-testid="InputInstructions"]{ display:none !important; }
+
 /* ───────── Botones del área principal ───────── */
 [data-testid="stMain"] [data-testid="stBaseButton-secondary"]{
   background:var(--card) !important; border:1px solid var(--line-strong) !important; border-radius:var(--r-md) !important;
