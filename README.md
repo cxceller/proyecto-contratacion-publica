@@ -272,9 +272,34 @@ respaldo a Cloud Storage antes de borrar nada**: `gs://$SERCOP_DB_BUCKET/respald
 configurado o el checksum no coincide, el reset **aborta sin borrar nada** (la UI muestra «no se borró nada»; el detalle
 técnico queda solo en el log). En local el reset sigue guardando solo en `respaldos/`.
 
-- **Permisos:** la cuenta de servicio del servicio necesita crear, leer y listar objetos en ese bucket
-  (por ejemplo `roles/storage.objectAdmin`, o `objectCreator` + `objectViewer`). Opcional: `SERCOP_RESPALDOS_PREFIX`
-  (por defecto `respaldos/`) y `RESPALDOS_DIR` (carpeta temporal local, por defecto `/tmp/respaldos`).
+- **Permisos (mínimo privilegio):** a la cuenta de servicio del servicio solo `roles/storage.objectCreator` (crea los
+  respaldos) y `roles/storage.objectViewer` (lista y lee el snapshot y los respaldos). **No** uses `objectAdmin`: con él
+  una cuenta comprometida podría borrar o reemplazar los respaldos. Los respaldos tienen nombre único
+  (`respaldos/<AAAAMMDD_HHMMSS>/`), por lo que nunca hace falta sobrescribir ni borrar. Opcional:
+  `SERCOP_RESPALDOS_PREFIX` (por defecto `respaldos/`) y `RESPALDOS_DIR` (carpeta temporal local, por defecto `/tmp/respaldos`).
+
+  ```bash
+  gcloud storage buckets add-iam-policy-binding gs://BUCKET --project=PROYECTO \
+    --member="serviceAccount:CUENTA-DE-SERVICIO@PROYECTO.iam.gserviceaccount.com" --role="roles/storage.objectCreator"
+  gcloud storage buckets add-iam-policy-binding gs://BUCKET --project=PROYECTO \
+    --member="serviceAccount:CUENTA-DE-SERVICIO@PROYECTO.iam.gserviceaccount.com" --role="roles/storage.objectViewer"
+  ```
+
+- **Versionado y retención del bucket** (los respaldos contienen datos personales; solo texto, no se ejecuta aquí):
+
+  ```bash
+  # Versionado: un objeto borrado o reemplazado se conserva como versión no actual.
+  gcloud storage buckets update gs://BUCKET --project=PROYECTO --versioning
+
+  # Retención: ningún objeto puede borrarse ni reemplazarse durante 30 días (protege ante borrados accidentales o maliciosos).
+  gcloud storage buckets update gs://BUCKET --project=PROYECTO --retention-period=30d
+  ```
+
+  Ojo: la retención también aplica al snapshot `contrataciones.db` del **mismo** bucket, y para refrescarlo hay que
+  reemplazarlo (`gcloud storage cp`), lo que falla dentro del periodo. Si compartes bucket, usa **versionado + una regla de
+  ciclo de vida** (`gcloud storage buckets update gs://BUCKET --lifecycle-file=ciclo.json`, con una regla `Delete` para
+  `isLive: false` y `daysSinceNoncurrentTime: 90`) y reserva la retención para un bucket de respaldos dedicado
+  (apuntando `SERCOP_DB_BUCKET` a él y manteniendo el snapshot aparte).
 - **Listar y restaurar desde el bucket** (desde un equipo con acceso al bucket; detén antes la app):
 
   ```bash
