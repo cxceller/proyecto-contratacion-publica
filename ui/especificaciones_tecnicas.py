@@ -17,7 +17,6 @@ import base64
 import html
 import io
 import json
-import re
 import tempfile
 from pathlib import Path
 
@@ -76,6 +75,7 @@ from scripts.importador_parametros import (
     ErrorLLMImportacionParametros,
     importar_parametros,
 )
+from scripts.sanitizar_html import sanitizar_html_enriquecido
 from scripts.tinymce_editor import tinymce_editor
 from services.sercop import (
     eliminar_borrador_especificaciones_tecnicas,
@@ -469,18 +469,14 @@ def _html_valor_o_vacio(valor: str) -> str:
     return html.escape(valor) if valor else _VACIO
 
 
-_PATRON_ETIQUETAS_PELIGROSAS = re.compile(
-    r"<\s*(script|style|iframe|object|embed)\b.*?>.*?<\s*/\s*\1\s*>", re.IGNORECASE | re.DOTALL
-)
-
-
 def _sanitizar_html_enriquecido(html_enriquecido: str) -> str:
     """El HTML del editor TinyMCE (pestaña 'Análisis para definir la
-    estrategia de adquisición') se inserta con unsafe_allow_html=True en
-    la Vista Previa -- se quitan aquí, por precaución, las etiquetas que
-    podrían ejecutar código o cargar contenido externo, aunque TinyMCE ya
-    no las genera desde su propia interfaz."""
-    return _PATRON_ETIQUETAS_PELIGROSAS.sub("", html_enriquecido)
+    estrategia de adquisición') se inserta con unsafe_allow_html=True en la
+    Vista Previa, y se guarda en borradores (un borrador ajeno es entrada no
+    confiable): se limpia por LISTA BLANCA con nh3 -- ver
+    scripts/sanitizar_html.py (antes: lista negra por regex, que dejaba pasar
+    <img onerror=...>, <svg onload=...> y javascript:)."""
+    return sanitizar_html_enriquecido(html_enriquecido)
 
 
 def _html_fila_campo(etiqueta: str, valor: str) -> str:
