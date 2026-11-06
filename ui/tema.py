@@ -57,7 +57,7 @@ COLOR_TEXTO_EJE = "#0b0b0b"  # texto de ejes/fuente general, = textColor (.strea
 # comparativo): todas las barras en azul suave (el color no codifica
 # categoria, solo son "datos"), salvo la de mayor valor, que se resalta en
 # azul fuerte (antes naranja: la paleta de graficos es solo azul).
-COLOR_BARRA_DATO = "#cfe0f5"
+COLOR_BARRA_DATO = "#4a90d9"  # azul medio: >= 3:1 sobre blanco (antes #cfe0f5, casi invisible)
 COLOR_BARRA_DESTACADA = "#0f3d75"  # azul fuerte (sin naranja en los graficos)
 COLOR_TARJETA = "#FFFFFF"  # fondo de los graficos = fondo de las tarjetas (--card en estilos_sercop.py)
 

@@ -1275,7 +1275,7 @@ def render_grafico_estado_clic(registros: list[dict]) -> str | None:
     Barras en azul suave (COLOR_BARRA_DATO) -- la del estado
     ACTUALMENTE FILTRADO (session_state.filtro_estado_click, leido aca
     solo para colorear, no para decidir el retorno) se resalta en
-    naranja de acento (COLOR_BARRA_DESTACADA), mismo patron "barra lider
+    azul fuerte (COLOR_BARRA_DESTACADA), mismo patron "barra lider
     destacada" que el resto de graficos de ranking de esta app, pero aca
     lo que se resalta es la SELECCION activa, no el valor mas alto."""
     conteos: dict[str, int] = {}
@@ -1305,6 +1305,11 @@ def render_grafico_estado_clic(registros: list[dict]) -> str | None:
             y=estados,
             orientation="h",
             marker=dict(color=colores, cornerradius=4, line=dict(width=0)),
+            # Valor al final de cada barra: no hay que adivinarlo contra el eje.
+            text=[formatear_numero_ec(v, 0) for v in valores],
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=13, color=COLOR_TEXTO_EJE),
             hovertemplate="<b>%{y}</b><br>%{x} proceso(s)<extra></extra>",
         )
     )
@@ -1317,6 +1322,7 @@ def render_grafico_estado_clic(registros: list[dict]) -> str | None:
         linecolor=COLOR_AXIS, tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
     )
     _aplicar_estilo_base(fig, altura=max(320, 34 * len(estados)))
+    fig.update_layout(margin=dict(l=10, r=50, t=20, b=10))  # holgura para el valor al final de la barra
 
     st.markdown("**Procesos por Estado** _(clic en una barra para filtrar)_")
     # SIN config={"displayModeBar": False}: verificado en vivo que ese flag
@@ -1550,7 +1556,7 @@ def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
     presupuesto referencial total) via los selectores de
     DIMENSIONES_COMPARATIVAS/METRICAS_COMPARATIVAS, y se dibuja una barra
     por categoria, de mayor a menor, con la de mayor valor resaltada en
-    COLOR_BARRA_DESTACADA (naranja de acento) y el resto en
+    COLOR_BARRA_DESTACADA (azul fuerte) y el resto en
     COLOR_BARRA_DATO -- el valor tambien se anota como texto al final de
     cada barra para no depender solo del color para distinguir al lider."""
     st.markdown("**Comparativa por ranking**")
