@@ -100,3 +100,30 @@ def test_respaldo_corrupto_se_rechaza_y_no_toca_la_bd(entorno):
     with pytest.raises(RespaldoInvalidoError):
         restaurar("20250101_000000", confirmar=True)
     assert _huella_tabla(database.DB_PATH, "contrataciones")[0] == 4
+
+
+class TestListaBlancaDeTablas:
+    def test_tablas_permitidas(self, entorno):
+        from src.restauracion import _contar
+
+        assert _contar(Path(database.DB_PATH), "contrataciones") == 4
+        assert _contar(Path(database.DB_PATH), "borradores_contratacion") == 1
+
+    @pytest.mark.parametrize(
+        "tabla",
+        ["sqlite_master", "contrataciones; DROP TABLE contrataciones", "contrataciones --", "x' OR '1'='1", "", "CONTRATACIONES"],
+    )
+    def test_cualquier_otro_nombre_se_rechaza(self, entorno, tabla):
+        from src.restauracion import _contar
+
+        with pytest.raises(ValueError):
+            _contar(Path(database.DB_PATH), tabla)
+        assert _filas_contrataciones(database.DB_PATH) == 4  # la tabla sigue intacta
+
+
+def _filas_contrataciones(ruta):
+    conn = sqlite3.connect(str(ruta))
+    try:
+        return conn.execute("SELECT COUNT(*) FROM contrataciones").fetchone()[0]
+    finally:
+        conn.close()

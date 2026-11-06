@@ -44,10 +44,16 @@ def resolver_respaldo(nombre_o_ruta: str) -> Path:
     return candidato
 
 
+# Nombres de tabla que _contar puede interpolar en el SQL (no admite parametros): lista blanca explicita.
+TABLAS_CONTABLES = frozenset({"contrataciones", "borradores_contratacion"})
+
+
 def _contar(ruta_db: Path, tabla: str) -> int:
+    if tabla not in TABLAS_CONTABLES:
+        raise ValueError(f"Tabla no permitida: {tabla!r}")
     conn = sqlite3.connect(f"file:{ruta_db.as_posix()}?mode=ro", uri=True)
     try:
-        return conn.execute(f"SELECT COUNT(*) FROM {tabla}").fetchone()[0]  # noqa: S608 -- tabla fija, no input
+        return conn.execute(f"SELECT COUNT(*) FROM {tabla}").fetchone()[0]  # noqa: S608 -- validada contra TABLAS_CONTABLES
     except sqlite3.OperationalError:
         return 0
     finally:
