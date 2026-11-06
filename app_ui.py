@@ -21,7 +21,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from estilos_sercop import aplicar_estilos
@@ -35,7 +34,7 @@ from scripts.formato_ec import (
 from services.sercop import obtener_contrataciones, reset_completo
 from src.logging_config import obtener_logger
 from ui.autenticacion import confirmar_con_clave, requerir_login
-from ui.componentes import boton_limpiar_filtros
+from ui.componentes import boton_limpiar_filtros, ejecutar_html_invisible
 from ui.especificaciones_tecnicas import (
     _dataframe_items_especificaciones_tecnicas_vacio,
     render_formularios_y_registro,
@@ -849,7 +848,7 @@ def render_kpi_card_tendencia(
             if serie and len(serie) >= 2:
                 st.plotly_chart(
                     _figura_sparkline(serie),
-                    use_container_width=True,
+                    width="stretch",
                     config={"displayModeBar": False},
                     key=f"spark_{clave}",
                 )
@@ -1099,7 +1098,7 @@ def render_grafico_estado_clic(registros: list[dict]) -> str | None:
     # camara) queda visible como costo aceptado de esa limitacion.
     evento = st.plotly_chart(
         fig,
-        use_container_width=True,
+        width="stretch",
         key="grafico_estado_clic",
         on_select="rerun",
         selection_mode="points",
@@ -1184,7 +1183,8 @@ def render_grafico_funnel_pipeline(registros: list[dict]) -> None:
             )
         )
         _aplicar_estilo_base(fig, altura=360)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        fig.update_yaxes(automargin=True, tickfont=dict(size=13, color=COLOR_TEXTO_EJE))
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     with col_fuga:
         st.markdown("**Fuga del pipeline**")
         render_kpi_card(
@@ -1247,7 +1247,7 @@ def render_grafico_mensual(df: pd.DataFrame):
         tickprefix="$ ", tickformat=",.0f", tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
     )
     _aplicar_estilo_base(fig, altura=440)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
@@ -1308,7 +1308,7 @@ def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
         tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
     )
     _aplicar_estilo_base(fig, altura=max(320, 34 * len(resumen)))
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
@@ -1379,7 +1379,7 @@ def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
     fig.update_xaxes(**eje_x)
 
     _aplicar_estilo_base(fig, altura=max(320, 38 * len(resumen)))
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 _MAPA_HOVERTEMPLATE = (
@@ -1525,7 +1525,7 @@ def render_mapa_provincias(df: pd.DataFrame):
         fig = _construir_mapa_burbujas(df_mapa)
     else:
         fig = _construir_mapa_coropletico(df_mapa)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
     if vista == "Coroplético":
         st.caption("Límites administrativos: INEC / HDX (data.humdata.org/dataset/cod-ab-ecu), CC BY-IGO.")
@@ -1575,7 +1575,7 @@ def render_treemap_provincia_estado(df: pd.DataFrame):
         root_color=COLOR_LIENZO,
     )
     _aplicar_estilo_base(fig, altura=560)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def render_treemap_presupuesto_tipo(df: pd.DataFrame):
@@ -1609,7 +1609,7 @@ def render_treemap_presupuesto_tipo(df: pd.DataFrame):
         root_color=COLOR_LIENZO,
     )
     _aplicar_estilo_base(fig, altura=560)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def render_gantt_procesos(df: pd.DataFrame, limite: int = 25):
@@ -1652,7 +1652,7 @@ def render_gantt_procesos(df: pd.DataFrame, limite: int = 25):
     fig.update_xaxes(title=None, tickfont=dict(color=COLOR_TEXTO_EJE))
     _aplicar_estilo_base(fig, altura=max(360, 32 * len(datos)))
     fig.update_layout(showlegend=True, legend_title_text="Estado")
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def _tabla_estatica(df_mostrar: pd.DataFrame) -> pd.DataFrame:
@@ -1836,7 +1836,7 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
                     )
                     st.plotly_chart(
                         _figura_gauge_ahorro(porcentaje_ahorro_general),
-                        use_container_width=True,
+                        width="stretch",
                         config={"displayModeBar": False},
                         key="gauge_ahorro",
                     )
@@ -1985,7 +1985,7 @@ def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool
     st.dataframe(
         df_visible,
         column_config=column_config,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=520,
     )
@@ -2540,7 +2540,7 @@ def _revelar_sidebar_cuando_cargue_fuente_iconos() -> None:
     muy viejos) -- la red de seguridad puramente CSS de
     _inyectar_estilos_sidebar cubre, ademas, el caso de que este script ni
     siquiera llegue a ejecutarse."""
-    components.html(
+    ejecutar_html_invisible(
         """
         <script>
         (function () {
@@ -2558,7 +2558,6 @@ def _revelar_sidebar_cuando_cargue_fuente_iconos() -> None:
         })();
         </script>
         """,
-        height=0,
     )
 
 
@@ -2604,7 +2603,7 @@ def render_navegacion_sidebar() -> None:
                         st.image(str(LOGO_MUNICIPALIDAD_PATH), width=LOGO_MUNICIPALIDAD_ANCHO_PX)
                     with col_boton:
                         if st.button(
-                            nombre.upper(), key=f"nav_{nombre}", use_container_width=True, type=tipo_boton,
+                            nombre.upper(), key=f"nav_{nombre}", width="stretch", type=tipo_boton,
                         ):
                             st.session_state.pagina_activa = nombre
                             st.rerun()
@@ -2613,7 +2612,7 @@ def render_navegacion_sidebar() -> None:
             if st.button(
                 f"{icono}  {nombre.upper()}",
                 key=f"nav_{nombre}",
-                use_container_width=True,
+                width="stretch",
                 type=tipo_boton,
             ):
                 st.session_state.pagina_activa = nombre
@@ -2748,7 +2747,7 @@ def render_importacion_sercop_sidebar() -> None:
         if st.button(
             ":material/refresh: Actualizar contrataciones",
             key="sercop_importar_boton",
-            use_container_width=True,
+            width="stretch",
             type="primary" if activo else "secondary",
         ):
             _iniciar_importacion_sercop(sin_monto_adjudicado=sin_monto_adjudicado)
@@ -2810,12 +2809,12 @@ def render_pagina_importacion_sercop() -> None:
         col_actualizar, col_detener = st.columns(2)
         with col_actualizar:
             if st.button(
-                ":material/refresh: Actualizar estado", key="sercop_import_actualizar", use_container_width=True
+                ":material/refresh: Actualizar estado", key="sercop_import_actualizar", width="stretch"
             ):
                 st.rerun()
         with col_detener:
             if st.button(
-                ":material/stop_circle: Detener proceso", key="sercop_import_detener", use_container_width=True
+                ":material/stop_circle: Detener proceso", key="sercop_import_detener", width="stretch"
             ):
                 # Marcar la cancelacion ANTES de terminar el proceso: es lo
                 # que le permite a esta misma vista, en el siguiente rerun,
@@ -3313,7 +3312,7 @@ def _deshabilitar_traduccion_automatica() -> None:
     en un test aislado -- ver _revelar_sidebar_cuando_cargue_fuente_iconos;
     un <script> insertado por st.markdown(unsafe_allow_html=True) NO se
     ejecuta)."""
-    components.html(
+    ejecutar_html_invisible(
         """
         <script>
         const meta = window.parent.document.createElement('meta');
@@ -3324,7 +3323,6 @@ def _deshabilitar_traduccion_automatica() -> None:
         window.parent.document.documentElement.classList.add('notranslate');
         </script>
         """,
-        height=0,
     )
 
 

@@ -4,6 +4,7 @@ constantes, no funciones) o repetidos en cada pagina."""
 from collections.abc import Callable
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 def boton_limpiar_filtros(claves: list[str], key: str, *, on_clear: Callable[[], None] | None = None) -> None:
@@ -21,9 +22,23 @@ def boton_limpiar_filtros(claves: list[str], key: str, *, on_clear: Callable[[],
     El placement (columna, contenedor) lo decide el caller envolviendo el
     llamado en un `with columna:` si hace falta -- esta funcion solo usa
     `st.button` sobre el contenedor "actual", no crea su propia columna."""
-    if st.button(":material/filter_alt_off: Limpiar filtros", key=key, use_container_width=True):
+    if st.button(":material/filter_alt_off: Limpiar filtros", key=key, width="stretch"):
         for clave in claves:
             st.session_state.pop(clave, None)
         if on_clear:
             on_clear()
         st.rerun()
+
+
+def ejecutar_html_invisible(codigo_html: str) -> None:
+    """Inserta un <script>/HTML PROPIO (nunca contenido de usuario: el iframe
+    ejecuta JavaScript con acceso al documento de la app) en un iframe de altura 0.
+    `components.html` esta deprecado y se elimina (fecha de remocion ya vencida);
+    `st.iframe` (Streamlit >= 1.56) lo reemplaza. Se conserva el respaldo para
+    versiones anteriores."""
+    if hasattr(st, "iframe"):
+        # st.iframe no admite height=0 (minimo 1 px); el CSS de app_ui.py/ui.reportes
+        # saca de flujo estos contenedores para que no sumen espacio vertical.
+        st.iframe(codigo_html, height=1)
+    else:  # pragma: no cover -- solo Streamlit < 1.56
+        components.html(codigo_html, height=0)

@@ -179,7 +179,7 @@ def render_treemap_items_especificaciones_tecnicas(df_items: pd.DataFrame) -> No
         showlegend=False,
         separators=",.",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 COLUMNAS_ITEMS_ESPECIFICACIONES_TECNICAS = [
@@ -1225,7 +1225,7 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
                 st.success(f"Contratación «{borrador['nombre_contratacion']}» cargada.")
                 st.rerun()
 
-    if col_guardar.button(":material/save: Guardar progreso", key="especificaciones_tecnicas_guardar_borrador", use_container_width=True):
+    if col_guardar.button(":material/save: Guardar progreso", key="especificaciones_tecnicas_guardar_borrador", width="stretch"):
         nombre_contratacion = (st.session_state.get("especificaciones_tecnicas_objeto_contratacion") or "").strip()
         if not nombre_contratacion:
             st.error(
@@ -1246,7 +1246,7 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
                 st.success(f"Progreso guardado como «{nombre_contratacion}».")
                 st.rerun()
 
-    if col_nuevo.button(":material/note_add: Nueva contratación", key="especificaciones_tecnicas_nueva_contratacion", use_container_width=True):
+    if col_nuevo.button(":material/note_add: Nueva contratación", key="especificaciones_tecnicas_nueva_contratacion", width="stretch"):
         _reiniciar_estado_especificaciones_tecnicas()
         st.success("Formulario en blanco: lista para una nueva contratación.")
         st.rerun()
@@ -1257,7 +1257,7 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
     if col_eliminar.button(
         ":material/delete: Eliminar contratación",
         key="especificaciones_tecnicas_eliminar_borrador",
-        use_container_width=True,
+        width="stretch",
         disabled=st.session_state.especificaciones_tecnicas_borrador_id is None,
     ):
         st.session_state.especificaciones_tecnicas_confirmar_eliminar_borrador = True
@@ -1803,7 +1803,7 @@ def render_formularios_y_registro() -> None:
                 df_editado = st.data_editor(
                     st.session_state.especificaciones_tecnicas_items_df,
                     num_rows="dynamic",
-                    use_container_width=True,
+                    width="stretch",
                     key=f"especificaciones_tecnicas_data_editor_{st.session_state.especificaciones_tecnicas_items_editor_version}",
                     column_order=COLUMNAS_VISIBLES_ITEMS_ESPECIFICACIONES_TECNICAS,
                     column_config={
@@ -1855,7 +1855,7 @@ def render_formularios_y_registro() -> None:
                 df_items_visible.style.format(
                     {"Valor Unitario": formatear_moneda_ec, "Valor Total": formatear_moneda_ec}
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -1906,7 +1906,7 @@ def render_formularios_y_registro() -> None:
             st.session_state.especificaciones_tecnicas_cpc_df = st.data_editor(
                 st.session_state.especificaciones_tecnicas_cpc_df,
                 num_rows="dynamic",
-                use_container_width=True,
+                width="stretch",
                 key="especificaciones_tecnicas_cpc_editor",
             )
             st.text_input(
