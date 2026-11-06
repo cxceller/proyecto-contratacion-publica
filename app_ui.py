@@ -1337,92 +1337,77 @@ def render_grafico_estado_clic(registros: list[dict]) -> str | None:
     return puntos[0]["y"] if puntos else None
 
 
-# Etapas secuenciales del pipeline de contratacion, en orden de avance --
-# ver render_grafico_funnel_pipeline. "Desierta" NO es una etapa del
-# pipeline (un proceso Desierto no "avanza" a ningun estado posterior):
-# se muestra aparte, como fuga.
+# Etapas del pipeline de contratacion en el ORDEN REAL del flujo SERCOP (de la mas temprana a Finalizada):
+# se publica y se responden preguntas -> se entregan propuestas -> se convalidan errores -> por adjudicar ->
+# adjudicada -> registro del contrato -> ejecucion -> recepcion -> finalizada.
 ETAPAS_PIPELINE_CONTRATACION = [
-    "En Recepción",
+    "Preguntas, Respuestas y Aclaraciones",
+    "Entrega de Propuesta",
+    "Convalidación de Errores",
+    "Por Adjudicar",
     "Adjudicada",
     "Adjudicado - Registro de Contratos",
     "Ejecución de Contrato",
+    "En Recepción",
     "Finalizada",
 ]
-# Familia de azules del mas oscuro (etapa inicial) al mas claro (etapa
-# final) -- mismo criterio "familia azul" que el resto de la paleta de
-# datos (PALETA_DATOS), pero en un degrade fijo de 5 pasos pensado para
-# que el embudo se lea de mas intenso a mas suave.
-COLORES_FUNNEL_PIPELINE = ["#0f3d75", "#1a5aa8", "#2a78d6", "#6fa8dc", "#cfe0f5"]
+# Estados de "fuga": el proceso sale del flujo y no avanza a ninguna etapa posterior.
+ESTADOS_FUGA_PIPELINE = ["Desierta", "Cancelado", "Suspendido", "Terminado Unilateralmente"]
 
 
-def render_grafico_funnel_pipeline(registros: list[dict]) -> None:
-    """Embudo (funnel) del pipeline de contratacion: como avanzan los
-    procesos por las etapas de ETAPAS_PIPELINE_CONTRATACION. "Desierta"
-    no es una etapa del pipeline (un proceso declarado desierto no
-    avanza a ningun estado posterior) -- se muestra aparte, en una
-    tarjeta en color critico, como "fuga" del pipeline en vez de
-    mezclarse con las barras del embudo."""
+def _conteos_por_estado(registros: list[dict]) -> dict[str, int]:
+    """Procesos por estado con clave normalizada (sin tildes/mayusculas): el dato crudo no siempre trae la
+    misma grafia que las listas de etapas."""
     conteos: dict[str, int] = {}
     for r in registros:
-        estado = (r.get("estado") or "").strip()
-        if estado:
-            conteos[estado] = conteos.get(estado, 0) + 1
+        clave = _normalizar_texto_provincia(r.get("estado") or "")
+        if clave:
+            conteos[clave] = conteos.get(clave, 0) + 1
+    return conteos
 
-    valores_pipeline = [conteos.get(etapa, 0) for etapa in ETAPAS_PIPELINE_CONTRATACION]
-    conteo_desierta = conteos.get("Desierta", 0)
-    if not any(valores_pipeline) and not conteo_desierta:
+
+def render_grafico_pipeline(registros: list[dict]) -> None:
+    """Pipeline de contratacion como barras horizontales en el orden real del flujo (arriba la etapa mas
+    temprana, abajo Finalizada). Las barras de "fuga" (Desierta, Cancelado, Suspendido, Terminado
+    Unilateralmente) van en el MISMO grafico, debajo y en rojo, para leer de un vistazo cuantos procesos
+    avanzaron y cuantos se perdieron -- sin tarjeta aparte ni huecos."""
+    conteos = _conteos_por_estado(registros)
+    etapas = [(e, conteos.get(_normalizar_texto_provincia(e), 0)) for e in ETAPAS_PIPELINE_CONTRATACION]
+    fugas = [(e, conteos.get(_normalizar_texto_provincia(e), 0)) for e in ESTADOS_FUGA_PIPELINE]
+    total = sum(v for _, v in etapas + fugas)
+    if not total:
         st.info("No hay datos para graficar con los filtros actuales.")
         return
 
-    col_funnel, col_fuga = st.columns([3, 1])
-    with col_funnel:
-        st.markdown("**Pipeline de Contratación**")
-        fig = go.Figure(
-            go.Funnel(
-                y=ETAPAS_PIPELINE_CONTRATACION,
-                x=valores_pipeline,
-                marker=dict(color=COLORES_FUNNEL_PIPELINE),
-                # Solo el valor dentro de la barra: la etapa ya se lee en el
-                # eje Y (automargin, abajo). Antes "value+label" metia
-                # nombres largos como "Adjudicado - Registro de Contratos"
-                # en barras estrechas y se solapaban/cortaban.
-                textinfo="value",
-                textposition="auto",
-                # Texto por barra segun su fondo (contraste medido): blanco
-                # sobre los 3 azules oscuros (4.4-10.8:1), tinta sobre los 2
-                # claros (7.8-14.7:1). Antes: tinta sobre #0f3d75 = 1.8:1,
-                # ilegible. Si Plotly mueve el valor fuera de una barra
-                # demasiado estrecha, sale en tinta sobre el lienzo claro.
-                insidetextfont=dict(
-                    size=14,
-                    color=["#FFFFFF", "#FFFFFF", "#FFFFFF", COLOR_TEXTO_EJE, COLOR_TEXTO_EJE],
-                ),
-                outsidetextfont=dict(size=14, color=COLOR_TEXTO_EJE),
-                connector=dict(line=dict(color=COLOR_GRID, width=1)),
-                # %{y}/%{x} (no %{label}/%{value}): con go.Funnel, la version
-                # de Plotly.js que empaqueta Streamlit no sustituye los alias
-                # %{label}/%{value} en hovertemplate (quedan literales en el
-                # tooltip, confirmado pasando el cursor sobre el grafico en
-                # vivo) aunque textinfo="value+label" (mecanismo distinto,
-                # sin plantilla) si funciona -- %{y}/%{x} son los nombres de
-                # atributo reales de este trace (y=ETAPAS_PIPELINE_CONTRATACION,
-                # x=valores_pipeline) y si se interpolan.
-                hovertemplate="<b>%{y}</b><br>%{x} proceso(s)<extra></extra>",
-            )
+    st.markdown("**Pipeline de Contratación**")
+    filas = etapas + fugas
+    colores = [COLOR_SIDEBAR_ACENTO] * len(etapas) + [COLOR_ESTADO_CRITICO] * len(fugas)
+    textos = [f"{formatear_numero_ec(v, 0)} ({formatear_porcentaje_ec(v / total * 100)})" for _, v in filas]
+    fig = go.Figure(
+        go.Bar(
+            x=[v for _, v in filas],
+            y=[e for e, _ in filas],
+            orientation="h",
+            marker=dict(color=colores, cornerradius=4, line=dict(width=0)),
+            text=textos,
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=13, color=COLOR_TEXTO_EJE),
+            hovertemplate="<b>%{y}</b><br>%{x} proceso(s)<extra></extra>",
         )
-        _aplicar_estilo_base(fig, altura=360)
-        fig.update_yaxes(automargin=True, tickfont=dict(size=13, color=COLOR_TEXTO_EJE))
-        mostrar_grafico(fig, width="stretch", config={"displayModeBar": False})
-    with col_fuga:
-        st.markdown("**Fuga del pipeline**")
-        render_kpi_card(
-            col_fuga,
-            "Desierta",
-            formatear_numero_ec(conteo_desierta),
-            icono="block",
-            modificador=_clase_kpi_estado("Desierta"),
-            ayuda="Procesos declarados desiertos: nunca avanzaron a ninguna etapa del pipeline.",
-        )
+    )
+    # Separador entre el flujo normal y las fugas.
+    fig.add_hline(y=len(etapas) - 0.5, line=dict(color=COLOR_GRID, width=1, dash="dot"))
+    fig.update_yaxes(autorange="reversed", showgrid=False, title=None, tickfont=dict(size=13, color=COLOR_TEXTO_EJE))
+    fig.update_xaxes(showgrid=True, gridcolor=COLOR_GRID, zeroline=False, title=None, rangemode="tozero")
+    _aplicar_estilo_base(fig, altura=max(360, 34 * len(filas)))
+    fig.update_layout(margin=dict(l=10, r=70, t=10, b=10))
+    mostrar_grafico(fig, width="stretch", config={"displayModeBar": False})
+    perdidos = sum(v for _, v in fugas)
+    st.caption(
+        f"Azul: etapas del flujo ({formatear_numero_ec(total - perdidos, 0)} procesos). Rojo: fuga del pipeline "
+        f"({formatear_numero_ec(perdidos, 0)} procesos, {formatear_porcentaje_ec(perdidos / total * 100)})."
+    )
 
 
 def render_grafico_mensual(df: pd.DataFrame):
@@ -3408,10 +3393,10 @@ def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None
 
                 st.divider()
                 # Usa registros_filtrados (solo filtro de Año), NO registros_finales
-                # (que ademas aplicaria el filtro de estado del clic): el funnel
+                # (que ademas aplicaria el filtro de estado del clic): el pipeline
                 # existe para mostrar el pipeline COMPLETO de una sola vez, encadenarlo
                 # al clic lo colapsaria a una sola etapa, perdiendo el sentido.
-                render_grafico_funnel_pipeline(registros_filtrados)
+                render_grafico_pipeline(registros_filtrados)
                 st.divider()
 
                 estado_filtro = st.session_state.get("filtro_estado_click")
