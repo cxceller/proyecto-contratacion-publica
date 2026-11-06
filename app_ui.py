@@ -24,6 +24,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
+from estilos_sercop import aplicar_estilos
 from scripts.dashboard_analitico import construir_datos_gantt_procesos, construir_datos_treemap_presupuesto
 from scripts.formato_ec import (
     formatear_moneda_ec,
@@ -46,14 +47,15 @@ from ui.tema import (
     COLOR_BARRA_DESTACADA,
     COLOR_ESTADO_AVISO,
     COLOR_ESTADO_CRITICO,
+    COLOR_ESTADO_CRITICO_TEXTO,
     COLOR_ESTADO_OK,
+    COLOR_ESTADO_OK_TEXTO,
     COLOR_GRID,
     COLOR_LIENZO,
-    COLOR_NEUTRO_BORDE,
+    COLOR_NEUTRO_TEXTO_INSIGNIA,
     COLOR_NEUTRO_TEXTO_SUAVE,
     COLOR_PELIGRO,
     COLOR_SIDEBAR_ACENTO,
-    COLOR_SIDEBAR_FONDO,
     COLOR_SIDEBAR_TEXTO,
     COLOR_SIDEBAR_TEXTO_ACTIVO,
     COLOR_TEXTO_EJE,
@@ -444,7 +446,10 @@ def render_filtros_dashboard(df: pd.DataFrame, key_prefix: str = "") -> pd.DataF
     solo la usa render_pagina_dashboard, pero el prefijo se mantiene por si
     algun otro caller la reusa mas adelante (evita que dos instancias
     compartan keys y una seleccion pise a la otra)."""
-    col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1.5, 1])
+    # Año/Mes necesitan ancho para "(Todos)" sin cortarse; vertical_alignment
+    # "bottom" alinea el boton Limpiar con la base de los selectores (antes un
+    # st.write("") de relleno).
+    col1, col2, col3, col4, col5 = st.columns([1.2, 1.2, 2.2, 2, 1.4], vertical_alignment="bottom")
 
     if df.empty:
         col1.selectbox("Año", ["(Todos)"], disabled=True)
@@ -476,7 +481,6 @@ def render_filtros_dashboard(df: pd.DataFrame, key_prefix: str = "") -> pd.DataF
     )
 
     with col5:
-        st.write("")  # alinea verticalmente el boton con los selectbox de arriba
         boton_limpiar_filtros(
             [f"{key_prefix}{clave}" for clave in CLAVES_FILTRO_DASHBOARD],
             key=f"{key_prefix}dashboard_limpiar_filtros",
@@ -524,7 +528,7 @@ def _aplicar_estilo_base(fig: go.Figure, altura: int = 380) -> None:
     )
 
 
-def _span_icono_material(nombre_icono: str, color: str, tamano_rem: float = 1.05) -> str:
+def _span_icono_material(nombre_icono: str, color: str | None = None, tamano_rem: float = 1.05) -> str:
     """Renderiza un icono de Material Symbols como ligature (el texto del
     nombre del icono se sustituye por el glifo cuando se le aplica la
     fuente correcta), el mismo mecanismo estandar de Google que usa
@@ -549,15 +553,50 @@ def _span_icono_material(nombre_icono: str, color: str, tamano_rem: float = 1.05
     vez del icono. Se confirmo que hasta los propios iconos :material/xxx:
     del sidebar de Streamlit sufren el mismo problema (no tienen esta
     proteccion) -- no es algo que se pueda arreglar ahi (es codigo de
-    Streamlit, no de este archivo), pero si se puede evitar aca."""
+    Streamlit, no de este archivo), pero si se puede evitar aca.
+
+    `color` es opcional: sin el, el icono hereda el color del CSS (en las
+    tarjetas KPI, `--kpi-c` del modificador kpi--*, ver estilos_sercop.py)."""
+    estilo_color = f"color:{html.escape(color, quote=True)}; " if color else ""
     return (
         f'<span translate="no" class="notranslate" '
         f'style="font-family:\'Material Symbols Rounded\'; font-weight:normal; '
         f'font-style:normal; font-size:{tamano_rem}rem; line-height:1; letter-spacing:normal; '
         f'text-transform:none; display:inline-block; white-space:nowrap; word-wrap:normal; '
         f'direction:ltr; -webkit-font-feature-settings:\'liga\'; -webkit-font-smoothing:antialiased; '
-        f'color:{color}; vertical-align:middle;">{nombre_icono}</span>'
+        f'{estilo_color}vertical-align:middle;">{html.escape(nombre_icono)}</span>'
     )
+
+
+# Modificador de color de las tarjetas KPI (clases de estilos_sercop.py: solo
+# definen --kpi-c / --kpi-soft). Clave = nombre COMPLETO del estado (ver
+# NOMBRES_ESTADO_COMPLETOS); un estado fuera del mapa usa CLASE_KPI_DEFECTO.
+CLASE_KPI_DEFECTO = "kpi--total"
+CLASE_KPI_POR_ESTADO = {
+    "Total": "kpi--total",
+    "Adjudicada": "kpi--ok",
+    "Finalizada": "kpi--ok",
+    "Adjudicado - Registro de Contratos": "kpi--ok",
+    "Ejecución de Contrato": "kpi--info",
+    "En Recepción": "kpi--info",
+    "Suspendido": "kpi--warn",
+    "Convalidación de Errores": "kpi--warn",
+    "Preguntas y Respuestas": "kpi--warn",
+    "Preguntas/Respuestas": "kpi--warn",
+    "Desierta": "kpi--danger",
+    "Cancelado": "kpi--danger",
+}
+_CLASES_KPI_VALIDAS = frozenset(CLASE_KPI_POR_ESTADO.values())
+
+# Etiqueta abreviada SOLO para mostrar en la tarjeta (los datos y filtros
+# siguen usando el nombre completo del estado).
+ETIQUETA_TARJETA_ESTADO = {"Ejecución de Contrato": "En ejecución"}
+
+
+def _clase_kpi_estado(nombre_estado: str) -> str:
+    """Clase modificadora de color para el estado `nombre_estado` (nombre
+    completo); estados fuera de CLASE_KPI_POR_ESTADO caen en kpi--total."""
+    return CLASE_KPI_POR_ESTADO.get(nombre_estado, CLASE_KPI_DEFECTO)
 
 
 def _tarjeta_kpi_html(
@@ -565,56 +604,42 @@ def _tarjeta_kpi_html(
     valor: str,
     ayuda: str | None = None,
     icono: str | None = None,
-    color_icono: str | None = None,
     insignia: str | None = None,
+    modificador: str = CLASE_KPI_DEFECTO,
 ) -> str:
-    """Tarjeta KPI en HTML puro (no st.metric): mismo fondo/tipografia/
-    bordes en toda la app (Dashboard, Procesos y Municipio de Guayaquil,
-    vía render_kpi_card mas abajo), en vez de la mezcla anterior de
-    st.metric (texto plano) en unas paginas y esta tarjeta HTML en otras.
-    El fondo se fuerza por inline-style con COLOR_LIENZO, igual que
-    plot_bgcolor/paper_bgcolor de los graficos, para que ambos recuadros
-    hagan juego sin depender del tema claro/oscuro de Streamlit.
+    """Tarjeta KPI en HTML puro (no st.metric), mismo componente en toda la
+    app (Dashboard, Procesos y Municipio de Guayaquil, via render_kpi_card).
 
-    `icono`/`color_icono` son opcionales (la mayoria de las tarjetas KPI --
-    Procesos, Presupuesto Total, Valor Adjudicado -- no representan un
-    estado y no llevan icono): cuando se indican, se agregan ANTES de la
-    etiqueta de texto (nunca en su reemplazo, para no depender solo del
-    color/icono para distinguir estados -- ver render_contadores, el unico
-    caller que los pasa hoy).
+    Estructura que espera estilos_sercop.py (selectores `> div:nth-child(n)`):
+    div.sercop-kpi-card con 1) etiqueta (+ icono), 2) valor, 3) opcional, un
+    div con un <span> que lleva la insignia (% de participacion). Colores,
+    sombra, radio, padding y la pildora de la insignia viven en ese CSS; el
+    color semantico lo da `modificador` (kpi--ok/info/warn/danger/total, ver
+    CLASE_KPI_POR_ESTADO). Inline queda solo el layout (flex, min-height,
+    alineacion de la insignia al fondo).
 
-    `insignia` es un dato secundario opcional (hoy, el % de participacion
-    de render_contadores) que se muestra como una pildora pequeña y
-    discreta DEBAJO del valor principal -- nunca junto al numero grande,
-    para no competir con el, y en gris neutro (no en el color semantico
-    del icono/estado) para no sumar un significado nuevo de color.
-
-    Todo el HTML se arma en UNA sola linea (sin saltos de linea/lineas en
-    blanco internas): st.markdown(unsafe_allow_html=True) usa un parser
-    de Markdown, y una linea en blanco A MITAD del bloque (ej. insertando
-    aca un f-string multilinea con su propio salto de linea inicial,
-    como tenia antes la insignia) corta el bloque HTML en dos -- todo lo
-    que queda despues de esa linea en blanco deja de reconocerse como
-    HTML y se muestra como texto plano crudo con las etiquetas visibles."""
-    atributo_titulo = f' title="{html.escape(ayuda)}"' if ayuda else ""
-    icono_html = _span_icono_material(icono, color_icono) + " " if icono else ""
+    Todo el HTML se arma en UNA sola linea (sin lineas en blanco internas):
+    st.markdown(unsafe_allow_html=True) usa un parser de Markdown, y una
+    linea en blanco a mitad del bloque lo corta en dos y el resto se
+    muestra como texto crudo."""
+    # Seguridad (XSS): todo dato dinamico se escapa; formatear_numero_ec
+    # devuelve str(valor) tal cual si no es numerico. `modificador` se valida
+    # contra la lista blanca (va a un atributo class).
+    etiqueta = html.escape(str(etiqueta))
+    valor = html.escape(str(valor))
+    if modificador not in _CLASES_KPI_VALIDAS:
+        modificador = CLASE_KPI_DEFECTO
+    atributo_titulo = f' title="{html.escape(ayuda, quote=True)}"' if ayuda else ""
+    icono_html = _span_icono_material(icono) + " " if icono else ""
     insignia_html = (
-        f'<div style="margin-top:auto;padding-top:0.4rem;">'
-        f'<span style="display:inline-block;padding:0.15rem 0.6rem;'
-        f"border-radius:999px;background-color:{COLOR_NEUTRO_BORDE};"
-        f"color:{COLOR_NEUTRO_TEXTO_SUAVE};font-size:0.75rem;font-weight:600;"
-        f'line-height:1.4;">{html.escape(insignia)}</span></div>'
-        if insignia
-        else ""
+        f'<div style="margin-top:auto;"><span>{html.escape(insignia)}</span></div>' if insignia else ""
     )
     return (
-        f'<div{atributo_titulo} style="background-color:{COLOR_LIENZO};'
-        f"border:1px solid {COLOR_NEUTRO_BORDE};border-radius:8px;box-sizing:border-box;"
-        f"padding:1.25rem 1.5rem;margin-bottom:0.5rem;"
-        f'display:flex;flex-direction:column;min-height:{ALTURA_KPI_REM}rem;">'
-        f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};'
-        f'min-height:2.5rem;">{icono_html}{etiqueta}</div>'
-        f'<div style="font-size:2rem;font-weight:600;color:{COLOR_TEXTO_EJE};line-height:1.3;">{valor}</div>'
+        f'<div{atributo_titulo} class="sercop-kpi-card {modificador}" '
+        f'style="box-sizing:border-box;margin-bottom:0.5rem;display:flex;flex-direction:column;'
+        f'min-height:{ALTURA_KPI_REM}rem;">'
+        f"<div>{icono_html}{etiqueta}</div>"
+        f"<div>{valor}</div>"
         f"{insignia_html}"
         f"</div>"
     )
@@ -626,17 +651,16 @@ def render_kpi_card(
     valor: str,
     ayuda: str | None = None,
     icono: str | None = None,
-    color_icono: str | None = None,
     insignia: str | None = None,
+    modificador: str = CLASE_KPI_DEFECTO,
 ) -> None:
     """Tarjeta KPI reutilizable: mismo componente para Dashboard
     (render_kpis_dashboard), Procesos y Municipio de Guayaquil
-    (render_contadores, render_metricas_resumen), en vez de que cada
-    pagina eligiera su propio estilo (st.metric vs. tarjeta HTML).
-    `icono`/`color_icono`/`insignia` son opcionales -- ver
+    (render_contadores, render_metricas_resumen). `icono`/`insignia` son
+    opcionales y `modificador` elige el color semantico -- ver
     _tarjeta_kpi_html."""
     columna.markdown(
-        _tarjeta_kpi_html(etiqueta, valor, ayuda, icono=icono, color_icono=color_icono, insignia=insignia),
+        _tarjeta_kpi_html(etiqueta, valor, ayuda, icono=icono, insignia=insignia, modificador=modificador),
         unsafe_allow_html=True,
     )
 
@@ -680,10 +704,9 @@ def _inyectar_estilos_kpi_tendencia() -> None:
     st.markdown(
         f"""
         <style>
+        /* Fondo/borde/radio/sombra/hover: los pone estilos_sercop.py (regla
+        :has(stPlotlyChart):has(stMarkdown)); aca solo el layout. */
         div[class*="st-key-kpi_tendencia_"] {{
-            background-color: {COLOR_LIENZO};
-            border: 1px solid {COLOR_NEUTRO_BORDE};
-            border-radius: 8px;
             padding: 1.25rem 1.5rem 0.75rem 1.5rem;
             margin-bottom: 0.5rem;
             min-height: {ALTURA_KPI_REM}rem;
@@ -782,27 +805,35 @@ def render_kpi_card_tendencia(
     with columna:
         clave = "kpi_tendencia_" + re.sub(r"[^a-z0-9]+", "_", etiqueta.lower()).strip("_")
         with st.container(key=clave):
-            atributo_titulo = f' title="{html.escape(ayuda)}"' if ayuda else ""
+            # Seguridad (XSS): ver _tarjeta_kpi_html.
+            etiqueta_html = html.escape(str(etiqueta))
+            valor_html = html.escape(str(valor))
+            atributo_titulo = f' title="{html.escape(ayuda, quote=True)}"' if ayuda else ""
             badge_html = ""
             if variacion_pct is not None:
                 positivo = variacion_pct >= 0
                 flecha = "↑" if positivo else "↓"
+                # Fondo = tinte (22 de alfa) del color semantico; texto = su
+                # variante oscura, para superar AA 4.5:1 (el color base solo
+                # daba ~3-4:1 sobre su propio tinte).
                 if sentido == "neutro":
-                    color = COLOR_NEUTRO_TEXTO_SUAVE
+                    color, color_texto = COLOR_NEUTRO_TEXTO_SUAVE, COLOR_NEUTRO_TEXTO_INSIGNIA
+                elif positivo:
+                    color, color_texto = COLOR_ESTADO_OK, COLOR_ESTADO_OK_TEXTO
                 else:
-                    color = COLOR_ESTADO_OK if positivo else COLOR_ESTADO_CRITICO
+                    color, color_texto = COLOR_ESTADO_CRITICO, COLOR_ESTADO_CRITICO_TEXTO
                 badge_html = (
                     f'<span style="display:inline-block;padding:0.15rem 0.6rem;'
                     f"border-radius:999px;background-color:{color}22;"
-                    f'color:{color};font-size:0.75rem;font-weight:700;line-height:1.4;">'
+                    f'color:{color_texto};font-size:0.75rem;font-weight:700;line-height:1.4;">'
                     f"{flecha} {abs(variacion_pct):.1f}%</span>"
                 )
             st.markdown(
                 f'<div{atributo_titulo}>'
                 f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};'
-                f'min-height:2.5rem;">{etiqueta}</div>'
+                f'min-height:2.5rem;">{etiqueta_html}</div>'
                 f'<div style="font-size:2rem;font-weight:600;color:{COLOR_TEXTO_EJE};'
-                f'line-height:1.3;">{valor}</div>'
+                f'line-height:1.3;">{valor_html}</div>'
                 f'<div style="min-height:1.6rem;margin-top:0.2rem;">{badge_html}</div>'
                 f"</div>",
                 unsafe_allow_html=True,
@@ -844,10 +875,8 @@ def _inyectar_estilos_gauge_ahorro() -> None:
     st.markdown(
         f"""
         <style>
+        /* Aspecto de tarjeta: estilos_sercop.py (ver arriba). Solo layout. */
         div[class*="st-key-kpi_gauge_ahorro"] {{
-            background-color: {COLOR_LIENZO};
-            border: 1px solid {COLOR_NEUTRO_BORDE};
-            border-radius: 8px;
             padding: 0.75rem 1rem 0 1rem;
             margin-bottom: 0.5rem;
             min-height: {ALTURA_KPI_REM}rem;
@@ -981,7 +1010,7 @@ def render_kpis_dashboard(df: pd.DataFrame):
     )
     render_kpi_card_tendencia(
         col3,
-        "Presupuesto en Contratación (filtro actual)",
+        "En contratación (filtro actual)",
         formatear_moneda_ec(valor_adjudicado_total),
         serie=serie_contratacion,
         variacion_pct=_variacion_pct_ultimo_periodo(serie_contratacion),
@@ -1118,8 +1147,22 @@ def render_grafico_funnel_pipeline(registros: list[dict]) -> None:
                 y=ETAPAS_PIPELINE_CONTRATACION,
                 x=valores_pipeline,
                 marker=dict(color=COLORES_FUNNEL_PIPELINE),
-                textinfo="value+label",
-                textfont=dict(color=COLOR_TEXTO_EJE),
+                # Solo el valor dentro de la barra: la etapa ya se lee en el
+                # eje Y (automargin, abajo). Antes "value+label" metia
+                # nombres largos como "Adjudicado - Registro de Contratos"
+                # en barras estrechas y se solapaban/cortaban.
+                textinfo="value",
+                textposition="auto",
+                # Texto por barra segun su fondo (contraste medido): blanco
+                # sobre los 3 azules oscuros (4.4-10.8:1), tinta sobre los 2
+                # claros (7.8-14.7:1). Antes: tinta sobre #0f3d75 = 1.8:1,
+                # ilegible. Si Plotly mueve el valor fuera de una barra
+                # demasiado estrecha, sale en tinta sobre el lienzo claro.
+                insidetextfont=dict(
+                    size=14,
+                    color=["#FFFFFF", "#FFFFFF", "#FFFFFF", COLOR_TEXTO_EJE, COLOR_TEXTO_EJE],
+                ),
+                outsidetextfont=dict(size=14, color=COLOR_TEXTO_EJE),
                 connector=dict(line=dict(color=COLOR_GRID, width=1)),
                 # %{y}/%{x} (no %{label}/%{value}): con go.Funnel, la version
                 # de Plotly.js que empaqueta Streamlit no sustituye los alias
@@ -1141,7 +1184,7 @@ def render_grafico_funnel_pipeline(registros: list[dict]) -> None:
             "Desierta",
             formatear_numero_ec(conteo_desierta),
             icono="block",
-            color_icono=COLOR_ESTADO_CRITICO,
+            modificador=_clase_kpi_estado("Desierta"),
             ayuda="Procesos declarados desiertos: nunca avanzaron a ninguna etapa del pipeline.",
         )
 
@@ -1605,10 +1648,30 @@ def render_gantt_procesos(df: pd.DataFrame, limite: int = 25):
 
 
 def _tabla_estatica(df_mostrar: pd.DataFrame) -> pd.DataFrame:
-    """Prepara un DataFrame para `st.table`: sin indice visible (imita el
-    `hide_index=True` que tenian estas tablas con `st.dataframe`)."""
+    """Prepara un DataFrame para `st.table`. st.table no tiene `hide_index`:
+    se reinicia el indice y se deja vacio ("") para que no muestre 0,1,2...;
+    la columna de indice resultante la oculta estilos_sercop.py."""
     tabla = df_mostrar.reset_index(drop=True).copy()
     tabla.index = [""] * len(tabla)
+    return tabla
+
+
+def _formatear_tabla_resumen(
+    df_resumen: pd.DataFrame,
+    enteros: tuple[str, ...] = (),
+    porcentajes: tuple[str, ...] = (),
+    montos: tuple[str, ...] = (),
+) -> pd.DataFrame:
+    """Formato de Ecuador consistente para las tablas de resumen: `enteros`
+    sin decimales ("1.234"), `porcentajes` con 1 decimal ("12,3%", valores ya
+    en escala 0-100) y `montos` como "$ 1.234.567,89". Devuelve una copia."""
+    tabla = df_resumen.copy()
+    for columna in enteros:
+        tabla[columna] = tabla[columna].map(lambda v: formatear_numero_ec(v, 0))
+    for columna in porcentajes:
+        tabla[columna] = tabla[columna].map(formatear_porcentaje_ec)
+    for columna in montos:
+        tabla[columna] = tabla[columna].map(formatear_moneda_ec)
     return tabla
 
 
@@ -1618,7 +1681,9 @@ def render_tablas_resumen(df: pd.DataFrame):
         st.info("No hay datos para resumir con los filtros actuales.")
         return
 
-    col1, col2 = st.columns(2)
+    # La tabla por estado tiene 4 columnas (Estado, Procesos, % Participación,
+    # Presupuesto Total) y no cabia en media pantalla: se le da mas ancho.
+    col1, col2 = st.columns([3, 2])
 
     resumen_estado = (
         df.groupby("estado", as_index=False)
@@ -1628,15 +1693,20 @@ def render_tablas_resumen(df: pd.DataFrame):
     )
     # "% Participación" = Procesos de ese estado / total de procesos de ESTA
     # tabla (no del df completo, aunque hoy coinciden -- resumen_estado ya
-    # agrupa el 100% de `df`) -- se calcula antes de formatear "Presupuesto
-    # Total" como texto, para sumar sobre el numero crudo.
+    # agrupa el 100% de `df`) -- se calcula antes de formatear, sobre el
+    # numero crudo.
     total_procesos_estado = resumen_estado["Procesos"].sum()
     resumen_estado.insert(
         resumen_estado.columns.get_loc("Procesos") + 1,
         "% Participación",
-        (resumen_estado["Procesos"] / total_procesos_estado * 100).map(lambda v: f"{v:.1f}%"),
+        resumen_estado["Procesos"] / total_procesos_estado * 100,
     )
-    resumen_estado["Presupuesto Total"] = resumen_estado["Presupuesto Total"].map(formatear_moneda_ec)
+    resumen_estado = _formatear_tabla_resumen(
+        resumen_estado,
+        enteros=("Procesos",),
+        porcentajes=("% Participación",),
+        montos=("Presupuesto Total",),
+    )
     col1.caption("Por Estado del Proceso")
     # st.table (HTML estatico) en vez de st.dataframe: el componente
     # interactivo (glide-data-grid) a veces queda en negro/vacio hasta que
@@ -1652,7 +1722,7 @@ def render_tablas_resumen(df: pd.DataFrame):
         .rename(columns={"tipo_compra": "Tipo de Compra", "Presupuesto_Total": "Presupuesto Total"})
         .sort_values("Presupuesto Total", ascending=False)
     )
-    resumen_tipo["Presupuesto Total"] = resumen_tipo["Presupuesto Total"].map(formatear_moneda_ec)
+    resumen_tipo = _formatear_tabla_resumen(resumen_tipo, enteros=("Procesos",), montos=("Presupuesto Total",))
     col2.caption("Por Tipo de Compra (inferido del Objeto del Proceso)")
     col2.table(_tabla_estatica(resumen_tipo))
 
@@ -1753,7 +1823,7 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
                 with st.container(key="kpi_gauge_ahorro"):
                     st.markdown(
                         f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};'
-                        f'padding-top:0.35rem;" title="{html.escape(ayuda_ahorro)}">% de Ahorro General</div>',
+                        f'padding-top:0.35rem;" title="{html.escape(ayuda_ahorro, quote=True)}">% de Ahorro General</div>',
                         unsafe_allow_html=True,
                     )
                     st.plotly_chart(
@@ -2084,15 +2154,18 @@ def _insignia_participacion(cantidad: int, total: int) -> str | None:
 
 
 def _render_tarjeta_estado(columna, estado_categoria: str, conteos: dict, total: int) -> None:
-    etiqueta_mostrar = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
-    icono, color_icono = ICONOS_ESTADO.get(estado_categoria, (None, None))
+    nombre_completo = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
+    # Etiqueta abreviada solo en la tarjeta (ej. "En ejecución"); el color
+    # sale del nombre completo, no del texto mostrado.
+    etiqueta_mostrar = ETIQUETA_TARJETA_ESTADO.get(nombre_completo, nombre_completo)
+    icono, _color = ICONOS_ESTADO.get(estado_categoria, (None, None))
     cantidad = conteos[estado_categoria]
     render_kpi_card(
         columna,
         etiqueta_mostrar,
         formatear_numero_ec(cantidad),
         icono=icono,
-        color_icono=color_icono,
+        modificador=_clase_kpi_estado(nombre_completo),
         insignia=_insignia_participacion(cantidad, total),
     )
 
@@ -2275,6 +2348,111 @@ def _inyectar_precarga_fuente_iconos() -> None:
     )
 
 
+def _inyectar_estilos_complementarios() -> None:
+    """CSS que estilos_sercop.py (aplicar_estilos, la fuente de verdad del
+    aspecto) NO cubre. Todo lo que ese archivo ya define -- tarjetas KPI,
+    selectbox, botones, expander, alertas, pestañas, tablas, sidebar -- se
+    quito de aca para no duplicar ni contradecirlo (antes: bloque
+    neumorfista). Queda:
+    - animacion de entrada de las tarjetas KPI (fill-mode `backwards`, no
+      `both`: con `both` el transform final de la animacion pisaria el
+      hover translateY de estilos_sercop.py),
+    - campos de texto/fecha con el mismo aspecto que sus selectbox,
+    - min-height y estado deshabilitado de los botones,
+    - spinner de carga (pildora con pulso suave),
+    - colapso de los contenedores invisibles de Streamlit que solo llevan
+      <style> o un iframe de altura 0 (cada uno reservaba ~1rem de gap
+      vertical y sumaban un hueco sobre el titulo de la pagina),
+    - prefers-reduced-motion.
+    Se inyecta ANTES de aplicar_estilos() (ver main) para que este gane en
+    la cascada. Variables (--card, --line-strong, --r-md, --accent...) vienen
+    de estilos_sercop.py."""
+    st.markdown(
+        f"""
+        <style>
+        .sercop-kpi-card {{
+            animation: sercop-entrada 0.3s ease-out backwards;
+        }}
+        @keyframes sercop-entrada {{
+            from {{ opacity: 0; transform: translateY(6px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+
+        /* BaseWeb (Streamlit < 1.6x) y React Aria (1.67): el contenedor visible del
+        text_input es el div que envuelve al <input>. */
+        [data-testid="stMain"] [data-testid="stTextInput"] [data-baseweb="input"],
+        [data-testid="stMain"] [data-testid="stTextInput"] div:has(> input),
+        [data-testid="stMain"] [data-testid="stDateInput"] [data-baseweb="input"] {{
+            background: var(--card);
+            border: 1px solid var(--line-strong);
+            border-radius: var(--r-md);
+            transition: border-color 0.25s, box-shadow 0.25s;
+        }}
+        [data-testid="stMain"] [data-testid="stTextInput"] [data-baseweb="input"]:focus-within,
+        [data-testid="stMain"] [data-testid="stTextInput"] div:has(> input):focus-within,
+        [data-testid="stMain"] [data-testid="stDateInput"] [data-baseweb="input"]:focus-within {{
+            border-color: var(--accent);
+            box-shadow: 0 0 0 4px var(--accent-soft);
+        }}
+
+        [data-testid="stMain"] .stButton > button,
+        [data-testid="stMain"] .stDownloadButton > button {{
+            min-height: 2.5rem;
+        }}
+        [data-testid="stMain"] .stButton > button:disabled {{
+            opacity: 0.55;
+        }}
+
+        [data-testid="stSpinner"] {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.5rem 1rem;
+            border-radius: 999px;
+            background-color: var(--card);
+            border: 1px solid var(--line);
+            color: {COLOR_NEUTRO_TEXTO_SUAVE};
+            animation: sercop-pulso 1.6s ease-in-out infinite;
+        }}
+        @keyframes sercop-pulso {{
+            0%, 100% {{ opacity: 1; }}
+            50% {{ opacity: 0.6; }}
+        }}
+
+        /* Hueco sobre el titulo: contenedores que solo llevan CSS/iframe
+        invisible salen del flujo (position:absolute, NO display:none: el
+        iframe de altura 0 sigue ejecutando su script). */
+        [data-testid="stElementContainer"]:has(> [data-testid="stMarkdown"] [data-testid="stMarkdownContainer"] > style:only-child),
+        [data-testid="stElementContainer"]:has(> [data-testid="stMarkdown"] [data-testid="stMarkdownContainer"] > link:only-child),
+        [data-testid="stElementContainer"]:has(iframe[height="0"]),
+        /* Streamlit 1.67 renderiza st.iframe (antes components.html) como <iframe data-testid="stIFrame">
+        sin atributo height: en esta app TODOS los ejecutar_html_invisible son de altura 0
+        (traduccion y revelado del sidebar). Si algun dia se agrega uno visible,
+        este selector hay que acotarlo. */
+        [data-testid="stElementContainer"]:has(> iframe[data-testid="stIFrame"]),
+        /* Streamlit >= ~1.6x envuelve cada elemento en un stLayoutWrapper que
+        sigue en el flujo (y suma su gap) aunque su hijo salga de el. */
+        [data-testid="stLayoutWrapper"]:has(> [data-testid="stElementContainer"] [data-testid="stMarkdownContainer"] > style:only-child),
+        [data-testid="stLayoutWrapper"]:has(> [data-testid="stElementContainer"] [data-testid="stMarkdownContainer"] > link:only-child),
+        [data-testid="stLayoutWrapper"]:has(> [data-testid="stElementContainer"] iframe[height="0"]) {{
+            position: absolute;
+            height: 0;
+            margin: 0;
+            overflow: hidden;
+        }}
+
+        @media (prefers-reduced-motion: reduce) {{
+            .sercop-kpi-card,
+            [data-testid="stSpinner"] {{
+                animation: none;
+            }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _inyectar_estilos_sidebar() -> None:
     """CSS del panel lateral de navegacion: fondo oscuro, texto claro y
     el item activo resaltado (boton `type="primary"`, con acento de color
@@ -2284,9 +2462,9 @@ def _inyectar_estilos_sidebar() -> None:
     st.markdown(
         f"""
         <style>
-        [data-testid="stSidebar"] {{
-            background-color: {COLOR_SIDEBAR_FONDO};
-        }}
+        /* Fondo del sidebar, radio/borde/peso de los botones, hover y estado
+        activo: los define estilos_sercop.py (aplicar_estilos) -- no se
+        repiten aca. */
         [data-testid="stSidebar"] * {{
             color: {COLOR_SIDEBAR_TEXTO};
         }}
@@ -2307,40 +2485,28 @@ def _inyectar_estilos_sidebar() -> None:
             font-size: 1.3rem;
         }}
         .sercop-nav-label {{
-            font-size: 0.72rem;
             font-weight: 700;
-            letter-spacing: 0.09em;
             color: {COLOR_SIDEBAR_TEXTO} !important;
             text-transform: uppercase;
             border-bottom: 2px solid {COLOR_SIDEBAR_ACENTO};
             padding-bottom: 0.6rem;
             margin-bottom: 0.85rem;
         }}
-        [data-testid="stSidebar"] .stButton > button {{
+        [data-testid="stSidebar"] .stButton > button,
+        [data-testid="stSidebar"] .stLinkButton > a {{
             background-color: transparent;
-            border: none;
-            border-left: 3px solid transparent;
-            border-radius: 4px;
             text-align: left;
-            justify-content: flex-start;
             color: {COLOR_SIDEBAR_TEXTO} !important;
-            font-weight: 600;
-            letter-spacing: 0.02em;
             padding: 0.55rem 0.8rem;
             margin-bottom: 0.15rem;
             box-shadow: none;
             width: 100%;
         }}
-        [data-testid="stSidebar"] .stButton > button:hover {{
-            background-color: rgba(255, 255, 255, 0.08);
+        [data-testid="stSidebar"] .stButton > button:hover,
+        [data-testid="stSidebar"] .stLinkButton > a:hover {{
             color: {COLOR_SIDEBAR_TEXTO_ACTIVO} !important;
         }}
-        [data-testid="stSidebar"] .stButton > button:focus:not(:active) {{
-            box-shadow: none;
-        }}
         [data-testid="stSidebar"] .stButton > button[kind="primary"] {{
-            background-color: rgba(255, 255, 255, 0.10);
-            border-left: 3px solid {COLOR_SIDEBAR_ACENTO};
             color: {COLOR_SIDEBAR_TEXTO_ACTIVO} !important;
         }}
         [data-testid="stSidebar"] hr {{
@@ -2362,7 +2528,7 @@ def _inyectar_estilos_sidebar() -> None:
             align-items: center;
         }}
         .st-key-nav_municipalidad_guayaquil [data-testid="stColumn"]:last-child {{
-            margin-left: -1rem;
+            margin-left: -0.5rem;
         }}
         .st-key-nav_municipalidad_guayaquil .stButton > button {{
             padding-left: 0;
@@ -3193,6 +3359,10 @@ def main():
     _deshabilitar_traduccion_automatica()
     _inyectar_precarga_fuente_iconos()
     _inyectar_estilos_sidebar()
+    _inyectar_estilos_complementarios()
+    # Ultimo CSS en inyectarse: estilos_sercop.py es la fuente de verdad del
+    # aspecto y debe ganar en la cascada sobre cualquier otro bloque de aca.
+    aplicar_estilos()
     _revelar_sidebar_cuando_cargue_fuente_iconos()
 
     if "resultados" not in st.session_state:

@@ -19,6 +19,13 @@ COLOR_SIDEBAR_ACENTO = "#2a78d6"  # azul primario (= primaryColor en .streamlit/
 COLOR_PELIGRO = "#d03b3b"
 COLOR_NEUTRO_BORDE = "#E2E8F0"
 COLOR_NEUTRO_TEXTO_SUAVE = "#64748B"
+# Variantes de texto para insignias/porcentajes sobre fondos tintados:
+# COLOR_NEUTRO_TEXTO_SUAVE sobre COLOR_NEUTRO_BORDE da ~3.6:1 (no cumple AA
+# 4.5:1); estas tres superan 4.5:1 sobre su fondo (ver
+# _tarjeta_kpi_html / render_kpi_card_tendencia).
+COLOR_NEUTRO_TEXTO_INSIGNIA = "#334155"  # ~8:1 sobre COLOR_NEUTRO_BORDE
+COLOR_ESTADO_OK_TEXTO = "#0b6b0b"  # verde oscuro, ~6:1 sobre el tinte de COLOR_ESTADO_OK
+COLOR_ESTADO_CRITICO_TEXTO = "#a62f2f"  # rojo oscuro, ~5.5:1 sobre el tinte de COLOR_ESTADO_CRITICO
 
 # Paleta semantica de estados: unica fuente de verdad para "ok"/"aviso"/
 # "critico" en toda la app (ICONOS_ESTADO reusa estos 3 tonos exactos, no
