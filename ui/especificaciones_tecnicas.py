@@ -83,7 +83,10 @@ from services.sercop import (
     listar_borradores_especificaciones_tecnicas,
     obtener_borrador_especificaciones_tecnicas,
 )
+from src.logging_config import obtener_logger
 from ui.tema import COLOR_LIENZO, COLOR_SIDEBAR_ACENTO, COLOR_TEXTO_EJE, PALETA_DATOS
+
+logger = obtener_logger(__name__)
 
 
 def _construir_datos_treemap_items_cacheado(df_items: pd.DataFrame) -> pd.DataFrame:

@@ -19,6 +19,10 @@ import os
 import requests
 import streamlit as st
 
+from src.logging_config import obtener_logger
+
+logger = obtener_logger(__name__)
+
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 
 
@@ -36,11 +40,10 @@ def api_request(method: str, path: str, timeout: int = 10, **kwargs):
         kwargs["headers"] = headers
     try:
         response = requests.request(method, f"{API_URL}{path}", timeout=timeout, **kwargs)
-    except requests.exceptions.ConnectionError:
-        st.error(
-            f"No se pudo conectar a la API en {API_URL}. "
-            "¿Está corriendo `uvicorn src.main:app --port 8000`?"
-        )
+    except requests.exceptions.RequestException as exc:
+        # El detalle (URL interna, mensaje de requests) va al log, no a la UI.
+        logger.error("Fallo la llamada a la API (%s %s): %s", method, path, type(exc).__name__)
+        st.error("No se pudo conectar con el servicio de datos. Verifica que la API esté en ejecución e inténtalo de nuevo.")
         return None
     return response
 

@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 from scripts.dashboard_analitico import construir_datos_gantt_procesos, construir_datos_treemap_presupuesto
 from scripts.formato_ec import formatear_moneda_ec, formatear_numero_ec
 from services.sercop import generar_reporte, obtener_contrataciones, vaciar_base_datos
+from src.logging_config import obtener_logger
 from ui.componentes import boton_limpiar_filtros
 from ui.especificaciones_tecnicas import (
     _dataframe_items_especificaciones_tecnicas_vacio,
@@ -55,6 +56,8 @@ from ui.tema import (
 )
 
 load_dotenv()
+
+logger = obtener_logger(__name__)
 
 NAV_ITEMS = [
     ("Dashboard", ":material/monitoring:"),
@@ -2533,7 +2536,9 @@ def _iniciar_importacion_sercop(sin_monto_adjudicado: bool = False) -> None:
         # eso es lo que hacia que, intermitentemente, un clic en "Importar
         # desde Portal SERCOP" no cambiara de pagina.
         st.session_state.sercop_import_proceso = None
-        st.session_state.sercop_import_error_lanzamiento = str(exc)
+        # Seguridad: el detalle (rutas, mensajes del SO) va al log, no a la UI.
+        logger.exception("No se pudo lanzar la importacion SERCOP: %s", exc)
+        st.session_state.sercop_import_error_lanzamiento = "revisa que el entorno de Python esté disponible e inténtalo de nuevo."
         return
     st.session_state.sercop_import_error_lanzamiento = None
     st.session_state.sercop_import_proceso = proceso
@@ -2976,7 +2981,8 @@ def _iniciar_actualizacion_montos_adjudicados() -> None:
                 stderr=subprocess.STDOUT,
             )
     except OSError as exc:
-        st.session_state.actualizar_montos_error_lanzamiento = str(exc)
+        logger.exception("No se pudo lanzar la actualizacion de montos adjudicados: %s", exc)
+        st.session_state.actualizar_montos_error_lanzamiento = "revisa que el entorno de Python esté disponible e inténtalo de nuevo."
         return
     st.session_state.actualizar_montos_error_lanzamiento = None
     st.session_state.actualizar_montos_proceso = proceso
