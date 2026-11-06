@@ -12,3 +12,26 @@ backgroundColor = "#f9f9f7"
 secondaryBackgroundColor = "#fcfcfb"
 textColor = "#0b0b0b"
 font = "sans serif"
+
+# pages/Reportes.py agrega una segunda pagina de Streamlit (URL /Reportes,
+# ver ui/reportes.py) -- sin esto, Streamlit muestra su propio widget de
+# navegacion automatico entre paginas arriba del sidebar personalizado de
+# cada una (render_navegacion_sidebar en app_ui.py / ui/reportes.py),
+# duplicando la navegacion.
+[client]
+showSidebarNavigation = false
+showErrorDetails = "none"
+toolbarMode = "viewer"
+
+# Seguridad (security-guard): no mostrar trazas/rutas al usuario (el detalle
+# va al logger, ver src/logging_config.py); tope de subida de 10 MB para los
+# importadores .xlsx/.csv/.txt (el default de Streamlit son 200 MB); sin
+# telemetria. XSRF y CORS quedan en su default seguro (true). Streamlit >= 1.5x acepta
+# "none" (en 1.41 era booleano).
+[server]
+maxUploadSize = 10
+enableXsrfProtection = true
+enableCORS = true
+
+[browser]
+gatherUsageStats = false

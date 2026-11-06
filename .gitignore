@@ -41,6 +41,17 @@ logs/
 
 # Variables de entorno locales (API_KEY, etc.) -- nunca al repo
 .env
+.env.*
+!.env.example
+.streamlit/secrets.toml
 
 # Reglas e instrucciones locales de IA para esta maquina -- no al repo
 CLAUDE.local.md
+
+# Reportes .docx generados y capturas partidas por scripts/reportes_generator.py
+# (ver ui/reportes.py)
+/salidas/
+
+# Respaldos automaticos de la BD/.docx antes de un reset completo (Zona de
+# peligro, ver src/reset.py) -- artefacto local, no versionado
+/respaldos/
