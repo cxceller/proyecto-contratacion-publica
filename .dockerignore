@@ -38,3 +38,25 @@ logs/
 
 # Reglas e instrucciones locales de IA para esta maquina
 CLAUDE.local.md
+
+# --- Seguridad: datos y secretos que nunca deben entrar a la imagen ---
+# Respaldos automaticos del reset (contienen copias de la BD de produccion)
+respaldos/
+# Reportes .docx generados y capturas partidas
+salidas/
+# Texto de oficios extraido localmente
+data/oficios_txt/
+# Copia previa a la separacion de modulos
+_respaldo_antes_de_separar/
+# Variantes de .env y secretos de Streamlit (el ejemplo si puede ir)
+.env.*
+!.env.example
+.streamlit/secrets.toml
+# Estado local del bloqueo de login
+data/login_intentos.sqlite3
+# CSV de montos generados por scripts/completar_montos_resolucion_pdf.py
+montos_extraidos.csv
+montos_fallidos.csv
+# Dependencias solo de desarrollo/CI y pruebas (la imagen instala requirements.txt)
+requirements-dev.txt
+tests/
