@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <!--
-TinyMCE Community (LGPL-2.0), cargado directamente desde cdnjs -- no
+TinyMCE Community (LGPL-2.0), vendorizado en vendor/tinymce (ver vendor/README.md; antes cargado desde cdnjs sin SRI) -- no
 requiere API key (esa exigencia solo aplica a la nube oficial de
-tinymce.com). Requiere conexion a internet para cargar el editor.
+tinymce.com). Funciona sin conexion a internet (archivos locales).
 -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/tinymce/6.8.3/tinymce.min.js" referrerpolicy="origin"></script>
+<script src="vendor/tinymce/tinymce.min.js"></script>
 <style>
   html, body { margin: 0; padding: 0; }
 </style>
