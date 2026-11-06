@@ -6,7 +6,7 @@ from datetime import date
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 
-from src import database
+from src import database, reset
 from src.auth import verificar_api_key
 from src.logging_config import configurar_logging
 from src.models import (
@@ -16,6 +16,8 @@ from src.models import (
     ContratacionCreate,
     ContratacionOut,
     ContratacionUpdate,
+    ResetCompletoRequest,
+    ResetCompletoResponse,
 )
 
 
@@ -151,6 +153,32 @@ def eliminar_contratacion(contratacion_id: int):
 def eliminar_todas_las_contrataciones():
     database.delete_all_contrataciones()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+_RESET_COMPLETO_POR_DEFECTO = ResetCompletoRequest()
+
+
+@app.post(
+    "/api/reset-completo",
+    response_model=ResetCompletoResponse,
+    dependencies=[Depends(verificar_api_key)],
+)
+def reset_completo(payload: ResetCompletoRequest = _RESET_COMPLETO_POR_DEFECTO):
+    """Zona de peligro > "Borrar todos los procesos importados"
+    (app_ui.py::render_vaciar_base_datos): a diferencia de DELETE /api/todos
+    (que solo vacia `contrataciones`), esto ademas respalda y borra los
+    .docx generados por Reportes (salidas/reportes/) y, si se pide,
+    capturas/. Ver src/reset.py para el orden exacto de operaciones."""
+    try:
+        return reset.ejecutar_reset_completo(borrar_capturas=payload.borrar_capturas)
+    except reset.ArchivoBloqueadoError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
+    except reset.RespaldoRemotoError as exc:
+        # Cloud Run: no se pudo subir el respaldo -> no se borro NADA.
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo guardar el respaldo en Cloud Storage; no se borró nada. Inténtalo de nuevo.",
+        ) from exc
 
 
 @app.get("/api/borradores", response_model=list[BorradorContratacionResumen])

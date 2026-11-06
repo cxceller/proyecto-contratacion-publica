@@ -119,16 +119,13 @@ def eliminar_borrador_especificaciones_tecnicas(borrador_id: int) -> bool:
     return True
 
 
-def generar_reporte(payload: dict, timeout: int = 60):
-    """POST /api/generar-reporte -- devuelve el `requests.Response` crudo
-    (o None si la API no respondió): la UI interpreta el status code
-    (200/404/422/otro) y decide qué mostrar, esta funcion solo hace la
-    llamada."""
-    return api_request("POST", "/api/generar-reporte", json=payload, timeout=timeout)
-
-
-def vaciar_base_datos():
-    """DELETE /api/todos -- devuelve el `requests.Response` crudo (o
-    None): la UI interpreta el status code (204 = éxito) y decide qué
-    mostrar."""
-    return api_request("DELETE", "/api/todos")
+def reset_completo(borrar_capturas: bool = False):
+    """POST /api/reset-completo -- Zona de peligro de Configuración
+    (app_ui.py::render_vaciar_base_datos): a diferencia de un simple
+    DELETE /api/todos (que solo vaciaria `contrataciones`), tambien
+    respalda y borra los .docx generados por Reportes y, si se pide,
+    capturas/ (ver src/reset.py). Devuelve el `requests.Response` crudo:
+    200 = exito (`.json()` trae el resumen), 423 = un .docx de Reportes
+    esta bloqueado (abierto en Word, ver `.json()["detail"]`) -- la UI
+    interpreta el status code."""
+    return api_request("POST", "/api/reset-completo", json={"borrar_capturas": borrar_capturas})

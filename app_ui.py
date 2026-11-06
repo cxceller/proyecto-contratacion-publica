@@ -32,7 +32,7 @@ from scripts.formato_ec import (
     formatear_porcentaje_ec,
     limpiar_texto_libre,
 )
-from services.sercop import generar_reporte, obtener_contrataciones, vaciar_base_datos
+from services.sercop import obtener_contrataciones, reset_completo
 from src.logging_config import obtener_logger
 from ui.autenticacion import confirmar_con_clave, requerir_login
 from ui.componentes import boton_limpiar_filtros
@@ -2084,6 +2084,16 @@ def render_contadores(registros_totales: list[dict]):
             _render_tarjeta_estado(cols_resto[i % 4], estado_categoria, conteos, total)
 
 
+# Claves de session_state que reflejan datos de `contrataciones` fuera de
+# la cache de obtener_contrataciones (que ya se limpia aparte, ver
+# render_vaciar_base_datos): el filtro de clic sobre el grafico de estados
+# del Dashboard (render_dashboard/_render_detalles_dashboard) y los
+# resultados de busqueda de Procesos. Sin popear estas, tras un reset
+# completo el Dashboard podria seguir "filtrado" por un estado que ya no
+# tiene ningun proceso.
+CLAVES_SESSION_RESET_COMPLETO = ["filtro_estado_click", "grafico_estado_clic"]
+
+
 def render_vaciar_base_datos():
     st.divider()
     st.subheader(":material/warning: Zona de peligro")
@@ -2096,23 +2106,30 @@ def render_vaciar_base_datos():
     # peligro sea inconfundible a simple vista frente al resto de la UI
     # (neutra) y frente a botones de accion normal (naranja, type="primary"
     # sin este contenedor). El boton real de borrado solo aparece
-    # habilitado tras el checkbox de confirmacion.
+    # habilitado tras el checkbox + la palabra de confirmacion.
     with st.container(key="zona_peligro_vaciar_bd", border=True):
         if not st.session_state.confirmar_vaciado:
-            st.caption("Elimina **todos** los procesos de contratación de forma permanente.")
-            if st.button(":material/delete_forever: Borrar todos los procesos importados", use_container_width=True):
+            st.caption(
+                "Reset completo: elimina **todos** los procesos de contratación "
+                "importados, los reportes (.docx) generados en la pestaña Reportes "
+                "y, si lo marcás, la carpeta de capturas. De forma permanente."
+            )
+            if st.button(":material/delete_forever: Borrar todos los procesos importados", width="stretch"):
                 st.session_state.confirmar_vaciado = True
                 st.rerun()
         else:
             st.error(
-                "Esto eliminará **todos** los procesos de contratación importados, de forma "
-                "permanente. Esta acción no se puede deshacer.",
+                "Esto eliminará **todos** los procesos de contratación importados y "
+                "todos los reportes (.docx) ya generados, de forma permanente. Antes "
+                "de borrar se guarda un respaldo automático en `respaldos/`, pero "
+                "esta acción no se puede deshacer desde la propia app.",
                 icon="⚠️",
             )
 
-            # Respaldo CSV descargable ANTES de la confirmacion final -- red
-            # de seguridad de datos (P1-1 del plan de mejoras): borrar era
-            # irreversible sin ninguna forma de recuperar lo eliminado.
+            # Respaldo CSV descargable ANTES de la confirmacion final -- capa
+            # extra sobre el respaldo automático que hace el servidor (ver
+            # src/reset.py::_respaldar) en /respaldos, para tener tambien una
+            # copia local inmediata de los procesos.
             registros_respaldo = obtener_contrataciones()
             if registros_respaldo:
                 st.download_button(
@@ -2120,38 +2137,93 @@ def render_vaciar_base_datos():
                     pd.DataFrame(registros_respaldo).to_csv(index=False).encode("utf-8-sig"),
                     f"respaldo_procesos_{date.today().isoformat()}.csv",
                     "text/csv",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
-            confirmado = st.checkbox("Sí, entiendo y quiero borrar todos los procesos importados")
+            borrar_capturas = st.checkbox(
+                "También borrar la carpeta de capturas (capturas/) -- son costosas "
+                "de regenerar, hay que volver a resolver el CAPTCHA del portal"
+            )
+            confirmado = st.checkbox("Entiendo que se borrará todo")
+            texto_borrar = st.text_input('Escribe BORRAR (en mayúsculas) para confirmar')
+            # Re-autenticacion: aunque haya sesion activa, la accion destructiva
+            # exige la clave de nuevo en este momento (queda en el log de auditoria).
+            clave_reautenticacion = st.text_input(
+                "Vuelve a escribir tu clave para confirmar", type="password", max_chars=200
+            )
+
+            puede_confirmar = confirmado and texto_borrar.strip() == "BORRAR" and bool(clave_reautenticacion)
 
             col_confirmar, col_cancelar = st.columns(2)
             if col_confirmar.button(
                 ":material/delete_forever: Confirmar borrado definitivo",
                 type="primary",
-                disabled=not confirmado,
-                use_container_width=True,
+                disabled=not puede_confirmar,
+                width="stretch",
             ):
-                with st.spinner("Borrando los procesos importados..."):
-                    response = vaciar_base_datos()
+                if not confirmar_con_clave("reset_completo", clave_reautenticacion):
+                    return
+                with st.spinner("Borrando los procesos y reportes importados..."):
+                    response = reset_completo(borrar_capturas=borrar_capturas)
                 if response is None:
                     return
-                if response.status_code == 204:
+                if response.status_code == 200:
+                    resumen = response.json()
                     st.session_state.confirmar_vaciado = False
                     st.session_state.resultados = None
+                    for clave in CLAVES_SESSION_RESET_COMPLETO:
+                        st.session_state.pop(clave, None)
                     st.session_state.mensaje_vaciado = (
-                        ":material/check_circle: Todos los procesos importados fueron borrados."
+                        ":material/check_circle: "
+                        f"{resumen['procesos_eliminados']} procesos, "
+                        f"{resumen['reportes_eliminados']} registros de reportes y "
+                        f"{resumen['capturas_eliminadas']} archivos eliminados; "
+                        "Reporte_SERCOP.docx reiniciado (no hay un archivo fijo en "
+                        "disco -- el próximo se genera desde cero en la pestaña "
+                        f"Reportes). Respaldo guardado en `{resumen['respaldo_dir']}`"
+                        + (
+                            f" y subido a Cloud Storage (`{resumen['respaldo_remoto']}`)."
+                            if resumen.get("respaldo_remoto")
+                            else "."
+                        )
                     )
                     # obtener_contrataciones() esta cacheada 10 min (ver
                     # services/sercop.py): sin este .clear(), el Dashboard
                     # seguiria mostrando los procesos ya borrados hasta que
-                    # expire el TTL.
+                    # expire el TTL. st.cache_data.clear() de mas (todas las
+                    # cachadas de la app, incluidas las de Especificaciones
+                    # Técnicas que no dependen de esto) para cumplir el pedido
+                    # al pie de la letra -- no tiene costo real, solo hace que
+                    # esas otras se vuelvan a calcular en el proximo acceso.
                     obtener_contrataciones.clear()
+                    st.cache_data.clear()
                     st.rerun()
+                elif response.status_code == 423:
+                    # Archivo bloqueado (Word abierto sobre un .docx de
+                    # salidas/reportes/, ver src/reset.py::ArchivoBloqueadoError):
+                    # la BD NO se toco cuando esto pasa, asi que dejamos
+                    # confirmar_vaciado en True para que el usuario pueda
+                    # cerrar el archivo y reintentar sin repetir el checkbox/BORRAR.
+                    mensaje_bloqueo = "El archivo está bloqueado por otro programa. Ciérralo e inténtalo de nuevo."
+                    try:
+                        detalle = response.json().get("detail")
+                    except (ValueError, AttributeError):
+                        detalle = None
+                    if isinstance(detalle, str) and detalle.strip():
+                        mensaje_bloqueo = limpiar_texto_libre(detalle, max_len=300)
+                    st.error(mensaje_bloqueo)
+                elif response.status_code == 503:
+                    # Cloud Run: el respaldo no pudo subirse a Cloud Storage y el
+                    # servidor NO borro nada (fail-closed, ver src/reset.py).
+                    st.error(
+                        "No se pudo guardar el respaldo en Cloud Storage, así que no se borró nada. "
+                        "Inténtalo de nuevo; si persiste, revisa los permisos del bucket."
+                    )
                 else:
-                    st.error(f"Error al borrar los procesos: {response.status_code}")
+                    logger.error("Fallo el reset completo: HTTP %s", response.status_code)
+                    st.error("No se pudieron borrar los procesos. Inténtalo de nuevo; si persiste, revisa el log del servidor.")
 
-            if col_cancelar.button("Cancelar", use_container_width=True):
+            if col_cancelar.button("Cancelar", width="stretch"):
                 st.session_state.confirmar_vaciado = False
                 st.rerun()
 
