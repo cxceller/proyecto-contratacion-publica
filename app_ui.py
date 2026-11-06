@@ -730,6 +730,13 @@ def _inyectar_estilos_kpi_tendencia() -> None:
         div[class*="st-key-kpi_tendencia_"] .js-plotly-plot {{
             margin-top: auto;
         }}
+        /* Badge del ultimo mes: UNA linea siempre. Con espacio: "oct: $ 46,7 M · ↑ 1,7 %"; en tarjetas angostas
+           (4 columnas a ~1100 px) la version corta "oct · ↑ 1,7 %" y la cifra completa en el tooltip. */
+        div[class*="st-key-kpi_tendencia_"] .kpi-ins-corta {{ display: none; }}
+        @container (max-width: 175px) {{
+            div[class*="st-key-kpi_tendencia_"] .kpi-ins-completa {{ display: none; }}
+            div[class*="st-key-kpi_tendencia_"] .kpi-ins-corta {{ display: inline; }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -852,10 +859,12 @@ def render_kpi_card_tendencia(
             if detalle is not None:
                 pct = detalle.get("pct")
                 partes = []
+                partes_cortas = []  # version abreviada para tarjetas angostas (sin la cifra; el detalle va al tooltip)
                 color, color_texto = COLOR_NEUTRO_TEXTO_SUAVE, COLOR_NEUTRO_TEXTO_INSIGNIA
                 if detalle.get("mes") and detalle.get("valor") is not None:
                     # Ultimo mes COMPLETO (nunca el mes en curso): "oct: $ 35,9 M · ↑ 1,9 %"
                     partes.append(f"{detalle.get('mes_corto') or detalle['mes']}: {detalle['valor']}")
+                    partes_cortas.append(detalle.get("mes_corto") or detalle["mes"])
                     if pct is not None:
                         positivo = pct >= 0
                         flecha = "↑" if positivo else "↓"
@@ -868,15 +877,20 @@ def render_kpi_card_tendencia(
                             )
                         sufijo = "" if detalle.get("mes_previo") else " vs. mes anterior"
                         partes.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} %{sufijo}")
+                        partes_cortas.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} %")
                 elif detalle.get("en_curso"):
                     # Solo hay el mes en curso: se rotula asi y SIN porcentaje.
                     en_curso = detalle["en_curso"]
                     partes.append(f"{en_curso['mes']} (en curso): {en_curso['valor']}")
+                    partes_cortas.append(f"{en_curso['mes'].split()[0]} (en curso)")
                 elif pct is not None:  # compatibilidad: solo un porcentaje suelto
                     flecha = "↑" if pct >= 0 else "↓"
                     partes.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} % vs. mes anterior")
+                    partes_cortas.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} %")
                 if partes:
                     lineas_tooltip = []
+                    if not detalle.get("mes_previo") and detalle.get("mes"):
+                        lineas_tooltip.append(f"{detalle['mes']}: {detalle.get('valor_completo', detalle['valor'])}.")
                     if detalle.get("mes_previo"):
                         lineas_tooltip.append(
                             f"{detalle['mes']} ({detalle.get('valor_completo', detalle['valor'])}) frente a "
@@ -893,7 +907,8 @@ def render_kpi_card_tendencia(
                         f'<span title="{texto_tooltip}" style="display:inline-block;'
                         f"white-space:nowrap;padding:0.15rem 0.5rem;border-radius:999px;background-color:{color}22;"
                         f'color:{color_texto};font-size:0.72rem;font-weight:700;line-height:1.4;">'
-                        f"{html.escape(' · '.join(partes))}</span>"
+                        f'<span class="kpi-ins-completa">{html.escape(" · ".join(partes))}</span>'
+                        f'<span class="kpi-ins-corta">{html.escape(" · ".join(partes_cortas))}</span></span>'
                     )
             exacto_html = html.escape(valor_exacto) if valor_exacto else "&nbsp;"
             st.markdown(
