@@ -68,8 +68,11 @@ html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):
 [data-testid="stSidebar"] [data-testid="stLinkButton"] a:hover{
   background:rgba(255,255,255,.06) !important; border-color:rgba(255,255,255,.06) !important; transform:translateX(2px);
 }
+/* Item activo del menú: fondo, barra de acento y texto blanco en negrita -- !important para que gane sobre
+   los estilos de hover/foco de Streamlit y se vea igual en TODAS las páginas (antes Dashboard parecía inactivo). */
 [data-testid="stSidebar"] [data-testid="stBaseButton-primary"]{
-  background:rgba(96,165,250,.14) !important; box-shadow:inset 3px 0 0 #60a5fa; color:#fff !important;
+  background:rgba(96,165,250,.22) !important; box-shadow:inset 3px 0 0 #60a5fa !important; color:#fff !important;
+  font-weight:700 !important;
 }
 [data-testid="stSidebar"] [data-testid="stExpander"] details{
   border-radius:var(--r-md) !important; border-color:rgba(255,255,255,.08) !important; background:rgba(255,255,255,.02);
@@ -82,7 +85,6 @@ html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):
   transition:transform .3s var(--ease), box-shadow .3s var(--ease), border-color .3s var(--ease);
 }
 .sercop-kpi-card:hover{ transform:translateY(-2px) scale(1.01); box-shadow:var(--shadow-hover) !important; border-color:var(--line-strong) !important; }
-.sercop-kpi-card::before{ content:""; position:absolute; inset:0 auto 0 0; width:3px; background:var(--kpi-c, var(--ink-400)); opacity:.9; }
 .sercop-kpi-card > div:nth-child(1){
   font-size:.82rem !important; font-weight:600 !important; color:var(--ink-500) !important; letter-spacing:.01em;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:.35rem;

@@ -47,3 +47,51 @@ class TestVariacionPctUltimoPeriodo:
 
     def test_periodo_anterior_en_cero_devuelve_none(self):
         assert _variacion_pct_ultimo_periodo([0, 100]) is None
+
+
+class TestPeriodoYFormatoEcuador:
+    """Texto explicito de los badges, periodo del sparkline y porcentajes con coma decimal."""
+
+    def test_etiqueta_mes_en_espanol(self):
+        from app_ui import _etiqueta_mes
+
+        assert _etiqueta_mes("2025-01") == "ene 2025" and _etiqueta_mes("2025-12") == "dic 2025"
+
+    def test_periodo_es_el_rango_de_meses_de_la_serie(self):
+        from app_ui import _df_con_anio_mes, _periodo_mensual_desde_df
+
+        df = _df_con_anio_mes(_registros([("2026-03", 1), ("2026-01", 1), ("2026-05", 1)]))
+        assert _periodo_mensual_desde_df(df) == "ene 2026 – may 2026"
+
+    def test_periodo_de_un_solo_mes_y_sin_datos(self):
+        import pandas as pd
+
+        from app_ui import _df_con_anio_mes, _periodo_mensual_desde_df
+
+        assert _periodo_mensual_desde_df(_df_con_anio_mes(_registros([("2026-03", 1)]))) == "mar 2026"
+        assert _periodo_mensual_desde_df(pd.DataFrame()) is None
+        assert _periodo_mensual_desde_df(_df_con_anio_mes([{"fecha_publicacion": None}])) is None
+
+    def test_serie_de_conteo_mensual(self):
+        from app_ui import _df_con_anio_mes, _serie_conteo_mensual_desde_df
+
+        df = _df_con_anio_mes(_registros([("2026-02", 5), ("2026-01", 9), ("2026-01", 1)]))
+        assert _serie_conteo_mensual_desde_df(df) == [2.0, 1.0]
+
+    def test_insignia_de_participacion_es_explicita_y_con_coma(self):
+        from app_ui import _insignia_participacion
+
+        assert _insignia_participacion(1, 7) == "14,3 % del total"
+        assert _insignia_participacion(5, 0) is None
+
+    def test_porcentaje_de_ahorro_con_coma(self):
+        from app_ui import _formatear_porcentaje_ahorro
+
+        assert _formatear_porcentaje_ahorro(51.58) == "🟢 51,58 %"
+        assert _formatear_porcentaje_ahorro(-12.3) == "🔴 -12,30 %"
+        assert _formatear_porcentaje_ahorro(None) == ""
+
+    def test_formato_de_fecha_de_la_ui_es_dd_mm_aaaa(self):
+        from app_ui import FORMATO_FECHA_UI
+
+        assert FORMATO_FECHA_UI == "DD/MM/YYYY"

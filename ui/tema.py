@@ -81,4 +81,4 @@ COLOR_BARRA_DESTACADA = "#eb6834"
 # estas tarjetas. Con 12.25rem (196px, ~3px de margen sobre los 192.6px
 # reales) las 3 tarjetas quedan gobernadas por el mismo piso y terminan a
 # la misma altura, sin pelear la cascada de Streamlit.
-ALTURA_KPI_REM = 12.25
+ALTURA_KPI_REM = 12.75  # +0.5rem: la tarjeta con tendencia ahora lleva ademas el periodo bajo el sparkline

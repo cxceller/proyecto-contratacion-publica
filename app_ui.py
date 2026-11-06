@@ -70,6 +70,9 @@ logger = obtener_logger(__name__)
 # backend admite hasta 200, ver src/models.py).
 MAX_LARGO_PALABRA_CLAVE = 100
 
+# Formato de fechas de la UI (Ecuador): dd/mm/aaaa.
+FORMATO_FECHA_UI = "DD/MM/YYYY"
+
 NAV_ITEMS = [
     ("Dashboard", ":material/monitoring:"),
     ("Procesos", ":material/assignment:"),
@@ -132,20 +135,6 @@ PATRON_RESUMEN_ACTUALIZAR_MONTOS = re.compile(
 # filtrar_por_entidad, que igual normaliza tildes/mayusculas por si
 # aparecen variantes de escritura en datos futuros).
 ENTIDAD_MUNICIPALIDAD_GUAYAQUIL = "Municipalidad de Guayaquil"
-
-# Escudo institucional oficial para el item de menu "Municipalidad de
-# Guayaquil", en vez de un emoji. Recortado del logo apaisado original
-# (600x210px, "Muy Ilustre Municipalidad de Guayaquil") para quedarse
-# solo con el emblema (circulo + estrella + corona de laurel, 196x200px):
-# el wordmark de texto del logo completo, a tamaño de icono de menu, no
-# se leia (texto navy sobre el fondo navy del sidebar, y demasiado chico
-# de por si) -- el nombre ya esta como texto en el boton de al lado.
-# st.image solo permite fijar el ancho (la altura se escala sola
-# preservando el aspecto), asi que el ancho se calcula a partir de la
-# altura deseada y la relacion de aspecto real del recorte.
-LOGO_MUNICIPALIDAD_PATH = Path(__file__).resolve().parent / "assets" / "mimg_escudo.png"
-LOGO_MUNICIPALIDAD_ALTO_PX = 30
-LOGO_MUNICIPALIDAD_ANCHO_PX = round(LOGO_MUNICIPALIDAD_ALTO_PX * 196 / 200)
 
 # Estados tal como los expone el portal de Compras Publicas (algunos truncados).
 ESTADOS = [
@@ -381,7 +370,7 @@ def _formatear_porcentaje_ahorro(valor) -> str:
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return ""
     emoji = "🟢" if valor >= 0 else "🔴"
-    return f"{emoji} {valor:.2f} %"
+    return f"{emoji} {formatear_numero_ec(valor, 2)} %"
 
 
 def extraer_tipo_compra(objeto_proceso: str) -> str:
@@ -714,7 +703,7 @@ def _inyectar_estilos_kpi_tendencia() -> None:
         /* Fondo/borde/radio/sombra/hover: los pone estilos_sercop.py (regla
         :has(stPlotlyChart):has(stMarkdown)); aca solo el layout. */
         div[class*="st-key-kpi_tendencia_"] {{
-            padding: 1.25rem 1.5rem 0.75rem 1.5rem;
+            padding: 1.25rem 1.5rem 1.1rem 1.5rem;
             margin-bottom: 0.5rem;
             min-height: {ALTURA_KPI_REM}rem;
             overflow: hidden;
@@ -770,6 +759,7 @@ def render_kpi_card_tendencia(
     variacion_pct: float | None = None,
     ayuda: str | None = None,
     sentido: str = "neutro",
+    periodo: str | None = None,
 ) -> None:
     """Tarjeta KPI con mini-sparkline (tendencia mensual) y badge de
     variación porcentual vs. el periodo anterior, para los KPIs monetarios
@@ -807,7 +797,11 @@ def render_kpi_card_tendencia(
     abajo. Eso rompia la alineacion con las tarjetas simples de la misma
     fila (que no tienen ese elemento extra) aunque ambas midieran la
     misma altura -- confirmado midiendo `top`/`bottom` con
-    getBoundingClientRect en vivo: mismo `height`, `top` distinto."""
+    getBoundingClientRect en vivo: mismo `height`, `top` distinto.
+
+    El badge dice EXPLICITAMENTE que compara ("↑ 12,5 % vs. mes anterior": ultimo
+    mes con datos frente al mes previo de la serie) y `periodo` (ej. "ene 2025 –
+    jun 2025") se muestra bajo el sparkline como el rango mensual graficado."""
     _inyectar_estilos_kpi_tendencia()
     with columna:
         clave = "kpi_tendencia_" + re.sub(r"[^a-z0-9]+", "_", etiqueta.lower()).strip("_")
@@ -833,7 +827,7 @@ def render_kpi_card_tendencia(
                     f'<span style="display:inline-block;padding:0.15rem 0.6rem;'
                     f"border-radius:999px;background-color:{color}22;"
                     f'color:{color_texto};font-size:0.75rem;font-weight:700;line-height:1.4;">'
-                    f"{flecha} {abs(variacion_pct):.1f}%</span>"
+                    f"{flecha} {formatear_numero_ec(abs(variacion_pct), 1)} % vs. mes anterior</span>"
                 )
             st.markdown(
                 f'<div{atributo_titulo}>'
@@ -852,6 +846,12 @@ def render_kpi_card_tendencia(
                     config={"displayModeBar": False},
                     key=f"spark_{clave}",
                 )
+                if periodo:
+                    st.markdown(
+                        f'<div style="font-size:0.72rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};margin-top:-0.4rem;">'
+                        f"Mensual · {html.escape(periodo)}</div>",
+                        unsafe_allow_html=True,
+                    )
 
 
 def _inyectar_estilos_gauge_ahorro() -> None:
@@ -964,6 +964,50 @@ def _serie_mensual(registros: list[dict], campo: str) -> list[float]:
     return _serie_mensual_desde_df(df, campo)
 
 
+MESES_ABREV_ES = {
+    1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
+    7: "jul", 8: "ago", 9: "sep", 10: "oct", 11: "nov", 12: "dic",
+}
+
+
+def _etiqueta_mes(anio_mes: str) -> str:
+    """"2025-01" -> "ene 2025" (abreviatura en español)."""
+    anio, mes = anio_mes.split("-")
+    return f"{MESES_ABREV_ES[int(mes)]} {anio}"
+
+
+def _periodo_mensual_desde_df(df: pd.DataFrame) -> str | None:
+    """Rango de meses de la serie mensual de `df`, ej. "ene 2025 – jun 2025" (o un solo
+    mes si hay uno). None si no hay ningun mes valido. Debe usarse con el MISMO df del que
+    sale la serie del sparkline para que el periodo mostrado coincida con lo graficado."""
+    if df.empty or "anio_mes" not in df.columns:
+        return None
+    meses = sorted(df["anio_mes"].dropna().unique())
+    if not meses:
+        return None
+    primero, ultimo = _etiqueta_mes(meses[0]), _etiqueta_mes(meses[-1])
+    return primero if primero == ultimo else f"{primero} – {ultimo}"
+
+
+def _df_con_anio_mes(registros: list[dict]) -> pd.DataFrame:
+    """DataFrame de `registros` con la columna "anio_mes" (vacio si no hay fechas)."""
+    if not registros:
+        return pd.DataFrame()
+    df = pd.DataFrame(registros)
+    if "fecha_publicacion" not in df.columns:
+        return pd.DataFrame()
+    df["anio_mes"] = pd.to_datetime(df["fecha_publicacion"], errors="coerce").dt.strftime("%Y-%m")
+    return df
+
+
+def _serie_conteo_mensual_desde_df(df: pd.DataFrame) -> list[float]:
+    """Cantidad de procesos por mes (columna "anio_mes"), cronologica -- sparkline de la
+    tarjeta "Procesos"."""
+    if df.empty or "anio_mes" not in df.columns:
+        return []
+    return df.dropna(subset=["anio_mes"]).groupby("anio_mes").size().sort_index().astype(float).tolist()
+
+
 def _variacion_pct_ultimo_periodo(serie: list[float]) -> float | None:
     """% de variación del último periodo de `serie` respecto al anterior.
     None si hay menos de 2 periodos o el periodo anterior es 0/vacío
@@ -1007,13 +1051,25 @@ def render_kpis_dashboard(df: pd.DataFrame):
     serie_presupuesto = _serie_mensual_desde_df(df, "presupuesto_referencial")
     serie_contratacion = _serie_mensual_desde_df(df_contratacion, "presupuesto_referencial")
 
-    render_kpi_card(col1, "Procesos (filtro actual)", formatear_numero_ec(len(df)))
+    # Las tres tarjetas usan el MISMO componente (etiqueta, valor, badge, sparkline y periodo).
+    serie_procesos = _serie_conteo_mensual_desde_df(df)
+    render_kpi_card_tendencia(
+        col1,
+        "Procesos (filtro actual)",
+        formatear_numero_ec(len(df)),
+        serie=serie_procesos,
+        variacion_pct=_variacion_pct_ultimo_periodo(serie_procesos),
+        ayuda="Cantidad de procesos publicados por mes dentro del filtro actual; el badge compara el "
+        "último mes con datos frente al mes anterior.",
+        periodo=_periodo_mensual_desde_df(df),
+    )
     render_kpi_card_tendencia(
         col2,
         "Presupuesto Total (filtro actual)",
         formatear_moneda_ec(presupuesto_total),
         serie=serie_presupuesto,
         variacion_pct=_variacion_pct_ultimo_periodo(serie_presupuesto),
+        periodo=_periodo_mensual_desde_df(df),
     )
     render_kpi_card_tendencia(
         col3,
@@ -1021,6 +1077,7 @@ def render_kpis_dashboard(df: pd.DataFrame):
         formatear_moneda_ec(valor_adjudicado_total),
         serie=serie_contratacion,
         variacion_pct=_variacion_pct_ultimo_periodo(serie_contratacion),
+        periodo=_periodo_mensual_desde_df(df_contratacion),
         ayuda=(
             "Presupuesto Referencial (no el monto adjudicado real) de los procesos que "
             "ya avanzaron a contratación: estados Adjudicada, Adjudicado - Registro de "
@@ -1786,13 +1843,25 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
         col1, col2, col3, col4 = st.columns(4)
     else:
         col1, col2, col3 = st.columns(3)
-    render_kpi_card(col1, "Número de Procesos", formatear_numero_ec(len(registros)))
+    df_periodo = _df_con_anio_mes(registros)
+    serie_procesos = _serie_conteo_mensual_desde_df(df_periodo)
+    render_kpi_card_tendencia(
+        col1,
+        "Número de Procesos",
+        formatear_numero_ec(len(registros)),
+        serie=serie_procesos,
+        variacion_pct=_variacion_pct_ultimo_periodo(serie_procesos),
+        ayuda="Cantidad de procesos publicados por mes dentro del filtro actual; el badge compara el "
+        "último mes con datos frente al mes anterior.",
+        periodo=_periodo_mensual_desde_df(df_periodo),
+    )
     render_kpi_card_tendencia(
         col2,
         "Presupuesto Total",
         formatear_moneda_ec(presupuesto_total),
         serie=serie_presupuesto,
         variacion_pct=_variacion_pct_ultimo_periodo(serie_presupuesto),
+        periodo=_periodo_mensual_desde_df(df_periodo),
     )
     render_kpi_card_tendencia(
         col3,
@@ -1801,6 +1870,7 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
         serie=serie_valor_adjudicado,
         variacion_pct=_variacion_pct_ultimo_periodo(serie_valor_adjudicado),
         ayuda=ayuda_valor_adjudicado,
+        periodo=_periodo_mensual_desde_df(_df_con_anio_mes(registros_valor_adjudicado)),
     )
 
     if mostrar_monto_adjudicado:
@@ -1974,7 +2044,7 @@ def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool
         "Monto Adjudicado": st.column_config.TextColumn("Monto Adjudicado", width="medium"),
         "% de Ahorro": st.column_config.TextColumn("% de Ahorro", width="small"),
         "Fecha de Publicación": st.column_config.DateColumn(
-            "Fecha de Publicación", format="YYYY-MM-DD"
+            "Fecha de Publicación", format="DD/MM/YYYY"
         ),
     }
 
@@ -2020,14 +2090,14 @@ def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool
 
 def _insignia_participacion(cantidad: int, total: int) -> str | None:
     """% de participacion de `cantidad` sobre `total` (1 decimal, ej.
-    '32.4%'), para mostrar como insignia separada del valor principal en
+    '32,4 % del total'), para mostrar como insignia separada del valor principal en
     la tarjeta -- ver render_contadores y el parametro `insignia` de
     render_kpi_card/_tarjeta_kpi_html. None (sin insignia) si total es 0
     (filtro sin resultados): mostrarla implicaria una division por
     cero."""
     if total <= 0:
         return None
-    return f"{cantidad / total * 100:.1f}%"
+    return f"{formatear_numero_ec(cantidad / total * 100, 1)} % del total"
 
 
 def _render_tarjeta_estado(columna, estado_categoria: str, conteos: dict, total: int) -> None:
@@ -2433,7 +2503,6 @@ def _inyectar_estilos_sidebar() -> None:
             color: {COLOR_SIDEBAR_TEXTO} !important;
             padding: 0.55rem 0.8rem;
             margin-bottom: 0.15rem;
-            box-shadow: none;
             width: 100%;
         }}
         [data-testid="stSidebar"] .stButton > button:hover,
@@ -2445,28 +2514,6 @@ def _inyectar_estilos_sidebar() -> None:
         }}
         [data-testid="stSidebar"] hr {{
             border-color: rgba(255, 255, 255, 0.12);
-        }}
-        /* Item "Municipalidad de Guayaquil": logo institucional (fuera del
-        boton, en su propia columna) + boton, en vez de un icono Material
-        inline. padding-left en el contenedor replica el inset de 0.8rem
-        que los demas items tienen por el padding propio del boton, para
-        que el logo arranque a la misma distancia del borde que sus
-        iconos. padding-left reducido en ESTE boton evita que el gap de
-        las columnas se sume al padding del boton y separe demasiado el
-        logo del texto. */
-        .st-key-nav_municipalidad_guayaquil {{
-            padding-left: 0.8rem;
-            margin-bottom: 0.15rem;
-        }}
-        .st-key-nav_municipalidad_guayaquil [data-testid="stHorizontalBlock"] {{
-            align-items: center;
-        }}
-        .st-key-nav_municipalidad_guayaquil [data-testid="stColumn"]:last-child {{
-            margin-left: -0.5rem;
-        }}
-        .st-key-nav_municipalidad_guayaquil .stButton > button {{
-            padding-left: 0;
-            margin-bottom: 0;
         }}
         /* Mitiga el flash de texto crudo del nombre del icono (ej.
         "travel_explore") pegado a la etiqueta del boton en la carga
@@ -2569,29 +2616,6 @@ def render_navegacion_sidebar() -> None:
                     url=URL_PAGINA_REPORTES,
                     width="stretch",
                 )
-                continue
-
-            if nombre == "Municipalidad de Guayaquil":
-                # Logo institucional real (600x210, apaisado) en vez de un
-                # emoji: se muestra a la izquierda del boton con una
-                # altura fija (LOGO_MUNICIPALIDAD_ALTO_PX) y el ancho
-                # calculado a partir de esa misma relacion de aspecto
-                # (st.image solo acepta fijar el ancho -- ver
-                # LOGO_MUNICIPALIDAD_ANCHO_PX), para que no se vea
-                # distorsionado. El container con key permite que
-                # _inyectar_estilos_sidebar (.st-key-nav_municipalidad_
-                # guayaquil) alinee el inset izquierdo y el padding del
-                # boton con los demas items del menu.
-                with st.container(key="nav_municipalidad_guayaquil"):
-                    col_icono, col_boton = st.columns([0.6, 4], gap="small", vertical_alignment="center")
-                    with col_icono:
-                        st.image(str(LOGO_MUNICIPALIDAD_PATH), width=LOGO_MUNICIPALIDAD_ANCHO_PX)
-                    with col_boton:
-                        if st.button(
-                            nombre.upper(), key=f"nav_{nombre}", width="stretch", type=tipo_boton,
-                        ):
-                            st.session_state.pagina_activa = nombre
-                            st.rerun()
                 continue
 
             if st.button(
@@ -3007,9 +3031,11 @@ def render_pagina_procesos(registros_totales: list[dict]) -> None:
     with col_estado:
         estado_filtro = st.selectbox("Estado del Proceso", ["(Todos)"] + ESTADOS, key="procesos_estado")
     with col_inicio:
-        fecha_inicio = st.date_input("Fecha inicio", value=None, key="procesos_fecha_inicio")
+        fecha_inicio = st.date_input(
+            "Fecha inicio", value=None, key="procesos_fecha_inicio", format=FORMATO_FECHA_UI
+        )
     with col_fin:
-        fecha_fin = st.date_input("Fecha fin", value=None, key="procesos_fecha_fin")
+        fecha_fin = st.date_input("Fecha fin", value=None, key="procesos_fecha_fin", format=FORMATO_FECHA_UI)
     with col_palabra:
         palabra_clave_filtro = st.text_input(
             "Palabra clave",

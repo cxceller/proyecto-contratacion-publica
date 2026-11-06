@@ -266,8 +266,10 @@ def render_generador_reportes() -> None:
             help="Hasta 10 palabras clave de máximo 100 caracteres cada una.",
         )
         col_inicio, col_fin = st.columns(2)
-        fecha_inicio = col_inicio.date_input("Fecha inicio", value=None, key="reportes_fecha_inicio")
-        fecha_fin = col_fin.date_input("Fecha fin", value=None, key="reportes_fecha_fin")
+        fecha_inicio = col_inicio.date_input(
+            "Fecha inicio", value=None, key="reportes_fecha_inicio", format="DD/MM/YYYY"
+        )
+        fecha_fin = col_fin.date_input("Fecha fin", value=None, key="reportes_fecha_fin", format="DD/MM/YYYY")
 
         with st.expander("Opciones avanzadas", expanded=False):
             opciones_lote = capturas.opciones_lote_id(database.get_all_contrataciones())

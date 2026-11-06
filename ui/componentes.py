@@ -22,7 +22,9 @@ def boton_limpiar_filtros(claves: list[str], key: str, *, on_clear: Callable[[],
     El placement (columna, contenedor) lo decide el caller envolviendo el
     llamado en un `with columna:` si hace falta -- esta funcion solo usa
     `st.button` sobre el contenedor "actual", no crea su propia columna."""
-    if st.button(":material/filter_alt_off: Limpiar filtros", key=key, width="stretch"):
+    # Solo icono + tooltip: con el texto completo se truncaba ("Limpiar fil...") en columnas
+    # angostas; `help` lo explica al pasar el cursor.
+    if st.button(":material/filter_alt_off:", key=key, help="Limpiar filtros", width="stretch"):
         for clave in claves:
             st.session_state.pop(clave, None)
         if on_clear:
