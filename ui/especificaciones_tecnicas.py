@@ -84,6 +84,7 @@ from services.sercop import (
     obtener_borrador_especificaciones_tecnicas,
 )
 from src.logging_config import obtener_logger
+from ui.autenticacion import confirmar_con_clave
 from ui.tema import COLOR_LIENZO, COLOR_SIDEBAR_ACENTO, COLOR_TEXTO_EJE, PALETA_DATOS
 
 logger = obtener_logger(__name__)
@@ -1251,14 +1252,30 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
         # anida columnas dentro de columnas) para que la confirmacion se
         # vea a todo lo ancho, no apretada en col_eliminar.
         st.warning("¿Eliminar esta contratación guardada? No se puede deshacer.")
+        # Re-autenticacion: la clave se vuelve a pedir en este momento aunque
+        # haya sesion activa (queda en el log de auditoria).
+        clave_reautenticacion = st.text_input(
+            "Vuelve a escribir tu clave para confirmar",
+            type="password",
+            max_chars=200,
+            key="especificaciones_tecnicas_eliminar_borrador_clave",
+        )
         col_confirmar, col_cancelar = st.columns(2)
-        if col_confirmar.button("Sí, eliminar", key="especificaciones_tecnicas_confirmar_eliminar_borrador_btn", type="primary"):
+        if col_confirmar.button(
+            "Sí, eliminar",
+            key="especificaciones_tecnicas_confirmar_eliminar_borrador_btn",
+            type="primary",
+            disabled=not clave_reautenticacion,
+        ):
             borrador_id = st.session_state.especificaciones_tecnicas_borrador_id
-            st.session_state.especificaciones_tecnicas_confirmar_eliminar_borrador = False
-            if borrador_id is not None and eliminar_borrador_especificaciones_tecnicas(borrador_id):
-                _reiniciar_estado_especificaciones_tecnicas()
-                st.success("Contratación eliminada.")
-            st.rerun()
+            # Clave incorrecta o bloqueo: confirmar_con_clave muestra el error y la
+            # confirmacion sigue abierta (no se borra nada).
+            if confirmar_con_clave(f"eliminar_borrador:{borrador_id}", clave_reautenticacion):
+                st.session_state.especificaciones_tecnicas_confirmar_eliminar_borrador = False
+                if borrador_id is not None and eliminar_borrador_especificaciones_tecnicas(borrador_id):
+                    _reiniciar_estado_especificaciones_tecnicas()
+                    st.success("Contratación eliminada.")
+                st.rerun()
         if col_cancelar.button("Cancelar", key="especificaciones_tecnicas_cancelar_eliminar_borrador_btn"):
             st.session_state.especificaciones_tecnicas_confirmar_eliminar_borrador = False
             st.rerun()

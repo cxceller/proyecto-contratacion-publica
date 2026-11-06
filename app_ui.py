@@ -34,6 +34,7 @@ from scripts.formato_ec import (
 )
 from services.sercop import generar_reporte, obtener_contrataciones, vaciar_base_datos
 from src.logging_config import obtener_logger
+from ui.autenticacion import confirmar_con_clave, requerir_login
 from ui.componentes import boton_limpiar_filtros
 from ui.especificaciones_tecnicas import (
     _dataframe_items_especificaciones_tecnicas_vacio,
@@ -3363,6 +3364,9 @@ def main():
     # Ultimo CSS en inyectarse: estilos_sercop.py es la fuente de verdad del
     # aspecto y debe ganar en la cascada sobre cualquier otro bloque de aca.
     aplicar_estilos()
+    # Login en TODA la app: sin sesion valida no se renderiza nada mas
+    # (requerir_login hace st.stop()). Ver ui/autenticacion.py.
+    requerir_login()
     _revelar_sidebar_cuando_cargue_fuente_iconos()
 
     if "resultados" not in st.session_state:
