@@ -21,6 +21,14 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+      # Falla el build si una dependencia de EJECUCION (requirements.txt) tiene vulnerabilidades conocidas.
+      # Se instala aparte, en un venv con pip al dia, para no auditar las herramientas de desarrollo (pytest, ruff...).
+      - name: Audit runtime dependencies (pip-audit)
+        run: |
+          python -m venv --upgrade-deps "$RUNNER_TEMP/runtime"
+          "$RUNNER_TEMP/runtime/bin/pip" install --no-cache-dir -r requirements.txt
+          pip-audit --path "$RUNNER_TEMP"/runtime/lib/python3.11/site-packages --progress-spinner off
+
       - name: Lint (ruff)
         run: ruff check .
         continue-on-error: true
