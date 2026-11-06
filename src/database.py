@@ -331,6 +331,32 @@ def upsert_contratacion(data: dict[str, Any], conn: sqlite3.Connection | None = 
             conn.close()
 
 
+def _escapar_like(texto: str) -> str:
+    """Escapa la barra invertida, `%` y `_` para usar `texto` como literal
+    dentro de un patron LIKE (las consultas deben llevar ESCAPE con barra
+    invertida, ver ESCAPE_LIKE). Sin esto, un `%` o `_` escrito por el
+    usuario actua como comodin."""
+    return texto.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+# Clausula SQL para los LIKE sobre texto escapado con _escapar_like.
+ESCAPE_LIKE = " ESCAPE '\\'"
+
+
+# Columnas que update_contratacion puede modificar (lista blanca: los nombres
+# de columna se interpolan en el SET, nunca deben venir de input libre).
+COLUMNAS_ACTUALIZABLES = frozenset(
+    {
+        "codigo", "entidad_contratante", "objeto_proceso", "estado", "provincia_canton",
+        "presupuesto_referencial", "fecha_publicacion", "palabra_clave", "url", "lote_id",
+        "monto_adjudicado", "motivo_estado_raw", "explicacion_estado", "monto_origen", "monto_pdf_url",
+    }
+)
+
+# Tope de palabras clave por reporte (cada una genera un LIKE).
+MAX_PALABRAS_CLAVE_REPORTE = 10
+
+
 def get_all_contrataciones(
     status: str | None = None,
     fecha_inicio: str | None = None,
@@ -344,8 +370,8 @@ def get_all_contrataciones(
         # Los valores de estado en el portal vienen truncados
         # (p.ej. "Adjudicado -", "Terminado U"), por lo que se
         # filtra por prefijo en lugar de igualdad exacta.
-        query += " AND estado LIKE ?"
-        params.append(f"{status}%")
+        query += " AND estado LIKE ?" + ESCAPE_LIKE
+        params.append(f"{_escapar_like(status)}%")
     if fecha_inicio:
         query += " AND fecha_publicacion >= ?"
         params.append(fecha_inicio)
@@ -356,8 +382,8 @@ def get_all_contrataciones(
         # normalizar(): insensible a mayusculas/minusculas Y a tildes (ver
         # `_normalizar_para_busqueda`), no solo al rango ASCII que cubre el
         # LIKE nativo de SQLite.
-        query += " AND normalizar(palabra_clave) LIKE normalizar(?)"
-        params.append(f"%{palabra_clave}%")
+        query += " AND normalizar(palabra_clave) LIKE normalizar(?)" + ESCAPE_LIKE
+        params.append(f"%{_escapar_like(palabra_clave)}%")
 
     query += " ORDER BY id DESC"
 
@@ -384,12 +410,18 @@ def get_contrataciones_para_reporte(
     if not palabras_clave:
         return []
 
-    condiciones_palabra = " OR ".join("normalizar(palabra_clave) LIKE normalizar(?)" for _ in palabras_clave)
+    if len(palabras_clave) > MAX_PALABRAS_CLAVE_REPORTE:
+        raise ValueError(f"Maximo {MAX_PALABRAS_CLAVE_REPORTE} palabras clave por reporte")
+
+    # Solo se interpolan los marcadores `?`/ESCAPE; los valores van parametrizados.
+    condiciones_palabra = " OR ".join(
+        "normalizar(palabra_clave) LIKE normalizar(?)" + ESCAPE_LIKE for _ in palabras_clave
+    )
     query = (
         f"SELECT * FROM contrataciones WHERE ({condiciones_palabra}) "
         "AND date(fecha_publicacion) BETWEEN date(?) AND date(?)"
     )
-    params: list[Any] = [f"%{p}%" for p in palabras_clave]
+    params: list[Any] = [f"%{_escapar_like(p)}%" for p in palabras_clave]
     params.extend([fecha_inicio, fecha_fin])
 
     if lote_id:
@@ -420,6 +452,10 @@ def get_contratacion_by_id(contratacion_id: int) -> dict[str, Any] | None:
 def update_contratacion(contratacion_id: int, fields: dict[str, Any]) -> bool:
     if not fields:
         return get_contratacion_by_id(contratacion_id) is not None
+
+    columnas_invalidas = set(fields) - COLUMNAS_ACTUALIZABLES
+    if columnas_invalidas:
+        raise ValueError(f"Columnas no actualizables: {sorted(columnas_invalidas)}")
 
     columns = ", ".join(f"{key} = ?" for key in fields)
     values = list(fields.values()) + [contratacion_id]
