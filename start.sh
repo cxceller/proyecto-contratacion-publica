@@ -10,8 +10,10 @@ if [ -n "$K_SERVICE" ]; then
     python3 scripts/descargar_snapshot_db.py || exit 1
 fi
 
-# Iniciar Uvicorn en segundo plano
-uvicorn src.main:app --host 0.0.0.0 --port 8000 &
+# Iniciar Uvicorn en segundo plano. SOLO en loopback (127.0.0.1): API y Streamlit
+# corren en este mismo contenedor y Streamlit la llama por localhost, asi que la
+# API no debe quedar expuesta fuera de el (Cloud Run solo publica $PORT).
+uvicorn src.main:app --host 127.0.0.1 --port 8000 &
 UVICORN_PID=$!
 
 # Esperar activamente hasta que FastAPI responda en el puerto 8000
@@ -20,7 +22,7 @@ UVICORN_PID=$!
 # se cae antes de quedar listo, no tiene sentido levantar streamlit sobre
 # una API muerta -- se aborta el contenedor propagando su codigo de salida.
 echo "Esperando a que la API de FastAPI esté lista..."
-while ! (exec 3<>/dev/tcp/localhost/8000) 2>/dev/null; do
+while ! (exec 3<>/dev/tcp/127.0.0.1/8000) 2>/dev/null; do
     if ! kill -0 "$UVICORN_PID" 2>/dev/null; then
         wait "$UVICORN_PID"
         CODIGO=$?

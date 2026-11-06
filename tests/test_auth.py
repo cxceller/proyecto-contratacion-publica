@@ -121,3 +121,44 @@ class TestFailClosedSinConfigurar:
     def test_get_sigue_abierto_sin_api_key_configurada(self, client_sin_configurar):
         response = client_sin_configurar.get("/api/todos")
         assert response.status_code == 200
+
+
+class TestDocumentacionEnProduccion:
+    """/docs, /redoc y /openapi.json no se publican en produccion."""
+
+    def test_en_produccion_se_desactivan(self, monkeypatch):
+        from src import main
+
+        monkeypatch.setenv("APP_ENV", "production")
+        assert main._opciones_documentacion() == {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
+    def test_en_cloud_run_se_desactivan(self, monkeypatch):
+        from src import main
+
+        monkeypatch.delenv("APP_ENV", raising=False)
+        monkeypatch.setenv("K_SERVICE", "sercop")
+        assert main._opciones_documentacion()["openapi_url"] is None
+
+    def test_en_desarrollo_siguen_activas(self, monkeypatch):
+        from src import main
+
+        monkeypatch.delenv("APP_ENV", raising=False)
+        monkeypatch.delenv("K_SERVICE", raising=False)
+        assert main._opciones_documentacion() == {}
+
+    def test_una_app_creada_en_produccion_no_sirve_openapi(self, monkeypatch):
+        import importlib
+
+        from fastapi.testclient import TestClient
+
+        from src import main
+
+        monkeypatch.setenv("APP_ENV", "production")
+        recargado = importlib.reload(main)
+        try:
+            with TestClient(recargado.app) as c:
+                assert c.get("/openapi.json").status_code == 404
+                assert c.get("/docs").status_code == 404
+        finally:
+            monkeypatch.delenv("APP_ENV", raising=False)
+            importlib.reload(main)

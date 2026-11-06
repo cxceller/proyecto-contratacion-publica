@@ -1,9 +1,10 @@
 """API REST de procesos de contratacion publica (FastAPI + SQLite)."""
+import os
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import date
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 
 from src import database
 from src.auth import verificar_api_key
@@ -26,15 +27,28 @@ async def lifespan(app: FastAPI):
 
 configurar_logging()
 
-app = FastAPI(title="API de Contratacion Publica", lifespan=lifespan)
+def _es_produccion() -> bool:
+    """Cloud Run (K_SERVICE) o APP_ENV=production."""
+    return bool(os.environ.get("K_SERVICE")) or os.environ.get("APP_ENV", "").lower() == "production"
+
+
+def _opciones_documentacion() -> dict:
+    """En produccion no se publica la documentacion interactiva ni el esquema
+    OpenAPI (/docs, /redoc, /openapi.json): no regalan el mapa de la API."""
+    if _es_produccion():
+        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    return {}
+
+
+app = FastAPI(title="API de Contratacion Publica", lifespan=lifespan, **_opciones_documentacion())
 
 
 @app.get("/api/todos", response_model=list[ContratacionOut])
 def listar_contrataciones(
-    estado: str | None = None,
+    estado: str | None = Query(None, max_length=100),
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
-    palabra_clave: str | None = None,
+    palabra_clave: str | None = Query(None, max_length=200),
 ):
     rows = database.get_all_contrataciones(
         status=estado,
