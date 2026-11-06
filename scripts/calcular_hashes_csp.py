@@ -47,7 +47,7 @@ def hashes_de_scripts_inline() -> list[str]:
 
 def construir_csp(dominio: str = "DOMINIO", hashes: list[str] | None = None, frame_ancestors: str = "none") -> str:
     """CSP compatible con Streamlit (websocket, estilos inline de emotion, workers blob:, fuentes de Google
-    usadas por estilos_sercop.py), con los iframes del componente TinyMCE vendorizado (mismo origen).
+    vendorizadas), con los iframes del componente TinyMCE vendorizado (mismo origen).
 
     `frame_ancestors`: "none" (anticlickjacking estricto, pero bloquea el iframe del MISMO origen del
     editor TinyMCE: usarlo solo con una excepcion para /component/*) o "self" (recomendado)."""
@@ -59,8 +59,9 @@ def construir_csp(dominio: str = "DOMINIO", hashes: list[str] | None = None, fra
         # 'wasm-unsafe-eval': el cliente de Streamlit (protobuf) compila WebAssembly.
         "script-src 'self' 'wasm-unsafe-eval' " + " ".join(hashes),
         # Streamlit/emotion e TinyMCE escriben estilos inline; no hay forma practica de usar hashes ahi.
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-        "font-src 'self' data: https://fonts.gstatic.com",
+        # La fuente (IBM Plex Sans) esta vendorizada en /app/static: ya no hace falta Google Fonts.
+        "style-src 'self' 'unsafe-inline'",
+        "font-src 'self' data:",
         f"img-src 'self' data: blob: {CARTO}",
         # CARTO: mapa de burbujas/coropletico del Dashboard (estilo y teselas vectoriales dark-matter).
         f"connect-src 'self' wss://{dominio} {CARTO}",

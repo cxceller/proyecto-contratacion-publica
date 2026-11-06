@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 from estilos_sercop import aplicar_estilos
 from scripts.dashboard_analitico import construir_datos_gantt_procesos, construir_datos_treemap_presupuesto
 from scripts.formato_ec import (
+    formatear_moneda_compacta_ec,
     formatear_moneda_ec,
     formatear_numero_ec,
     formatear_porcentaje_ec,
@@ -708,6 +709,7 @@ def _inyectar_estilos_kpi_tendencia() -> None:
         /* Fondo/borde/radio/sombra/hover: los pone estilos_sercop.py (regla
         :has(stPlotlyChart):has(stMarkdown)); aca solo el layout. */
         div[class*="st-key-kpi_tendencia_"] {{
+            container-type: inline-size;  /* los montos escalan con el ANCHO DE LA TARJETA (cqw, ver estilos_sercop.py) */
             padding: 1.25rem 1.5rem 1.1rem 1.5rem;
             margin-bottom: 0.5rem;
             min-height: {ALTURA_KPI_REM}rem;
@@ -765,6 +767,7 @@ def render_kpi_card_tendencia(
     ayuda: str | None = None,
     sentido: str = "neutro",
     periodo: str | None = None,
+    detalle_mes: dict | None = None,
 ) -> None:
     """Tarjeta KPI con mini-sparkline (tendencia mensual) y badge de
     variación porcentual vs. el periodo anterior, para los KPIs monetarios
@@ -804,9 +807,12 @@ def render_kpi_card_tendencia(
     misma altura -- confirmado midiendo `top`/`bottom` con
     getBoundingClientRect en vivo: mismo `height`, `top` distinto.
 
-    El badge dice EXPLICITAMENTE que compara ("↑ 12,5 % vs. mes anterior": ultimo
-    mes con datos frente al mes previo de la serie) y `periodo` (ej. "ene 2025 –
-    jun 2025") se muestra bajo el sparkline como el rango mensual graficado."""
+    La cifra principal es el TOTAL del periodo filtrado; el delta compara solo el ULTIMO MES con el
+    anterior, asi que el badge nombra el mes y su cifra para que no se lea como "el total cayo X %":
+    `detalle_mes` (ver _detalle_ultimo_mes) = {mes, mes_previo, valor, valor_previo, valor_completo,
+    valor_previo_completo, pct} -> "nov 2026: 12 · ↓ 66,7 %", con el detalle completo en el tooltip.
+    `periodo` (ej. "ene 2025 – jun 2025") se muestra bajo el sparkline como el rango graficado.
+    (`variacion_pct` suelto se conserva solo por compatibilidad: sin mes/valor no hay contexto.)"""
     _inyectar_estilos_kpi_tendencia()
     with columna:
         clave = "kpi_tendencia_" + re.sub(r"[^a-z0-9]+", "_", etiqueta.lower()).strip("_")
@@ -814,33 +820,51 @@ def render_kpi_card_tendencia(
             # Seguridad (XSS): ver _tarjeta_kpi_html.
             etiqueta_html = html.escape(str(etiqueta))
             valor_html = html.escape(str(valor))
-            atributo_titulo = f' title="{html.escape(ayuda, quote=True)}"' if ayuda else ""
+            # Tooltip: valor completo (los montos no se truncan, pero asi se ve exacto) + ayuda.
+            titulo_texto = f"{etiqueta}: {valor}" + (f" -- {ayuda}" if ayuda else "")
+            atributo_titulo = f' title="{html.escape(titulo_texto, quote=True)}"'
             badge_html = ""
-            if variacion_pct is not None:
-                positivo = variacion_pct >= 0
-                flecha = "↑" if positivo else "↓"
-                # Fondo = tinte (22 de alfa) del color semantico; texto = su
-                # variante oscura, para superar AA 4.5:1 (el color base solo
-                # daba ~3-4:1 sobre su propio tinte).
-                if sentido == "neutro":
-                    color, color_texto = COLOR_NEUTRO_TEXTO_SUAVE, COLOR_NEUTRO_TEXTO_INSIGNIA
-                elif positivo:
-                    color, color_texto = COLOR_ESTADO_OK, COLOR_ESTADO_OK_TEXTO
-                else:
-                    color, color_texto = COLOR_ESTADO_CRITICO, COLOR_ESTADO_CRITICO_TEXTO
-                badge_html = (
-                    f'<span style="display:inline-block;padding:0.15rem 0.6rem;'
-                    f"border-radius:999px;background-color:{color}22;"
-                    f'color:{color_texto};font-size:0.75rem;font-weight:700;line-height:1.4;">'
-                    f"{flecha} {formatear_numero_ec(abs(variacion_pct), 1)} % vs. mes anterior</span>"
-                )
+            detalle = detalle_mes
+            if detalle is None and variacion_pct is not None:
+                detalle = {"pct": variacion_pct}
+            if detalle is not None:
+                pct = detalle.get("pct")
+                partes = []
+                if detalle.get("mes") and detalle.get("valor") is not None:
+                    partes.append(f"{detalle['mes']}: {detalle['valor']}")
+                color, color_texto = COLOR_NEUTRO_TEXTO_SUAVE, COLOR_NEUTRO_TEXTO_INSIGNIA
+                if pct is not None:
+                    positivo = pct >= 0
+                    flecha = "↑" if positivo else "↓"
+                    # Fondo = tinte (22 de alfa) del color semantico; texto = su variante oscura (AA 4.5:1).
+                    if sentido != "neutro":
+                        color, color_texto = (
+                            (COLOR_ESTADO_OK, COLOR_ESTADO_OK_TEXTO)
+                            if positivo
+                            else (COLOR_ESTADO_CRITICO, COLOR_ESTADO_CRITICO_TEXTO)
+                        )
+                    sufijo = "" if detalle.get("mes_previo") else " vs. mes anterior"
+                    partes.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} %{sufijo}")
+                if partes:
+                    ayuda_badge = ""
+                    if detalle.get("mes_previo"):
+                        ayuda_badge = (
+                            f"{detalle['mes']} ({detalle.get('valor_completo', detalle['valor'])}) frente a "
+                            f"{detalle['mes_previo']} ({detalle.get('valor_previo_completo', detalle.get('valor_previo'))})"
+                        )
+                    badge_html = (
+                        f'<span title="{html.escape(ayuda_badge, quote=True)}" style="display:inline-block;'
+                        f"padding:0.15rem 0.6rem;border-radius:999px;background-color:{color}22;"
+                        f'color:{color_texto};font-size:0.75rem;font-weight:700;line-height:1.4;">'
+                        f"{html.escape(' · '.join(partes))}</span>"
+                    )
             st.markdown(
                 f'<div{atributo_titulo}>'
                 f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};'
                 f'min-height:2.5rem;">{etiqueta_html}</div>'
                 f'<div style="font-size:2rem;font-weight:600;color:{COLOR_TEXTO_EJE};'
                 f'line-height:1.3;">{valor_html}</div>'
-                f'<div style="min-height:1.6rem;margin-top:0.2rem;">{badge_html}</div>'
+                f'<div style="min-height:2.7rem;margin-top:0.2rem;">{badge_html}</div>'
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -1013,6 +1037,64 @@ def _serie_conteo_mensual_desde_df(df: pd.DataFrame) -> list[float]:
     return df.dropna(subset=["anio_mes"]).groupby("anio_mes").size().sort_index().astype(float).tolist()
 
 
+def _meses_continuos(df: pd.DataFrame) -> list[str]:
+    """Todos los meses ("AAAA-MM") entre el primero y el ultimo de `df`, SIN huecos. Las tres
+    series de las tarjetas (procesos, presupuesto, en contratacion) usan este mismo rango para que
+    sus sparklines y su periodo coincidan; los meses sin datos valen 0."""
+    if df.empty or "anio_mes" not in df.columns:
+        return []
+    meses = df["anio_mes"].dropna()
+    if meses.empty:
+        return []
+    rango = pd.period_range(meses.min(), meses.max(), freq="M")
+    return [str(m) for m in rango]
+
+
+def _serie_alineada(df: pd.DataFrame, meses: list[str], campo: str | None = None) -> list[float]:
+    """Serie mensual de `df` sobre `meses` (rellena con 0 los meses sin datos): suma de `campo`, o la
+    cantidad de filas si `campo` es None."""
+    if not meses:
+        return []
+    if df.empty or "anio_mes" not in df.columns:
+        return [0.0] * len(meses)
+    validos = df.dropna(subset=["anio_mes"])
+    agrupado = validos.groupby("anio_mes").size() if campo is None else validos.groupby("anio_mes")[campo].sum()
+    return [float(agrupado.get(m, 0.0)) for m in meses]
+
+
+def _periodo_de_meses(meses: list[str]) -> str | None:
+    if not meses:
+        return None
+    primero, ultimo = _etiqueta_mes(meses[0]), _etiqueta_mes(meses[-1])
+    return primero if primero == ultimo else f"{primero} – {ultimo}"
+
+
+def _detalle_ultimo_mes(serie: list[float], meses: list[str], formatear=formatear_numero_ec, completo=None) -> dict | None:
+    """Datos del badge: cifra del ULTIMO mes de la serie y su variacion % frente al mes anterior.
+    `formatear` da la forma corta (badge) y `completo` la exacta (tooltip; por defecto la misma).
+    None si no hay al menos un mes. `pct` es None si el mes previo vale 0 (sin base de comparacion)."""
+    if not serie or len(serie) != len(meses):
+        return None
+    completo = completo or formatear
+    detalle = {
+        "mes": _etiqueta_mes(meses[-1]),
+        "valor": formatear(serie[-1]),
+        "valor_completo": completo(serie[-1]),
+        "mes_previo": None,
+        "valor_previo": None,
+        "valor_previo_completo": None,
+        "pct": None,
+    }
+    if len(serie) >= 2:
+        detalle.update(
+            mes_previo=_etiqueta_mes(meses[-2]),
+            valor_previo=formatear(serie[-2]),
+            valor_previo_completo=completo(serie[-2]),
+            pct=_variacion_pct_ultimo_periodo(serie),
+        )
+    return detalle
+
+
 def _variacion_pct_ultimo_periodo(serie: list[float]) -> float | None:
     """% de variación del último periodo de `serie` respecto al anterior.
     None si hay menos de 2 periodos o el periodo anterior es 0/vacío
@@ -1035,6 +1117,66 @@ ESTADOS_VALOR_ADJUDICADO = {
 }
 
 
+AYUDA_PROCESOS_TENDENCIA = (
+    "Cantidad de procesos del filtro actual. El badge nombra el último mes y lo compara con el mes anterior "
+    "(no con el total)."
+)
+
+
+def _render_trio_tendencia(
+    columnas,
+    *,
+    df_base: pd.DataFrame,
+    df_valor: pd.DataFrame,
+    campo_valor: str,
+    total_procesos: int,
+    total_presupuesto: float,
+    total_valor: float,
+    etiqueta_procesos: str,
+    etiqueta_presupuesto: str,
+    etiqueta_valor: str,
+    ayuda_valor: str,
+) -> None:
+    """Las TRES tarjetas con tendencia (procesos, presupuesto, valor en contratacion/adjudicado) con el
+    mismo componente y la MISMA base temporal: un unico rango continuo de meses (el del `df_base`
+    filtrado) para las tres series, rellenando con 0 los meses sin datos -- asi los sparklines y el
+    periodo mostrado coinciden entre tarjetas. La cifra principal es el total del periodo; el badge
+    habla solo del ultimo mes (ver render_kpi_card_tendencia)."""
+    meses = _meses_continuos(df_base)
+    periodo = _periodo_de_meses(meses)
+    serie_procesos = _serie_alineada(df_base, meses)
+    serie_presupuesto = _serie_alineada(df_base, meses, "presupuesto_referencial")
+    serie_valor = _serie_alineada(df_valor, meses, campo_valor)
+
+    col1, col2, col3 = columnas
+    render_kpi_card_tendencia(
+        col1,
+        etiqueta_procesos,
+        formatear_numero_ec(total_procesos),
+        serie=serie_procesos,
+        detalle_mes=_detalle_ultimo_mes(serie_procesos, meses, lambda v: formatear_numero_ec(v, 0)),
+        ayuda=AYUDA_PROCESOS_TENDENCIA,
+        periodo=periodo,
+    )
+    render_kpi_card_tendencia(
+        col2,
+        etiqueta_presupuesto,
+        formatear_moneda_ec(total_presupuesto),
+        serie=serie_presupuesto,
+        detalle_mes=_detalle_ultimo_mes(serie_presupuesto, meses, formatear_moneda_compacta_ec, formatear_moneda_ec),
+        periodo=periodo,
+    )
+    render_kpi_card_tendencia(
+        col3,
+        etiqueta_valor,
+        formatear_moneda_ec(total_valor),
+        serie=serie_valor,
+        detalle_mes=_detalle_ultimo_mes(serie_valor, meses, formatear_moneda_compacta_ec, formatear_moneda_ec),
+        periodo=periodo,
+        ayuda=ayuda_valor,
+    )
+
+
 def render_kpis_dashboard(df: pd.DataFrame):
     """KPIs principales del Dashboard: Procesos, Presupuesto Total y
     Presupuesto en Contratación -- lo unico visible por defecto antes de
@@ -1053,37 +1195,18 @@ def render_kpis_dashboard(df: pd.DataFrame):
         df_contratacion["presupuesto_referencial"].fillna(0).sum() if not df_contratacion.empty else 0
     )
 
-    serie_presupuesto = _serie_mensual_desde_df(df, "presupuesto_referencial")
-    serie_contratacion = _serie_mensual_desde_df(df_contratacion, "presupuesto_referencial")
-
-    # Las tres tarjetas usan el MISMO componente (etiqueta, valor, badge, sparkline y periodo).
-    serie_procesos = _serie_conteo_mensual_desde_df(df)
-    render_kpi_card_tendencia(
-        col1,
-        "Procesos (filtro actual)",
-        formatear_numero_ec(len(df)),
-        serie=serie_procesos,
-        variacion_pct=_variacion_pct_ultimo_periodo(serie_procesos),
-        ayuda="Cantidad de procesos publicados por mes dentro del filtro actual; el badge compara el "
-        "último mes con datos frente al mes anterior.",
-        periodo=_periodo_mensual_desde_df(df),
-    )
-    render_kpi_card_tendencia(
-        col2,
-        "Presupuesto Total (filtro actual)",
-        formatear_moneda_ec(presupuesto_total),
-        serie=serie_presupuesto,
-        variacion_pct=_variacion_pct_ultimo_periodo(serie_presupuesto),
-        periodo=_periodo_mensual_desde_df(df),
-    )
-    render_kpi_card_tendencia(
-        col3,
-        "En contratación (filtro actual)",
-        formatear_moneda_ec(valor_adjudicado_total),
-        serie=serie_contratacion,
-        variacion_pct=_variacion_pct_ultimo_periodo(serie_contratacion),
-        periodo=_periodo_mensual_desde_df(df_contratacion),
-        ayuda=(
+    _render_trio_tendencia(
+        (col1, col2, col3),
+        df_base=df,
+        df_valor=df_contratacion,
+        campo_valor="presupuesto_referencial",
+        total_procesos=len(df),
+        total_presupuesto=presupuesto_total,
+        total_valor=valor_adjudicado_total,
+        etiqueta_procesos="Procesos (filtro actual)",
+        etiqueta_presupuesto="Presupuesto Total (filtro actual)",
+        etiqueta_valor="En contratación (filtro actual)",
+        ayuda_valor=(
             "Presupuesto Referencial (no el monto adjudicado real) de los procesos que "
             "ya avanzaron a contratación: estados Adjudicada, Adjudicado - Registro de "
             "Contratos, Ejecución de Contrato, Finalizada o En Recepción, dentro del "
@@ -1841,41 +1964,23 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
     # render_kpi_card_tendencia) -- misma logica que render_kpis_dashboard,
     # a partir de la lista de registros (esta funcion no arma un DataFrame
     # con "anio_mes" como si hace preparar_dataframe).
-    serie_presupuesto = _serie_mensual(registros, "presupuesto_referencial")
-    serie_valor_adjudicado = _serie_mensual(registros_valor_adjudicado, campo_valor_adjudicado)
 
     if mostrar_monto_adjudicado:
         col1, col2, col3, col4 = st.columns(4)
     else:
         col1, col2, col3 = st.columns(3)
-    df_periodo = _df_con_anio_mes(registros)
-    serie_procesos = _serie_conteo_mensual_desde_df(df_periodo)
-    render_kpi_card_tendencia(
-        col1,
-        "Número de Procesos",
-        formatear_numero_ec(len(registros)),
-        serie=serie_procesos,
-        variacion_pct=_variacion_pct_ultimo_periodo(serie_procesos),
-        ayuda="Cantidad de procesos publicados por mes dentro del filtro actual; el badge compara el "
-        "último mes con datos frente al mes anterior.",
-        periodo=_periodo_mensual_desde_df(df_periodo),
-    )
-    render_kpi_card_tendencia(
-        col2,
-        "Presupuesto Total",
-        formatear_moneda_ec(presupuesto_total),
-        serie=serie_presupuesto,
-        variacion_pct=_variacion_pct_ultimo_periodo(serie_presupuesto),
-        periodo=_periodo_mensual_desde_df(df_periodo),
-    )
-    render_kpi_card_tendencia(
-        col3,
-        etiqueta_valor_adjudicado,
-        formatear_moneda_ec(valor_adjudicado_total),
-        serie=serie_valor_adjudicado,
-        variacion_pct=_variacion_pct_ultimo_periodo(serie_valor_adjudicado),
-        ayuda=ayuda_valor_adjudicado,
-        periodo=_periodo_mensual_desde_df(_df_con_anio_mes(registros_valor_adjudicado)),
+    _render_trio_tendencia(
+        (col1, col2, col3),
+        df_base=_df_con_anio_mes(registros),
+        df_valor=_df_con_anio_mes(registros_valor_adjudicado),
+        campo_valor=campo_valor_adjudicado,
+        total_procesos=len(registros),
+        total_presupuesto=presupuesto_total,
+        total_valor=valor_adjudicado_total,
+        etiqueta_procesos="Número de Procesos",
+        etiqueta_presupuesto="Presupuesto Total",
+        etiqueta_valor=etiqueta_valor_adjudicado,
+        ayuda_valor=ayuda_valor_adjudicado,
     )
 
     if mostrar_monto_adjudicado:
@@ -2148,7 +2253,7 @@ def render_contadores(registros_totales: list[dict]):
     cols = st.columns(4)
     # "Total" es el agregado, no un estado individual -- sin icono a
     # proposito (ver ICONOS_ESTADO).
-    render_kpi_card(cols[0], "Total", formatear_numero_ec(total))
+    render_kpi_card(cols[0], "Total", formatear_numero_ec(total), insignia="procesos registrados")
     for i, estado_categoria in enumerate(ESTADOS_DESTACADOS, start=1):
         _render_tarjeta_estado(cols[i], estado_categoria, conteos, total)
 

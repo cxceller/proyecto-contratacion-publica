@@ -369,8 +369,8 @@ Qué dice la CSP y por qué (probada localmente, ver más abajo):
 | Directiva | Valor | Motivo |
 |---|---|---|
 | `script-src` | `'self' 'wasm-unsafe-eval'` + hashes | Sin `'unsafe-inline'` ni `'unsafe-eval'`. Los hashes cubren los scripts inline de `index.html` de Streamlit y los 2 scripts de iframes invisibles; el cliente de Streamlit compila WebAssembly (protobuf). |
-| `style-src` | `'self' 'unsafe-inline' https://fonts.googleapis.com` | Streamlit (emotion), Plotly y TinyMCE escriben estilos inline; la fuente Inter de `estilos_sercop.py` viene de Google Fonts. |
-| `font-src` / `img-src` | `'self' data: …` / `'self' data: blob:` + CARTO | Fuentes de Google y de Material Symbols; imágenes pegadas en TinyMCE (`data:`); teselas del mapa. |
+| `style-src` | `'self' 'unsafe-inline'` | Streamlit (emotion), Plotly y TinyMCE escriben estilos inline. |
+| `font-src` / `img-src` | `'self' data:` / `'self' data: blob:` + CARTO | IBM Plex Sans y Material Symbols salen del propio servidor (`/app/static/fonts`); imágenes pegadas en TinyMCE (`data:`); teselas del mapa. |
 | `connect-src` | `'self' wss://DOMINIO` + `basemaps.cartocdn.com` | WebSocket de Streamlit y el mapa del Dashboard (estilo y teselas vectoriales de CARTO). |
 | `worker-src` | `'self' blob:` | Web workers de Streamlit/Plotly. |
 | `frame-src` | `'self' blob: data:` | Iframe del componente TinyMCE (mismo origen) y los `srcdoc` de `st.iframe`. |
@@ -386,8 +386,8 @@ Qué dice la CSP y por qué (probada localmente, ver más abajo):
    mismo NEG, con la CSP en `'self'`), enrutando solo `/component/*` a él con un `path-matcher` del URL map:
    `gcloud compute url-maps add-path-matcher sercop-map --default-service=sercop-backend --path-matcher-name=componentes --backend-service-path-rules="/component/*=sercop-backend-componentes"`.
 
-Si más adelante empaquetas la fuente Inter y el mapa base en local, puedes quitar `fonts.googleapis.com`, `fonts.gstatic.com` y
-CARTO de la política.
+La fuente está vendorizada (`static/fonts/`, servida con `server.enableStaticServing`), así que la política ya no incluye Google
+Fonts. Si más adelante alojas el mapa base en local, puedes quitar también CARTO.
 
 ### 4. Cloud Armor: rate limiting por IP
 

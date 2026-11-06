@@ -20,7 +20,15 @@ import streamlit as st
 
 CSS = r"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+/* IBM Plex Sans VENDORIZADA (static/fonts/, servida por Streamlit con server.enableStaticServing): sin peticiones a Google Fonts. */
+@font-face{ font-family:'IBM Plex Sans'; font-style:normal; font-weight:400; font-display:swap;
+  src:url('/app/static/fonts/ibm-plex-sans/ibm-plex-sans-latin-400-normal.woff2') format('woff2'); }
+@font-face{ font-family:'IBM Plex Sans'; font-style:normal; font-weight:500; font-display:swap;
+  src:url('/app/static/fonts/ibm-plex-sans/ibm-plex-sans-latin-500-normal.woff2') format('woff2'); }
+@font-face{ font-family:'IBM Plex Sans'; font-style:normal; font-weight:600; font-display:swap;
+  src:url('/app/static/fonts/ibm-plex-sans/ibm-plex-sans-latin-600-normal.woff2') format('woff2'); }
+@font-face{ font-family:'IBM Plex Sans'; font-style:normal; font-weight:700; font-display:swap;
+  src:url('/app/static/fonts/ibm-plex-sans/ibm-plex-sans-latin-700-normal.woff2') format('woff2'); }
 
 :root{
   --ink-950:#0b1220; --ink-900:#111827; --ink-700:#334155; --ink-500:#64748b; --ink-400:#94a3b8;
@@ -36,7 +44,7 @@ CSS = r"""
 
 /* ───────── Base ───────── */
 html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):not([translate="no"]):not(.notranslate){
-  font-family:'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-family:'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 [data-testid="stApp"]{ background:var(--paper); }
 [data-testid="stHeader"]{ background:transparent; }
@@ -45,7 +53,7 @@ html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):
 
 /* Jerarquía tipográfica */
 /* st.title / st.header → título de página; st.subheader → título de sección */
-[data-testid="stMain"] h1, [data-testid="stMain"] h2{ font-weight:900 !important; letter-spacing:-.035em; color:var(--ink-950); font-size:2.25rem !important; line-height:1.15 !important; }
+[data-testid="stMain"] h1, [data-testid="stMain"] h2{ font-weight:700 !important; letter-spacing:-.035em; color:var(--ink-950); font-size:2.25rem !important; line-height:1.15 !important; }
 [data-testid="stMain"] h3{ font-weight:700 !important; letter-spacing:-.02em; color:var(--ink-900); font-size:1.15rem !important; margin-top:.5rem; }
 [data-testid="stMain"] h4{ font-weight:600 !important; color:var(--ink-700); font-size:.95rem !important; }
 [data-testid="stCaptionContainer"]{ color:var(--ink-500); }
@@ -86,12 +94,12 @@ html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):
 }
 .sercop-kpi-card:hover{ transform:translateY(-2px) scale(1.01); box-shadow:var(--shadow-hover) !important; border-color:var(--line-strong) !important; }
 .sercop-kpi-card > div:nth-child(1){
-  font-size:.82rem !important; font-weight:600 !important; color:var(--ink-500) !important; letter-spacing:.01em;
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:.35rem;
+  font-size:clamp(.7rem, .9vw, .82rem) !important; font-weight:600 !important; color:var(--ink-500) !important; letter-spacing:.01em;
+  white-space:normal; overflow-wrap:anywhere; line-height:1.3; min-height:2.6em; display:flex; align-items:flex-start; gap:.35rem;
 }
 .sercop-kpi-card > div:nth-child(1) .notranslate{ color:var(--kpi-c, var(--ink-400)); font-size:1rem !important; }
 .sercop-kpi-card > div:nth-child(2){
-  font-size:2.35rem !important; font-weight:800 !important; letter-spacing:-.04em; color:var(--ink-950) !important;
+  font-size:2.35rem !important; font-weight:700 !important; letter-spacing:-.04em; color:var(--ink-950) !important;
   font-variant-numeric:tabular-nums; line-height:1.1 !important; margin:.6rem 0 .35rem !important;
 }
 .sercop-kpi-card > div:nth-child(3) span{
@@ -116,13 +124,16 @@ html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):
 [data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] [data-testid="stPlotlyChart"]):has(> [data-testid="stElementContainer"] [data-testid="stMarkdown"]):hover{
   transform:translateY(-2px); box-shadow:var(--shadow-hover);
 }
-/* valores monetarios grandes: que no se desborden */
+/* Montos: NUNCA se truncan. El tamano sigue el ANCHO DE LA TARJETA (container query: la tarjeta de tendencia declara
+   `container-type:inline-size` en app_ui.py), no el de la ventana; el primer clamp es el respaldo sin cqw. */
 [data-testid="stMain"] [data-testid="stColumn"] [data-testid="stMarkdownContainer"] > div:not(.sercop-kpi-card) > div:first-child + div{
-  font-variant-numeric:tabular-nums; letter-spacing:-.03em; font-weight:800 !important;
-  font-size:clamp(1.3rem, 1.9vw, 1.9rem) !important; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  font-variant-numeric:tabular-nums; letter-spacing:-.03em; font-weight:700 !important;
+  font-size:clamp(1.05rem, 1.3vw, 1.7rem) !important; font-size:clamp(1.05rem, 6.6cqw, 1.9rem) !important;
+  white-space:nowrap; overflow:visible; text-overflow:clip;
 }
+/* Titulo de la tarjeta: hasta 2 lineas con altura fija (las tarjetas de una fila quedan alineadas), sin puntos suspensivos. */
 [data-testid="stMain"] [data-testid="stColumn"] [data-testid="stMarkdownContainer"] > div:not(.sercop-kpi-card) > div:first-child{
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  white-space:normal; overflow:visible; text-overflow:clip; line-height:1.3; min-height:2.6em;
 }
 
 /* ───────── Filtros ───────── */

@@ -29,6 +29,8 @@ toolbarMode = "viewer"
 # telemetria. XSRF y CORS quedan en su default seguro (true). Streamlit >= 1.5x acepta
 # "none" (en 1.41 era booleano).
 [server]
+# Sirve ./static/ en /app/static/ (fuente IBM Plex Sans vendorizada, ver static/fonts/README.md)
+enableStaticServing = true
 maxUploadSize = 10
 enableXsrfProtection = true
 enableCORS = true

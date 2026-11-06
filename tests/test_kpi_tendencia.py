@@ -95,3 +95,85 @@ class TestPeriodoYFormatoEcuador:
         from app_ui import FORMATO_FECHA_UI
 
         assert FORMATO_FECHA_UI == "DD/MM/YYYY"
+
+
+class TestCoherenciaDeLasTarjetas:
+    """Series alineadas, badge que nombra el mes, montos compactos y fuente vendorizada."""
+
+    def _df(self, pares):
+        from app_ui import _df_con_anio_mes
+
+        return _df_con_anio_mes(_registros(pares))
+
+    def test_meses_continuos_sin_huecos(self):
+        from app_ui import _meses_continuos
+
+        assert _meses_continuos(self._df([("2026-01", 1), ("2026-04", 1)])) == [
+            "2026-01", "2026-02", "2026-03", "2026-04",
+        ]
+
+    def test_serie_alineada_rellena_con_cero_los_meses_sin_datos(self):
+        from app_ui import _meses_continuos, _serie_alineada
+
+        df = self._df([("2026-01", 10), ("2026-03", 5), ("2026-03", 7)])
+        meses = _meses_continuos(df)
+        assert _serie_alineada(df, meses, "presupuesto_referencial") == [10.0, 0.0, 12.0]
+        assert _serie_alineada(df, meses) == [1.0, 0.0, 2.0]
+
+    def test_series_de_subconjuntos_usan_el_mismo_rango(self):
+        # "En contratacion" empezaba en otro mes: ahora las tres series tienen la misma longitud
+        from app_ui import _meses_continuos, _serie_alineada
+
+        base = self._df([("2026-01", 1), ("2026-02", 1), ("2026-06", 1)])
+        subconjunto = self._df([("2026-06", 1)])
+        meses = _meses_continuos(base)
+        assert len(_serie_alineada(subconjunto, meses, "presupuesto_referencial")) == len(meses) == 6
+
+    def test_detalle_nombra_el_mes_y_compara_con_el_anterior(self):
+        from app_ui import _detalle_ultimo_mes
+
+        d = _detalle_ultimo_mes([36.0, 12.0], ["2026-10", "2026-11"], lambda v: f"{v:.0f}")
+        assert d["mes"] == "nov 2026" and d["mes_previo"] == "oct 2026"
+        assert d["valor"] == "12" and d["valor_previo"] == "36" and round(d["pct"], 1) == -66.7
+
+    def test_detalle_sin_mes_previo_comparable(self):
+        from app_ui import _detalle_ultimo_mes
+
+        assert _detalle_ultimo_mes([0.0, 5.0], ["2026-10", "2026-11"])["pct"] is None
+        assert _detalle_ultimo_mes([5.0], ["2026-11"])["mes_previo"] is None
+        assert _detalle_ultimo_mes([], []) is None
+
+    def test_moneda_compacta(self):
+        from scripts.formato_ec import formatear_moneda_compacta_ec as c
+
+        assert c(35_990_000) == "$ 35,99 M" and c(1_234_567_890) == "$ 1,23 mil M"
+        assert c(45_678) == "$ 45,68 mil" and c(123.4) == "$ 123,40" and c(-2_500_000) == "-$ 2,50 M"
+        assert c(None) == "" and c(float("nan")) == ""
+
+
+class TestFuenteVendorizada:
+    def test_estilos_no_usan_inter_ni_google_fonts(self):
+        import estilos_sercop
+
+        assert "Inter" not in estilos_sercop.CSS and "googleapis" not in estilos_sercop.CSS
+        assert "gstatic" not in estilos_sercop.CSS and "@import" not in estilos_sercop.CSS
+        assert "font-family:'IBM Plex Sans'" in estilos_sercop.CSS
+
+    def test_los_archivos_de_la_fuente_existen_y_estan_referenciados(self):
+        import re
+        from pathlib import Path
+
+        import estilos_sercop
+
+        raiz = Path(__file__).resolve().parent.parent
+        urls = re.findall(r"url\('/app/static/([^']+)'\)", estilos_sercop.CSS)
+        assert len(urls) == 4
+        for u in urls:
+            assert (raiz / "static" / u).is_file(), u
+        assert (raiz / "static" / "fonts" / "ibm-plex-sans" / "LICENSE.txt").is_file()
+
+    def test_streamlit_sirve_static(self):
+        from pathlib import Path
+
+        config = (Path(__file__).resolve().parent.parent / ".streamlit" / "config.toml").read_text(encoding="utf-8")
+        assert "enableStaticServing = true" in config
