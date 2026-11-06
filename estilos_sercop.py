@@ -238,8 +238,12 @@ html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):
   font-size:.85rem; color:var(--ink-700);
 }
 [data-testid="stTable"] tbody td:first-of-type{ color:var(--ink-900); font-weight:500; }
-[data-testid="stTable"] tbody td:not(:first-of-type){ text-align:right; font-variant-numeric:tabular-nums; }
-[data-testid="stTable"] tbody td:last-of-type{ white-space:nowrap; font-weight:600; color:var(--ink-900); }
+/* Streamlit 1.67 pone `style="text-align:left"` EN LINEA en cada <td>: solo !important lo vence. Numeros a la
+   derecha con cifras tabulares, y NUNCA se parten ("$" / "96.802.791,5..."): el <p> interno tambien va nowrap. */
+[data-testid="stTable"] tbody td:not(:first-of-type){ text-align:right !important; font-variant-numeric:tabular-nums; white-space:nowrap; }
+[data-testid="stTable"] tbody td:not(:first-of-type) p{ text-align:right !important; white-space:nowrap !important; font-variant-numeric:tabular-nums; }
+[data-testid="stTable"] tbody td:last-of-type{ font-weight:600; color:var(--ink-900); }
+[data-testid="stTable"] thead th:not(:nth-child(2)) p{ text-align:right !important; white-space:nowrap; }
 [data-testid="stTable"] tbody tr{ transition:background .2s var(--ease); }
 [data-testid="stTable"] tbody tr:hover{ background:#f8fafc; }
 [data-testid="stTable"] tbody tr:last-child td{ border-bottom:none !important; }

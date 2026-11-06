@@ -1968,9 +1968,9 @@ def render_tablas_resumen(df: pd.DataFrame):
         st.info("No hay datos para resumir con los filtros actuales.")
         return
 
-    # La tabla por estado tiene 4 columnas (Estado, Procesos, % Participación,
-    # Presupuesto Total) y no cabia en media pantalla: se le da mas ancho.
-    col1, col2 = st.columns([3, 2])
+    # Las dos tablas van APILADAS a todo el ancho (no en columnas): a 1100 px cada una necesita ~640 px para que
+    # los montos no se partan ni haya scroll horizontal, y apiladas no queda hueco junto a la tabla corta.
+    contenedor = st.container()
 
     resumen_estado = (
         df.groupby("estado", as_index=False)
@@ -1994,14 +1994,14 @@ def render_tablas_resumen(df: pd.DataFrame):
         porcentajes=("% Participación",),
         montos=("Presupuesto Total",),
     )
-    col1.caption("Por Estado del Proceso")
+    contenedor.caption("Por Estado del Proceso")
     # st.table (HTML estatico) en vez de st.dataframe: el componente
     # interactivo (glide-data-grid) a veces queda en negro/vacio hasta que
     # el usuario hace clic dentro (bug conocido de ese componente con
     # grids canvas fuera de la vista inicial). Estas tablas son chicas y
     # no necesitan ordenar/redimensionar columnas, asi que el renderizado
     # estatico es un intercambio razonable -- ver tambien _tabla_estatica.
-    col1.table(_tabla_estatica(resumen_estado))
+    contenedor.table(_tabla_estatica(resumen_estado))
 
     resumen_tipo = (
         df.groupby("tipo_compra", as_index=False)
@@ -2010,8 +2010,8 @@ def render_tablas_resumen(df: pd.DataFrame):
         .sort_values("Presupuesto Total", ascending=False)
     )
     resumen_tipo = _formatear_tabla_resumen(resumen_tipo, enteros=("Procesos",), montos=("Presupuesto Total",))
-    col2.caption("Por Tipo de Compra (inferido del Objeto del Proceso)")
-    col2.table(_tabla_estatica(resumen_tipo))
+    contenedor.caption("Por Tipo de Compra (inferido del Objeto del Proceso)")
+    contenedor.table(_tabla_estatica(resumen_tipo))
 
 
 def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: bool = False):
