@@ -3143,69 +3143,84 @@ def render_actualizar_montos_adjudicados() -> None:
 
 def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None:
     st.header(":material/location_city: Municipalidad de Guayaquil")
-    registros_municipio = filtrar_por_entidad(registros_totales, ENTIDAD_MUNICIPALIDAD_GUAYAQUIL)
-    if registros_municipio:
-        col_anio, _ = st.columns([1, 3])
-        anios = _anios_disponibles(registros_municipio)
-        anio_sel = col_anio.selectbox("Año", ["(Todos)"] + anios, key="muni_gye_anio")
-        anio_filtro = None if anio_sel == "(Todos)" else anio_sel
-        registros_filtrados = _filtrar_por_anio(registros_municipio, anio_filtro)
 
-        st.caption(
-            f"Mostrando {len(registros_filtrados)} de {len(registros_municipio)} contrataciones · Año: {anio_sel}"
-        )
+    # Antes, "Especificaciones Técnicas" (render_formularios_y_registro) iba
+    # pegado debajo de "Análisis" con un st.divider(), y su propia
+    # sub-navegacion de 4 secciones vivia inyectada en el sidebar (ver
+    # ui/especificaciones_tecnicas.py, ya eliminado de ahi). Pestañas de
+    # primer nivel en vez de eso: el sidebar queda igual en todas las
+    # paginas (mismo criterio que Reportes, ver ui/reportes.py) y las 4
+    # secciones de Especificaciones Técnicas pasan a ser sub-pestañas
+    # dentro de la segunda, sin cambiar nada de su logica interna (ver esa
+    # funcion para el detalle).
+    tab_analisis, tab_especificaciones_tecnicas = st.tabs(
+        [":material/query_stats: Análisis", ":material/edit_note: Especificaciones Técnicas"]
+    )
 
-        if registros_filtrados:
-            estado_clic = render_grafico_estado_clic(registros_filtrados)
-            if estado_clic and estado_clic != st.session_state.get("filtro_estado_click"):
-                st.session_state.filtro_estado_click = estado_clic
-                st.rerun()
+    with tab_analisis:
+        registros_municipio = filtrar_por_entidad(registros_totales, ENTIDAD_MUNICIPALIDAD_GUAYAQUIL)
+        if registros_municipio:
+            col_anio, _ = st.columns([1, 3])
+            anios = _anios_disponibles(registros_municipio)
+            anio_sel = col_anio.selectbox("Año", ["(Todos)"] + anios, key="muni_gye_anio")
+            anio_filtro = None if anio_sel == "(Todos)" else anio_sel
+            registros_filtrados = _filtrar_por_anio(registros_municipio, anio_filtro)
 
-            st.divider()
-            # Usa registros_filtrados (solo filtro de Año), NO registros_finales
-            # (que ademas aplicaria el filtro de estado del clic): el funnel
-            # existe para mostrar el pipeline COMPLETO de una sola vez, encadenarlo
-            # al clic lo colapsaria a una sola etapa, perdiendo el sentido.
-            render_grafico_funnel_pipeline(registros_filtrados)
-            st.divider()
+            st.caption(
+                f"Mostrando {len(registros_filtrados)} de {len(registros_municipio)} contrataciones · Año: {anio_sel}"
+            )
 
-            estado_filtro = st.session_state.get("filtro_estado_click")
-            registros_finales = registros_filtrados
-            if estado_filtro:
-                clave_estado_filtro = _normalizar_texto_provincia(estado_filtro)
-                registros_finales = [
-                    r
-                    for r in registros_filtrados
-                    if _normalizar_texto_provincia(r.get("estado", "")) == clave_estado_filtro
-                ]
-                col_chip, _ = st.columns([1, 3])
-                with col_chip:
-                    if st.button(f"Filtrado por estado: {estado_filtro} ✕", key="limpiar_filtro_estado_click"):
-                        st.session_state.pop("filtro_estado_click", None)
-                        # Tambien se limpia la seleccion propia del grafico (su
-                        # session_state por key): sin esto, el clic anterior
-                        # seguiria "activo" en el widget y este boton no
-                        # tendria efecto -- volveria a filtrar por el mismo
-                        # estado en el siguiente rerun (ver render_grafico_
-                        # estado_clic, que lee su propia seleccion cada vez).
-                        st.session_state.pop("grafico_estado_clic", None)
-                        st.rerun()
+            if registros_filtrados:
+                estado_clic = render_grafico_estado_clic(registros_filtrados)
+                if estado_clic and estado_clic != st.session_state.get("filtro_estado_click"):
+                    st.session_state.filtro_estado_click = estado_clic
+                    st.rerun()
 
-            if registros_finales:
-                render_contadores(registros_finales)
                 st.divider()
-                render_metricas_resumen(registros_finales, mostrar_monto_adjudicado=True)
-                render_tabla_con_color(registros_finales, mostrar_monto_adjudicado=True)
-                render_actualizar_montos_adjudicados()
-            else:
-                st.info(f'No se encontraron procesos para el estado "{estado_filtro}".')
-        else:
-            st.info(f"No se encontraron procesos para el año {anio_sel}.")
-    else:
-        st.info(f'No se encontraron procesos para "{ENTIDAD_MUNICIPALIDAD_GUAYAQUIL}".')
+                # Usa registros_filtrados (solo filtro de Año), NO registros_finales
+                # (que ademas aplicaria el filtro de estado del clic): el funnel
+                # existe para mostrar el pipeline COMPLETO de una sola vez, encadenarlo
+                # al clic lo colapsaria a una sola etapa, perdiendo el sentido.
+                render_grafico_funnel_pipeline(registros_filtrados)
+                st.divider()
 
-    st.divider()
-    render_formularios_y_registro()
+                estado_filtro = st.session_state.get("filtro_estado_click")
+                registros_finales = registros_filtrados
+                if estado_filtro:
+                    clave_estado_filtro = _normalizar_texto_provincia(estado_filtro)
+                    registros_finales = [
+                        r
+                        for r in registros_filtrados
+                        if _normalizar_texto_provincia(r.get("estado", "")) == clave_estado_filtro
+                    ]
+                    col_chip, _ = st.columns([1, 3])
+                    with col_chip:
+                        if st.button(f"Filtrado por estado: {estado_filtro} ✕", key="limpiar_filtro_estado_click"):
+                            st.session_state.pop("filtro_estado_click", None)
+                            # Tambien se limpia la seleccion propia del grafico (su
+                            # session_state por key): sin esto, el clic anterior
+                            # seguiria "activo" en el widget y este boton no
+                            # tendria efecto -- volveria a filtrar por el mismo
+                            # estado en el siguiente rerun (ver render_grafico_
+                            # estado_clic, que lee su propia seleccion cada vez).
+                            st.session_state.pop("grafico_estado_clic", None)
+                            st.rerun()
+
+                if registros_finales:
+                    render_contadores(registros_finales)
+                    st.divider()
+                    render_metricas_resumen(registros_finales, mostrar_monto_adjudicado=True)
+                    render_tabla_con_color(registros_finales, mostrar_monto_adjudicado=True)
+                    render_actualizar_montos_adjudicados()
+                else:
+                    st.info(f'No se encontraron procesos para el estado "{estado_filtro}".')
+            else:
+                st.info(f"No se encontraron procesos para el año {anio_sel}.")
+        else:
+            st.info(f'No se encontraron procesos para "{ENTIDAD_MUNICIPALIDAD_GUAYAQUIL}".')
+
+    with tab_especificaciones_tecnicas:
+        render_formularios_y_registro()
 
 
 def render_pagina_configuracion() -> None:

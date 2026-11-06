@@ -1152,14 +1152,15 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
         or st.session_state.get("especificaciones_tecnicas_borrador_selector") not in ids_disponibles
     ):
         # "not in st.session_state" (ademas del chequeo de valor invalido
-        # de antes) porque este panel ahora es una seccion mas del menu
-        # lateral (ver _render_navegacion_especificaciones_tecnicas_sidebar): al navegar a
-        # otra seccion y volver, Streamlit borra este selectbox por no
-        # haberse instanciado mientras tanto -- y como None (la opcion
-        # "Nueva contratación") SIEMPRE es un valor valido de la lista,
-        # el chequeo anterior (que solo miraba "esta en ids_disponibles")
-        # no detectaba la key ausente y mostraba "Nueva contratación" aun
-        # con un borrador ya cargado.
+        # de antes): este panel vive dentro de una sub-pestaña de
+        # st.tabs() (ver render_formularios_y_registro), que Streamlit SI
+        # instancia en cada rerun aunque no se este viendo -- hoy esto ya
+        # no deberia disparar, pero se deja el chequeo (barato, sin
+        # efecto si la key ya esta presente) por si alguna vez esta
+        # seccion vuelve a depender de una navegacion condicional. Y como
+        # None (la opcion "Nueva contratación") SIEMPRE es un valor valido
+        # de la lista, el chequeo de "esta en ids_disponibles" solo no
+        # alcanzaria para detectar una key ausente.
         _fijar_selector_borrador(
             st.session_state.especificaciones_tecnicas_borrador_id if st.session_state.especificaciones_tecnicas_borrador_id in ids_disponibles else None
         )
@@ -1203,6 +1204,12 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
                 # que cualquier widget la pise.
                 st.session_state["especificaciones_tecnicas_estado_pendiente_restaurar"] = estado
                 st.session_state.especificaciones_tecnicas_borrador_id = id_seleccionado
+                # st.tabs() no se puede cambiar de pestaña por codigo (a
+                # diferencia del selector por botones de antes, que
+                # aterrizaba directo en "Formulario y Parámetros" tras
+                # cargar) -- se avisa con un mensaje en vez de saltar solo,
+                # ver el aviso al final de esta funcion.
+                st.session_state["especificaciones_tecnicas_mostrar_aviso_navegacion"] = True
                 st.success(f"Contratación «{borrador['nombre_contratacion']}» cargada.")
                 st.rerun()
 
@@ -1285,15 +1292,22 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
     else:
         st.caption("Contratación nueva: aún no se ha guardado.")
 
+    # Aviso de una sola vez tras cargar un borrador (ver el comentario en
+    # la rama "Cargar contratación guardada" de arriba): st.tabs() no
+    # permite aterrizar solo en otra sub-pestaña, asi que se indica cual
+    # abrir en vez de saltar ahi por codigo.
+    if st.session_state.pop("especificaciones_tecnicas_mostrar_aviso_navegacion", False):
+        st.info(
+            ':material/arrow_forward: Abrí la pestaña "Formulario y Parámetros" (arriba) para continuar completando esta contratación.'
+        )
+
 
 def _inyectar_estilos_especificaciones_tecnicas_cards() -> None:
     """CSS liviano de "Formularios y Registro": botones redondeados,
     sombra sutil sobre el wrapper nativo de st.container(border=True)
-    (look de tarjeta), el sub-menu lateral de secciones de Especificaciones Técnicas
-    distinguido de los 5 botones de pagina de arriba (ver
-    _render_navegacion_especificaciones_tecnicas_sidebar), y las metricas financieras
-    (Sumatoria Total, Presupuesto Referencial) resaltadas -- mismo patron
-    de st.container(key=...) -> ".st-key-<key>" ya usado en la zona de
+    (look de tarjeta), y las metricas financieras (Sumatoria Total,
+    Presupuesto Referencial) resaltadas -- mismo patron de
+    st.container(key=...) -> ".st-key-<key>" ya usado en la zona de
     peligro de render_vaciar_base_datos (linea ~1176)."""
     st.markdown(
         f"""
@@ -1303,16 +1317,6 @@ def _inyectar_estilos_especificaciones_tecnicas_cards() -> None:
         }}
         [data-testid="stVerticalBlockBorderWrapper"] {{
             box-shadow: 0 1px 4px rgba(15, 23, 42, 0.10);
-        }}
-        .st-key-especificaciones_tecnicas_sidebar_subnav {{
-            border-left: 2px solid rgba(255, 255, 255, 0.15);
-            margin-left: 0.35rem;
-            padding-left: 0.5rem;
-        }}
-        .st-key-especificaciones_tecnicas_sidebar_subnav .stButton > button {{
-            font-size: 0.85rem;
-            font-weight: 500;
-            padding: 0.45rem 0.7rem;
         }}
         .st-key-especificaciones_tecnicas_metrica_sumatoria,
         .st-key-especificaciones_tecnicas_metrica_presupuesto {{
@@ -1334,34 +1338,6 @@ def _inyectar_estilos_especificaciones_tecnicas_cards() -> None:
     )
 
 
-def _render_navegacion_especificaciones_tecnicas_sidebar(nombres_secciones: list[str]) -> None:
-    """Menu lateral de las secciones de Especificaciones Técnicas, anidado DENTRO del
-    sidebar principal (debajo de los 5 botones de pagina de
-    render_navegacion_sidebar, ver el st.divider()+st.caption() que lo
-    preceden) -- no reemplaza esa navegacion, la extiende solo mientras
-    se esta en "Municipalidad de Guayaquil". Mismo patron ya probado ahi:
-    un st.button por opcion (no st.tabs()/st.radio, ver el comentario en
-    render_formularios_y_registro sobre por que) que fija
-    especificaciones_tecnicas_tab_activa en session_state y dispara st.rerun(). Envuelto en
-    st.container(key="especificaciones_tecnicas_sidebar_subnav") para poder distinguirlo con
-    CSS propio (ver _inyectar_estilos_especificaciones_tecnicas_cards) sin tocar la regla
-    compartida que estiliza los botones de pagina de arriba."""
-    with st.sidebar:
-        st.divider()
-        st.caption("ESPECIFICACIONES TÉCNICAS")
-        with st.container(key="especificaciones_tecnicas_sidebar_subnav"):
-            for nombre in nombres_secciones:
-                activo = st.session_state.especificaciones_tecnicas_tab_activa == nombre
-                if st.button(
-                    nombre,
-                    key=f"especificaciones_tecnicas_nav_{nombre}",
-                    use_container_width=True,
-                    type="primary" if activo else "secondary",
-                ):
-                    st.session_state.especificaciones_tecnicas_tab_activa = nombre
-                    st.rerun()
-
-
 def render_formularios_y_registro() -> None:
     """Subseccion "Formularios y Registro": genera el .docx (y la tabla
     de items en Excel) de Especificaciones Tecnicas para los
@@ -1370,9 +1346,8 @@ def render_formularios_y_registro() -> None:
     la tabla de items con calculo automatico y su tipo Bien/Servicio POR
     ITEM, las especificaciones tecnicas condicionales, ~30 campos de
     condiciones legales (organizados en expanders) y una vista previa en
-    vivo se organizan en 4 secciones navegables desde un menu lateral
-    (ver _render_navegacion_especificaciones_tecnicas_sidebar) para no ser un formulario
-    gigante."""
+    vivo se organizan en 4 sub-pestañas (st.tabs(), ver mas abajo) para no
+    ser un formulario gigante."""
     # Aplica un borrador recien elegido en el selectbox del panel de
     # borradores ANTES que cualquier otra cosa en esta funcion, incluidos
     # los defaults de mas abajo: es el primerisimo punto del rerun donde
@@ -1420,45 +1395,30 @@ def render_formularios_y_registro() -> None:
 
     _restaurar_campos_simples_especificaciones_tecnicas()
 
-    # st.tabs() nativo no acepta key/session_state: su seccion activa se
-    # rastrea solo en el frontend, y se sabe que se resetea a la primera
-    # cuando el script hace st.rerun() manual (como los botones
-    # "Añadir/Quitar item"/"Añadir/Quitar parametro" mas abajo) en vez de
-    # un rerun nativo disparado por el propio widget editado. Un selector
-    # respaldado en session_state (mismo patron ya probado en
-    # render_navegacion_sidebar, reutilizado tal cual en
-    # _render_navegacion_especificaciones_tecnicas_sidebar) elimina ese reseteo de forma
-    # deterministica, sin depender de como Streamlit maneje cada rerun.
-    NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS = [
-        "Gestor de Borradores / Contrataciones",
-        "Formulario y Parámetros",
-        "Ítems y Presupuesto",
-        "Generación y Vista Previa",
-    ]
-    if "especificaciones_tecnicas_tab_activa" not in st.session_state:
-        st.session_state.especificaciones_tecnicas_tab_activa = NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[0]
-    elif st.session_state.especificaciones_tecnicas_tab_activa not in NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS:
-        # Puede pasar al cargar un borrador guardado ANTES de este cambio
-        # (tenia nombres de pestaña viejos, ej. "4. Condiciones Legales y
-        # Descarga") -- a diferencia del st.radio() de antes (que hubiera
-        # tirado un StreamlitAPIException, un error duro y visible ante
-        # un valor fuera de lista), el selector por botones no valida
-        # nada: un valor no reconocido simplemente no hace matchear
-        # ningun `elif` de mas abajo y deja la seccion en blanco sin
-        # ningun aviso. Se aterriza en "Formulario y Parámetros" (no en
-        # la primera de la lista) porque quien esta en este caso
-        # probablemente acaba de cargar un borrador viejo y quiere ver
-        # sus datos, no la pantalla de borradores.
-        st.session_state.especificaciones_tecnicas_tab_activa = NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[1]
+    # Antes esto era un selector respaldado en session_state (un st.button
+    # por seccion, inyectado en el sidebar -- ver la ya eliminada
+    # _render_navegacion_especificaciones_tecnicas_sidebar) en vez de
+    # st.tabs() nativo, porque en versiones viejas de Streamlit st.tabs()
+    # se reseteaba a la primera pestaña cuando el script hacia st.rerun()
+    # manual (como los botones "Añadir/Quitar item"/"Añadir/Quitar
+    # parametro" mas abajo). Probado de forma aislada (Streamlit 1.41.1,
+    # la version instalada -- ver requirements.txt): st.tabs() SI conserva
+    # la pestaña activa tras un st.rerun() manual, incluso anidado. Ya no
+    # hace falta el selector propio ni la sub-navegacion en el sidebar.
+    tab_borradores, tab_formulario, tab_items, tab_vista_previa = st.tabs(
+        [
+            ":material/folder_open: Gestor de Borradores / Contrataciones",
+            ":material/edit_note: Formulario y Parámetros",
+            ":material/inventory_2: Ítems y Presupuesto",
+            ":material/description: Generación y Vista Previa",
+        ]
+    )
 
-    _render_navegacion_especificaciones_tecnicas_sidebar(NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS)
-    tab_activa = st.session_state.especificaciones_tecnicas_tab_activa
-
-    if tab_activa == NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[0]:
+    with tab_borradores:
         with st.container(border=True):
             _render_panel_borradores_especificaciones_tecnicas()
 
-    elif tab_activa == NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[1]:
+    with tab_formulario:
         with st.container(border=True):
             st.markdown("**Encabezado fijo del documento**")
             st.info(f"{TITULO_PROCESO_FIJO}\n\n{COORDINACION_FIJA}")
@@ -1676,7 +1636,7 @@ def render_formularios_y_registro() -> None:
                             key=f"especificaciones_tecnicas_specs_obligaciones_{indice}",
                         )
 
-    elif tab_activa == NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[2]:
+    with tab_items:
         with st.container(border=True):
             st.markdown("**Ítems**")
             st.caption(
@@ -1939,7 +1899,7 @@ def render_formularios_y_registro() -> None:
             st.text_area("Forma y condiciones de pago", key="especificaciones_tecnicas_forma_pago")
             st.text_input("Lugar y dirección de entrega/ejecución", key="especificaciones_tecnicas_lugar")
 
-    elif tab_activa == NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[3]:
+    with tab_vista_previa:
         with st.expander("Obligaciones y Garantías"):
             st.text_area("Obligaciones de la Entidad Contratante", key="especificaciones_tecnicas_obligaciones_entidad")
             st.text_area("Obligaciones de la Contratista", key="especificaciones_tecnicas_obligaciones_contratista")
