@@ -118,11 +118,13 @@ html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):
 [data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlockBorderWrapper"]{
   border-radius:var(--r-lg) !important;
 }
-[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] [data-testid="stPlotlyChart"]):has(> [data-testid="stElementContainer"] [data-testid="stMarkdown"]){
+[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] [data-testid="stPlotlyChart"]):has(> [data-testid="stElementContainer"] [data-testid="stMarkdown"]),
+[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"][class*="st-key-kpi_tendencia_"]{
   background:var(--card) !important; border:1px solid var(--line); border-radius:var(--r-lg); box-shadow:var(--shadow);
   transition:transform .3s var(--ease), box-shadow .3s var(--ease);
 }
-[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] [data-testid="stPlotlyChart"]):has(> [data-testid="stElementContainer"] [data-testid="stMarkdown"]):hover{
+[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] [data-testid="stPlotlyChart"]):has(> [data-testid="stElementContainer"] [data-testid="stMarkdown"]):hover,
+[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"][class*="st-key-kpi_tendencia_"]:hover{
   transform:translateY(-2px); box-shadow:var(--shadow-hover);
 }
 /* Cifra principal de las tarjetas con tendencia: formato corto y GRANDE (hasta 2,35rem = el del contador).

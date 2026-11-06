@@ -303,3 +303,22 @@ class TestCifraPrincipalCorta:
         assert "procesos registrados" in html_total and "<span" not in html_total
         con_insignia = _tarjeta_kpi_html("Adjudicada", "5", insignia="1,5 % del total")
         assert "<span>1,5 % del total</span>" in con_insignia
+
+
+class TestTarjetaAhorro:
+    """El "% de Ahorro General" ya no es un gauge: tarjeta KPI con cifra, barra de progreso y significado."""
+
+    def test_cifra_barra_y_significado(self):
+        from app_ui import _tarjeta_ahorro_html
+
+        h = _tarjeta_ahorro_html(39.8, "ayuda <b>")
+        assert "39,8%" in h and 'role="progressbar"' in h and "width:39.8%" in h
+        assert "por debajo del presupuesto referencial" in h
+        assert "\n" not in h and "<b>" not in h  # una sola linea y la ayuda va escapada
+
+    def test_la_barra_se_satura_sin_romper(self):
+        from app_ui import _tarjeta_ahorro_html
+
+        assert "width:100.0%" in _tarjeta_ahorro_html(250.0)
+        negativo = _tarjeta_ahorro_html(-5.0)
+        assert "width:0.0%" in negativo and "por encima del presupuesto referencial" in negativo

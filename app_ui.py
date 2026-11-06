@@ -925,89 +925,33 @@ def render_kpi_card_tendencia(
                     )
 
 
-def _inyectar_estilos_gauge_ahorro() -> None:
-    """CSS para que el contenedor del gauge de "% de Ahorro General" (ver
-    render_metricas_resumen) tenga el mismo fondo/borde que el resto de
-    tarjetas KPI (_tarjeta_kpi_html). A diferencia de
-    _inyectar_estilos_kpi_tendencia (una key por etiqueta, selector por
-    subcadena) aca alcanza una key fija: solo existe una instancia de este
-    gauge por pagina.
+def _tarjeta_ahorro_html(porcentaje: float, ayuda: str | None = None) -> str:
+    """Tarjeta KPI de "% de Ahorro General": cifra grande + barra de progreso + que significa.
 
-    `min-height: {ALTURA_KPI_REM}rem` (P1-6 del plan de mejoras, mismo
-    valor que _tarjeta_kpi_html/_inyectar_estilos_kpi_tendencia): en
-    Municipalidad de Guayaquil esta tarjeta comparte fila con una simple
-    (Número de Procesos) y dos con sparkline -- sin esta altura minima
-    compartida, las 4 quedaban desalineadas entre si.
-
-    `display:flex; flex-direction:column; justify-content:center`
-    (agregado despues, mismo criterio que _tarjeta_kpi_html/
-    _inyectar_estilos_kpi_tendencia): el gauge en si (_figura_gauge_ahorro)
-    tiene una altura de chart FIJA en pixeles menor que `ALTURA_KPI_REM`,
-    asi que centrar verticalmente el label+chart dentro del piso minimo
-    evita que quede todo pegado arriba con un hueco abajo. (Se probo
-    tambien `height: 100%` para estirar esta tarjeta exacto a la altura
-    de la columna -- no funciona, ver el mismo comentario en
-    _inyectar_estilos_kpi_tendencia: los wrappers internos de Streamlit
-    entre esta tarjeta y `[data-testid="stColumn"]` no tienen altura
-    propia, asi que el 100% no tiene de donde resolver.)"""
-    st.markdown(
-        f"""
-        <style>
-        /* Aspecto de tarjeta: estilos_sercop.py (ver arriba). Solo layout. */
-        div[class*="st-key-kpi_gauge_ahorro"] {{
-            padding: 0.75rem 1rem 0 1rem;
-            margin-bottom: 0.5rem;
-            min-height: {ALTURA_KPI_REM}rem;
-            box-sizing: border-box;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
+    Reemplaza al gauge (el numero se montaba sobre el arco y se cortaba en tarjetas de 4 columnas). El mismo
+    componente `.sercop-kpi-card` de las demas, asi que hereda tipografia, alto y sombra. La barra va de 0 a
+    100 % del presupuesto referencial (un ahorro mayor al 100 % o negativo se satura, sin romper); el signo y
+    la cifra exacta van en el texto. Una sola linea de HTML (st.markdown no tolera lineas en blanco)."""
+    ancho = max(0.0, min(100.0, porcentaje))
+    atributo_titulo = f' title="{html.escape(ayuda, quote=True)}"' if ayuda else ""
+    cifra = html.escape(formatear_porcentaje_ec(porcentaje))
+    significado = (
+        "Se adjudicó por debajo del presupuesto referencial"
+        if porcentaje >= 0
+        else "Se adjudicó por encima del presupuesto referencial"
     )
-
-
-def _figura_gauge_ahorro(porcentaje: float) -> go.Figure:
-    """Gauge (velocímetro) para "% de Ahorro General" -- reemplaza la
-    tarjeta plana solo cuando hay una base valida para calcularlo (ver
-    render_metricas_resumen, rama mostrar_monto_adjudicado=True; si
-    porcentaje_ahorro_general es None, esa función sigue mostrando "N/A"
-    en una tarjeta normal, sin gauge). Rango fijo 0-30: el ahorro
-    observado en este dataset no supera ese entorno; un valor fuera de
-    rango simplemente satura el gauge en el extremo, sin romper. Mismo
-    azul primario que el resto de la app (COLOR_SIDEBAR_ACENTO) para la
-    barra de progreso, y `separators=",."` (mismo truco que
-    _aplicar_estilo_base) para que el numero se lea con coma decimal,
-    convencion Ecuador, en vez del punto decimal por defecto de Plotly."""
-    fig = go.Figure(
-        go.Indicator(
-            mode="gauge+number",
-            value=porcentaje,
-            number={"suffix": "%", "valueformat": ".2f", "font": {"color": COLOR_TEXTO_EJE, "size": 28}},
-            gauge={
-                "axis": {"range": [0, 30], "tickcolor": COLOR_NEUTRO_TEXTO_SUAVE},
-                "bar": {"color": COLOR_SIDEBAR_ACENTO, "thickness": 0.3},
-                "bgcolor": COLOR_LIENZO,
-                "borderwidth": 0,
-            },
-        )
+    return (
+        f"<div{atributo_titulo}>"
+        f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};min-height:2.5rem;">% de Ahorro General</div>'
+        f'<div style="font-size:2rem;font-weight:700;color:{COLOR_TEXTO_EJE};line-height:1.2;white-space:nowrap;">'
+        f"{cifra}</div>"
+        f'<div style="font-size:0.72rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};min-height:1.1rem;">de ahorro general</div>'
+        f'<div role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{ancho:.1f}" '
+        f'style="height:8px;border-radius:999px;background:{COLOR_LIENZO};overflow:hidden;margin-top:0.9rem;">'
+        f'<div style="width:{ancho:.1f}%;height:100%;border-radius:999px;background:{COLOR_SIDEBAR_ACENTO};"></div></div>'
+        f'<div style="padding-top:0.4rem;font-size:0.7rem;line-height:1.3;color:{COLOR_NEUTRO_TEXTO_SUAVE};">'
+        f"{significado}</div></div>"
     )
-    fig.update_layout(
-        # 148 (no 190): con el label + padding del contenedor, 190 hacia
-        # que la tarjeta completa (232px) superara claramente el resto de
-        # tarjetas KPI de la misma fila (~184-192px, ver ALTURA_KPI_REM en
-        # ui/tema.py, P1-6 del plan de mejoras) -- 148 deja el total
-        # alineado con sus vecinas.
-        height=148,
-        margin=dict(l=20, r=20, t=10, b=10),
-        paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),
-        separators=",.",
-    )
-    return fig
 
 
 def _serie_mensual_desde_df(df: pd.DataFrame, campo: str) -> list[float]:
@@ -2100,20 +2044,9 @@ def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: boo
             "Ejecución de Contrato, Finalizada o En Recepción."
         )
         if porcentaje_ahorro_general is not None:
-            _inyectar_estilos_gauge_ahorro()
-            with col4:
-                with st.container(key="kpi_gauge_ahorro"):
-                    st.markdown(
-                        f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};'
-                        f'padding-top:0.35rem;" title="{html.escape(ayuda_ahorro, quote=True)}">% de Ahorro General</div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.plotly_chart(
-                        _figura_gauge_ahorro(porcentaje_ahorro_general),
-                        width="stretch",
-                        config={"displayModeBar": False},
-                        key="gauge_ahorro",
-                    )
+            _inyectar_estilos_kpi_tendencia()
+            with col4, st.container(key="kpi_tendencia_ahorro_general"):
+                st.markdown(_tarjeta_ahorro_html(porcentaje_ahorro_general, ayuda_ahorro), unsafe_allow_html=True)
         else:
             render_kpi_card(col4, "% de Ahorro General", "N/A", ayuda=ayuda_ahorro)
 
