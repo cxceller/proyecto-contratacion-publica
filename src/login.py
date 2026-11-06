@@ -46,6 +46,29 @@ def verificar_clave(clave: str, hash_almacenado: str | None) -> bool:
         return False
 
 
+def hash_necesita_actualizarse(hash_almacenado: str | None) -> bool:
+    """True si el hash usa parametros de argon2 mas debiles que los actuales de la libreria.
+    NO se reescribe solo: el hash vive en el entorno/Secret Manager y la app no debe modificarlo."""
+    if not hash_almacenado:
+        return False
+    try:
+        return _hasher.check_needs_rehash(hash_almacenado)
+    except (InvalidHashError, VerificationError):
+        return False
+
+
+_aviso_rehash_emitido = False
+
+
+def _avisar_si_hay_que_regenerar(hash_almacenado: str | None) -> None:
+    """Tras un login correcto: un unico aviso por proceso (sin datos sensibles) si el hash es antiguo."""
+    global _aviso_rehash_emitido
+    if _aviso_rehash_emitido or not hash_necesita_actualizarse(hash_almacenado):
+        return
+    _aviso_rehash_emitido = True
+    logger.warning("APP_CLAVE_HASH usa parámetros antiguos; regenéralo con scripts/generar_hash_clave.py")
+
+
 def usuario_configurado() -> str | None:
     return os.environ.get("APP_USUARIO") or None
 
@@ -142,6 +165,7 @@ def autenticar(usuario: str, clave: str, ahora: float | None = None) -> str:
     clave_ok = verificar_clave(clave, hash_configurado())
     if usuario_ok and clave_ok:
         registrar_exito()
+        _avisar_si_hay_que_regenerar(hash_configurado())
         return OK
     registrar_fallo(ahora)
     return INVALIDA

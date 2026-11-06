@@ -97,3 +97,63 @@ class TestReautenticar:
         for _ in range(5):
             login.reautenticar("mala", ahora=1000)
         assert login.reautenticar(CLAVE, ahora=1010) == login.BLOQUEADO
+
+
+class TestAvisoDeHashAntiguo:
+    """Si APP_CLAVE_HASH usa parametros viejos de argon2, tras un login correcto se avisa en el log
+    (una vez por proceso y sin datos sensibles); la app NO reescribe el hash."""
+
+    MENSAJE = "APP_CLAVE_HASH usa parámetros antiguos; regenéralo con scripts/generar_hash_clave.py"
+
+    @pytest.fixture()
+    def hash_debil(self):
+        from argon2 import PasswordHasher
+
+        return PasswordHasher(time_cost=1, memory_cost=8, parallelism=1).hash(CLAVE)
+
+    @pytest.fixture(autouse=True)
+    def reiniciar_aviso(self, monkeypatch):
+        monkeypatch.setattr(login, "_aviso_rehash_emitido", False)
+
+    def test_hash_antiguo_emite_el_aviso_exacto(self, monkeypatch, hash_debil, caplog):
+        monkeypatch.setenv("APP_CLAVE_HASH", hash_debil)
+        with caplog.at_level("WARNING", logger="src.login"):
+            assert login.autenticar("admin_prueba", CLAVE, ahora=1000) == login.OK
+        avisos = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert [r.getMessage() for r in avisos] == [self.MENSAJE]
+
+    def test_el_aviso_no_contiene_datos_sensibles(self, monkeypatch, hash_debil, caplog):
+        monkeypatch.setenv("APP_CLAVE_HASH", hash_debil)
+        with caplog.at_level("WARNING", logger="src.login"):
+            login.autenticar("admin_prueba", CLAVE, ahora=1000)
+        texto = caplog.text
+        assert CLAVE not in texto and hash_debil not in texto and "$argon2" not in texto and "admin_prueba" not in texto
+
+    def test_aviso_una_sola_vez_por_proceso(self, monkeypatch, hash_debil, caplog):
+        monkeypatch.setenv("APP_CLAVE_HASH", hash_debil)
+        with caplog.at_level("WARNING", logger="src.login"):
+            login.autenticar("admin_prueba", CLAVE, ahora=1000)
+            login.autenticar("admin_prueba", CLAVE, ahora=1001)
+        assert sum(r.getMessage() == self.MENSAJE for r in caplog.records) == 1
+
+    def test_hash_actual_no_avisa(self, caplog):
+        with caplog.at_level("WARNING", logger="src.login"):
+            assert login.autenticar("admin_prueba", CLAVE, ahora=1000) == login.OK
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+    def test_login_fallido_no_avisa(self, monkeypatch, hash_debil, caplog):
+        monkeypatch.setenv("APP_CLAVE_HASH", hash_debil)
+        with caplog.at_level("WARNING", logger="src.login"):
+            assert login.autenticar("admin_prueba", "mala", ahora=1000) == login.INVALIDA
+        assert self.MENSAJE not in caplog.text
+
+    def test_no_reescribe_el_hash(self, monkeypatch, hash_debil):
+        import os
+
+        monkeypatch.setenv("APP_CLAVE_HASH", hash_debil)
+        login.autenticar("admin_prueba", CLAVE, ahora=1000)
+        assert os.environ["APP_CLAVE_HASH"] == hash_debil
+
+    def test_hash_invalido_no_lanza(self):
+        assert login.hash_necesita_actualizarse("no-es-un-hash") is False
+        assert login.hash_necesita_actualizarse(None) is False
