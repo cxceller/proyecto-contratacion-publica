@@ -93,8 +93,9 @@ def init_db() -> None:
             # Identifica todas las filas insertadas durante una misma
             # ejecucion de scrape_portal.py/import_csv.py (un "lote" o
             # busqueda), para poder reconstruir bloques de busqueda de forma
-            # confiable (ver scripts/report_generator.py) en vez de adivinar
-            # por saltos en el id.
+            # confiable (ver modulos/capturas.py en el proyecto "Estudio de
+            # Mercado SERCOP", tema_5/Estudio de mercado SERCOP) en vez de
+            # adivinar por saltos en el id.
             conn.execute("ALTER TABLE contrataciones ADD COLUMN lote_id TEXT")
         if "monto_adjudicado" not in columnas:
             # "Monto de Adjudicación ($)" real, leido de la seccion
@@ -375,18 +376,11 @@ def get_contrataciones_para_reporte(
     lote_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Trae los procesos que coinciden con alguna de `palabras_clave`
-    (comparacion por substring, insensible a mayusculas/minusculas Y A
-    TILDES -- ver `_normalizar_para_busqueda` -- para tolerar variaciones
-    del dato crudo del portal) dentro del rango `fecha_inicio`/`fecha_fin`,
-    opcionalmente acotado a un `lote_id` (una ejecucion de scraping/
-    importacion puntual). `fecha_inicio`/`fecha_fin` deben venir en
-    formato ISO `YYYY-MM-DD` (asi los serializa `date.isoformat()` en
-    `src/api_reportes.py`, y asi se guarda `fecha_publicacion` en la
-    tabla -- ver `scripts/import_csv.py::parsear_fecha`); se envuelven
-    igual en `date(...)` de SQLite para que la comparacion `BETWEEN` no
-    dependa de que ambos lados traigan exactamente el mismo formato de
-    texto (p.ej. si algun valor trajera una hora pegada).
-    Pensada para alimentar `scripts/report_generator.py::generar_reporte`."""
+    (substring, insensible a mayusculas/minusculas y tildes via
+    `normalizar()`, igual que `get_all_contrataciones`) dentro de
+    [`fecha_inicio`, `fecha_fin`] (ISO YYYY-MM-DD), opcionalmente acotado a
+    un `lote_id`. Alimenta scripts/reportes_generator.py::generar_reporte
+    (disparado desde ui/reportes.py)."""
     if not palabras_clave:
         return []
 

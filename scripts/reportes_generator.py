@@ -1,5 +1,5 @@
 """Ensambla un informe .docx (Word) que documenta las busquedas realizadas
-en el portal de Compras Publicas (SERCOP) via `scripts/scrape_portal.py`.
+en el portal de Compras Publicas (SERCOP) via scripts/scrape_portal.py.
 
 Por cada palabra clave, el informe agrega:
 1. Bloque de titulo (una vez), centrado, Tahoma 12 negrita, sin
@@ -11,29 +11,23 @@ Por cada palabra clave, el informe agrega:
    español, Tahoma 10, alineado a la izquierda, con negrita solo en la
    etiqueta ("RANGO DE BUSQUEDA:" / "PALABRA CLAVE") y no en el valor.
 3. El mismo par de lineas repetido por cada bloque de 6 meses
-   (semestre) dentro de ese rango global (ver `_rangos_semestrales`),
-   seguido de las capturas de pantalla que le correspondan a ese
-   semestre por la fecha real de sus datos (ver `_lotes_de_capturas` /
-   `_asignar_lotes_a_semestres`), con borde negro solido. Si una misma
-   palabra clave se busco varias veces dentro del mismo semestre, todos
-   esos lotes de capturas se agrupan bajo ese semestre (no se pierde
-   ninguno).
+   (semestre) dentro de ese rango global (ver
+   scripts/reportes_capturas.py::rangos_semestrales), seguido de las
+   capturas de pantalla que le correspondan a ese semestre por la fecha
+   real de sus datos (ver scripts/reportes_capturas.py::lotes_de_capturas/
+   asignar_lotes_a_semestres), con borde negro solido.
 4. La declaracion "EXISTEN [N] PROCESOS LOS MISMOS QUE SERÁN ANALIZADOS."
 5. Una unica tabla (fuente Tahoma, columnas de ancho fijo) con todos los
-   procesos de esa palabra clave.
+   procesos de esa palabra clave. La columna "Observaciones" lleva, si
+   `llenar_observaciones` es True (default), `OBSERVACION_TEXTO` + el
+   objeto del proceso completo en mayusculas (ver _observacion_partes).
 
-El parrafo introductorio ("1.- Se procede...") va en Tahoma 10,
-justificado, con negrita selectiva en "1.- ", "PORTAL DE COMPRAS
-PÚBLICAS" y la lista de palabras clave entrecomilladas (“asi”), igual
-que el modelo de referencia; el resto del texto general (incluida la
-linea "EXISTEN...") no lleva negrita.
+Uso tipico (df ya cargado con las columnas del esquema de la BD: id,
+codigo, entidad_contratante, objeto_proceso, estado, provincia_canton,
+presupuesto_referencial, fecha_publicacion, palabra_clave, url --
+ver src/database.py::get_contrataciones_para_reporte):
 
-Uso tipico (df ya cargado con las columnas del esquema de la API/BD:
-id, codigo, entidad_contratante, objeto_proceso, estado,
-provincia_canton, presupuesto_referencial, fecha_publicacion,
-palabra_clave, url):
-
-    from scripts.report_generator import generar_reporte
+    from scripts.reportes_generator import generar_reporte
 
     generar_reporte(
         df=df,
@@ -42,6 +36,7 @@ palabra_clave, url):
         fecha_fin_global="2026-06-30",
     )
 """
+import os
 import re
 import unicodedata
 from pathlib import Path
@@ -53,8 +48,22 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Length, Pt, RGBColor
+from dotenv import load_dotenv
 
 from scripts.formato_ec import formatear_moneda_ec
+from scripts.reportes_capturas import (
+    asignar_lotes_a_semestres,
+    dividir_imagen_si_no_cabe,
+    lotes_de_capturas,
+    rangos_semestrales,
+)
+
+load_dotenv()
+
+# Carpeta donde se guardan las partes de una captura demasiado alta para
+# una pagina (ver _agregar_captura). NUNCA la carpeta capturas/ (de solo
+# lectura para este generador -- ver scripts/reportes_capturas.py).
+DIRECTORIO_SALIDAS_CAPTURAS = Path(__file__).resolve().parent.parent / "salidas" / "capturas"
 
 # Estilo del documento: tipografia general del cuerpo, de titulos y de
 # la tabla, mas el borde de las capturas de pantalla.
@@ -62,6 +71,7 @@ FUENTE = "Tahoma"
 TAMANO_CUERPO_PT = 10
 TAMANO_TITULO_PT = 12
 TAMANO_TABLA_PT = 6  # 5 o 6 pt son legibles en celdas compactas; 6 por legibilidad
+TAMANO_OBSERVACIONES_PT = 8  # Observaciones ahora lleva el objeto completo -- 6pt es ilegible para una oracion larga
 COLOR_BORDE_IMAGEN = "000000"
 GROSOR_BORDE_IMAGEN_PT = 1.0
 
@@ -80,32 +90,20 @@ NUMEROS_EN_LETRAS = {
     16: "dieciséis", 17: "diecisiete", 18: "dieciocho", 19: "diecinueve", 20: "veinte",
 }
 
-# Cada palabra clave se documenta ademas en bloques de 6 meses (semestres)
-# dentro del rango global, empezando en fecha_inicio_global -- asi es como
-# el portal SERCOP limita cada busqueda individual (hasta 6 meses antes y
-# 15 dias despues de la fecha de publicacion). Ver `_rangos_semestrales`.
-MESES_POR_SEMESTRE = 6
-
 # Propiedades de tabla pedidas explicitamente (vistas en el dialogo
 # "Propiedades de tabla" de Word): sangria negativa (extiende la tabla
-# mas alla del margen izquierdo normal) y alto minimo de fila. Ver
-# `_configurar_propiedades_tabla`/`_configurar_propiedades_fila`.
+# mas alla del margen izquierdo normal) y alto minimo de fila.
 INDENTACION_TABLA_CM = -2.51
 ALTO_MINIMO_FILA_CM = 0.04
 
 # Ancho FIJO de cada columna de la tabla, en cm (mismo orden que
-# COLUMNAS_TABLA_REPORTE) -- medida exacta, no proporcional. El ancho
-# preferido de la tabla (tblW) es la suma de estos valores, para que
-# quede consistente con el ancho real de las columnas.
-ANCHOS_COLUMNAS_CM = [1, 2, 3, 4.06, 2, 2, 2, 2, 3]
+# COLUMNAS_TABLA_REPORTE) -- medida exacta, no proporcional. La suma se
+# mantiene igual a la original (21.06cm) a proposito: la tabla usa una
+# sangria negativa (INDENTACION_TABLA_CM) calibrada para ese ancho total,
+# asi que crecer la suma la haria caer fuera del borde derecho de la
+# pagina -- Observaciones crece a costa de achicar el resto, no sumando.
+ANCHOS_COLUMNAS_CM = [0.8, 1.8, 3.0, 3.56, 1.7, 1.7, 1.9, 1.6, 5.0]
 ANCHO_TABLA_CM = sum(ANCHOS_COLUMNAS_CM)
-
-PATRON_CAPTURA_NUEVO = re.compile(
-    r"^(?P<slug>.+)_(?P<lote_slug>\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})_pag_(?P<pagina>\d+)\.png$"
-)
-PATRON_CAPTURA_LEGADO = re.compile(
-    r"^(?P<slug>.+)_(?P<dia>\d{2})-(?P<mes>[a-zA-Z]+)-(?P<anio>\d{4})_pag_(?P<pagina>\d+)\.png$"
-)
 
 MESES_ES = {
     "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
@@ -119,11 +117,17 @@ COLUMNAS_TABLA_REPORTE = [
     "Presupuesto Referencial Total(sin iva)", "Fecha de Publicación",
     "Observaciones",
 ]
+INDICE_COLUMNA_OBSERVACIONES = COLUMNAS_TABLA_REPORTE.index("Observaciones")
 
-TEXTO_NO_APLICA = (
-    "NO APLICA, ESTE PROCESO NO SE CONSIDERA POR SER DE CARACTERISTICAS "
-    "DIFERENTE A LO QUE SE REQUIERE OBJETO DE CONTRATACIÓN DIFERENTE - "
+# Texto fijo que antecede al objeto del proceso en la columna
+# "Observaciones" (ver _observacion_partes). Configurable via
+# OBSERVACION_TEXTO en .env sin tocar el codigo -- por ejemplo si cambia
+# la redaccion estandar que pide el cliente.
+OBSERVACION_TEXTO_DEFECTO = (
+    "NO APLICA, ESTE PROCESO NO SE CONSIDERA POR TENER OBJETO DE CONTRATACIÓN "
+    "DIFERENTE Y SER DE CARACTERÍSTICAS DIFERENTES A LO QUE SE REQUIERE ADQUIRIR - "
 )
+OBSERVACION_TEXTO = os.environ.get("OBSERVACION_TEXTO", OBSERVACION_TEXTO_DEFECTO)
 
 
 def _normalizar_texto(texto) -> str:
@@ -135,9 +139,8 @@ def _normalizar_texto(texto) -> str:
 def _aplicar_fuente(run, tamano_pt: float, negrita: bool | None = None, fuente: str = FUENTE) -> None:
     """Fija fuente/tamano/negrita de un run. Ademas de `run.font.name`
     (que Word solo respeta para texto "ascii"/latino), setea tambien
-    `w:eastAsia` en las propiedades del run: es un gotcha conocido de
-    python-docx/Word donde, sin ese atributo, algunos renderizadores
-    ignoran la fuente elegida."""
+    `w:eastAsia` en las propiedades del run: sin ese atributo, algunos
+    renderizadores ignoran la fuente elegida."""
     run.font.name = fuente
     run.font.size = Pt(tamano_pt)
     if negrita is not None:
@@ -158,17 +161,7 @@ def _agregar_imagen_con_borde(
     grosor_pt: float = GROSOR_BORDE_IMAGEN_PT,
 ):
     """Inserta una imagen envuelta en una tabla de 1x1, con borde de
-    celda solido en los 4 lados (<w:tcBorders>) y sin margen interno
-    (pegado a la imagen).
-
-    No se usa el contorno DrawingML de la imagen (<a:ln> en <pic:spPr>):
-    ese trazo se dibuja centrado en el borde de la imagen, mitad hacia
-    afuera, y varios renderizadores (Word incluido, segun el caso) lo
-    recortan contra la caja de linea del parrafo anterior cuando la
-    imagen queda inmediatamente despues de una linea de texto -- el lado
-    superior desaparece aunque los otros 3 se vean bien. Un borde de
-    celda de tabla no tiene ese problema: se dibuja DENTRO del area de
-    la celda, no a caballo de un limite externo."""
+    celda solido en los 4 lados (<w:tcBorders>) y sin margen interno."""
     tabla = documento.add_table(rows=1, cols=1)
     tabla.autofit = False
     tabla.alignment = WD_TABLE_ALIGNMENT.LEFT
@@ -204,11 +197,44 @@ def _agregar_imagen_con_borde(
     return tabla
 
 
+def _agregar_pie_parte(documento: Document, numero_captura: int, indice_parte: int, total_partes: int) -> None:
+    parrafo = documento.add_paragraph()
+    parrafo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = parrafo.add_run(f"Captura {numero_captura} – parte {indice_parte} de {total_partes}")
+    _aplicar_fuente(run, TAMANO_TABLA_PT, negrita=False)
+    run.font.italic = True
+
+
+def _agregar_captura(
+    documento: Document,
+    ruta_imagen: Path,
+    ancho: Length,
+    alto_util: Length,
+    numero_captura: int,
+    directorio_salidas_capturas: Path,
+) -> None:
+    """Inserta una captura de pantalla, dividiendola primero si no cabe
+    entera en una pagina (ver scripts/reportes_capturas.py::dividir_imagen_si_no_cabe).
+
+    Si cabe en una pagina, se inserta igual que siempre (sin salto de
+    pagina ni pie). Si no cabe, cada parte va en su propia pagina con un
+    pie "Captura N – parte i de M" debajo."""
+    partes = dividir_imagen_si_no_cabe(ruta_imagen, ancho, alto_util, directorio_salidas_capturas)
+
+    if len(partes) == 1 and partes[0] == ruta_imagen:
+        _agregar_imagen_con_borde(documento, ruta_imagen, ancho)
+        return
+
+    total_partes = len(partes)
+    for indice, parte in enumerate(partes, start=1):
+        documento.add_page_break()
+        _agregar_imagen_con_borde(documento, parte, ancho)
+        _agregar_pie_parte(documento, numero_captura, indice, total_partes)
+
+
 def _configurar_propiedades_tabla(tabla) -> None:
-    """Ancho preferido fijo, alineacion izquierda con sangria negativa y
-    "sin ajuste de texto" (una tabla normal/no flotante, sin <w:tblpPr>,
-    ya se comporta asi por defecto). python-docx no expone `tblW`/
-    `tblInd` via su API publica, asi que se arman a mano en <w:tblPr>."""
+    """python-docx no expone tblW/tblInd via su API publica, asi que se
+    arman a mano en <w:tblPr>."""
     tabla.alignment = WD_TABLE_ALIGNMENT.LEFT
 
     tbl_pr = tabla._tbl.tblPr
@@ -230,12 +256,8 @@ def _configurar_propiedades_tabla(tabla) -> None:
 
 
 def _configurar_propiedades_fila(fila, es_encabezado: bool = False) -> None:
-    """Alto minimo de fila, "permitir dividir entre paginas" y, solo para
-    la fila de encabezado, "repetir como fila de encabezado en cada
-    pagina". El orden de insercion en <w:trPr> importa para el esquema
-    OOXML (cantSplit, trHeight, tblHeader, en ese orden), por eso
-    `cantSplit` se agrega ANTES de fijar `height`/`height_rule` (que crea
-    <w:trHeight>) y `tblHeader` se agrega despues."""
+    """El orden de insercion en <w:trPr> importa para el esquema OOXML
+    (cantSplit, trHeight, tblHeader, en ese orden)."""
     tr_pr = fila._tr.get_or_add_trPr()
 
     cant_split = OxmlElement("w:cantSplit")
@@ -251,22 +273,10 @@ def _configurar_propiedades_fila(fila, es_encabezado: bool = False) -> None:
         tr_pr.append(tbl_header)
 
 
-def _slug_palabra_clave(palabra_clave: str) -> str:
-    """Debe coincidir EXACTAMENTE con la logica de
-    `scripts/scrape_portal.py::_slug_palabra_clave` (asi es como se nombran
-    los archivos en capturas/): minusculas, sin acentos, solo alfanumericos
-    separados por guion bajo."""
-    sin_acentos = unicodedata.normalize("NFKD", str(palabra_clave or ""))
-    sin_acentos = "".join(c for c in sin_acentos if not unicodedata.combining(c))
-    slug = re.sub(r"[^a-z0-9]+", "_", sin_acentos.lower()).strip("_")
-    return slug or "sin_palabra_clave"
-
-
 def _formatear_fecha_larga(valor, conector_anio: str = "de") -> str:
-    """'2026-07-23' -> '23 de julio de 2026' (conector_anio='de', para
-    los encabezados de RANGO DE BUSQUEDA en mayusculas) o '23 de julio
-    del 2026' (conector_anio='del', para el parrafo introductorio, que
-    asi lo redacta el modelo de referencia)."""
+    """'2026-07-23' -> '23 de julio de 2026' (conector_anio='de') o
+    '23 de julio del 2026' (conector_anio='del', para el parrafo
+    introductorio)."""
     fecha = pd.to_datetime(valor, errors="coerce")
     if pd.isna(fecha):
         return str(valor)
@@ -275,8 +285,6 @@ def _formatear_fecha_larga(valor, conector_anio: str = "de") -> str:
 
 
 def _formatear_fecha_larga_mayusculas(valor) -> str:
-    """'2026-07-23' -> '23 DE JULIO DE 2026' (para los encabezados de
-    RANGO DE BUSQUEDA)."""
     return _formatear_fecha_larga(valor, conector_anio="de").upper()
 
 
@@ -285,8 +293,6 @@ def _numero_en_letras(numero: int) -> str:
 
 
 def _anios_entre(fecha_inicio, fecha_fin) -> int:
-    """Cantidad de años (redondeada, minimo 1) entre dos fechas, para la
-    frase 'dentro de los N (n_en_letras) años' del parrafo introductorio."""
     inicio = pd.to_datetime(fecha_inicio, errors="coerce")
     fin = pd.to_datetime(fecha_fin, errors="coerce")
     if pd.isna(inicio) or pd.isna(fin):
@@ -296,7 +302,6 @@ def _anios_entre(fecha_inicio, fecha_fin) -> int:
 
 
 def _formatear_fecha_corta(valor) -> str:
-    """'2026-07-23...' -> '23/07/2026'; vacio/no parseable -> '' o el valor tal cual."""
     if valor is None or valor == "" or (isinstance(valor, float) and pd.isna(valor)):
         return ""
     fecha = pd.to_datetime(valor, errors="coerce")
@@ -312,9 +317,6 @@ def _formatear_moneda(valor) -> str:
 
 
 def _formatear_lista_con_comillas_y(elementos: list[str]) -> str:
-    """['a'] -> '“a”'; ['a','b'] -> '“a” y “b”'; ['a','b','c'] ->
-    '“a”, “b” y “c”' (comillas tipograficas, como en el parrafo
-    introductorio del modelo de referencia)."""
     elementos = [str(e).strip() for e in elementos if str(e).strip()]
     if not elementos:
         return ""
@@ -324,162 +326,40 @@ def _formatear_lista_con_comillas_y(elementos: list[str]) -> str:
     return ", ".join(entrecomilladas[:-1]) + " y " + entrecomilladas[-1]
 
 
-def _primeras_palabras(texto, n: int = 8) -> str:
-    return " ".join(str(texto or "").split()[:n])
+def _normalizar_espacios(texto) -> str:
+    """Colapsa cualquier corrida de espacios en blanco (incluye saltos de
+    linea y tabs, que a veces trae el objeto del proceso crudo del
+    scraping) a un solo espacio y recorta los extremos."""
+    return re.sub(r"\s+", " ", str(texto or "")).strip()
 
 
-def _observacion(objeto_proceso, palabra_clave: str) -> str:
-    """Celda 'Observaciones': vacia si el objeto del proceso menciona la
-    palabra clave buscada; si no, el texto fijo pedido + las primeras
-    palabras del objeto real, para poder identificar el proceso a simple
-    vista sin tener que abrir el link."""
-    if _normalizar_texto(palabra_clave) in _normalizar_texto(objeto_proceso):
-        return ""
-    return TEXTO_NO_APLICA + _primeras_palabras(objeto_proceso)
+PREFIJO_NEGRITA_OBSERVACION = "NO APLICA"
 
 
-def _slug_lote_id(lote_id) -> str | None:
-    """Debe coincidir EXACTAMENTE con la logica de
-    `scripts/scrape_portal.py::_slug_lote_id` (asi es como se nombran las
-    capturas del formato nuevo): reemplaza los caracteres invalidos en un
-    nombre de archivo (los ":" del timestamp ISO) por "-". Devuelve None
-    para valores vacios/nulos."""
-    if lote_id is None or (isinstance(lote_id, float) and pd.isna(lote_id)):
-        return None
-    texto = str(lote_id).strip()
-    if not texto:
-        return None
-    return re.sub(r"[^A-Za-z0-9_-]", "-", texto)
+def _observacion_partes(objeto_proceso, llenar: bool) -> tuple[str, str]:
+    """Columna 'Observaciones', partida en (parte_negrita, parte_normal)
+    para poder insertarla como dos runs con distinto `bold` (ver
+    _agregar_tabla_procesos): solo la palabra "NO APLICA" va en negrita,
+    el resto del texto fijo + el objeto del proceso va en texto normal.
 
+    Si `llenar` es False (checkbox "Llenar Observaciones con 'NO APLICA'"
+    destildado en la UI), devuelve ("", "") -- celda vacia. Si es True,
+    TODAS las filas reciben `OBSERVACION_TEXTO` seguido del objeto del
+    proceso COMPLETO (sin recortar), en mayusculas y sin espacios dobles
+    ni saltos de linea.
 
-def _lotes_de_capturas(capturas_dir: Path, palabra_clave: str) -> list[tuple[str, list[Path]]]:
-    """Agrupa las capturas de pantalla de `capturas_dir` que pertenecen a
-    `palabra_clave` por ejecucion de scraping (un grupo = las paginas de
-    una misma busqueda), en orden cronologico. Devuelve pares
-    (clave_de_orden, imagenes); `_asignar_lotes_a_semestres` usa esa
-    clave para emparejar cada lote con el bloque semestral que le
-    corresponda por FECHA REAL, no por posicion.
-
-    Reconoce los dos formatos de nombre de archivo que usa
-    `scripts/scrape_portal.py`:
-    - Nuevo: `[slug]_[lote_id]_pag_[N].png` (lote_id slugificado, unico
-      por ejecucion, con precision de segundos).
-    - Legado (capturas de antes de esa migracion): `[slug]_[fecha]_pag_[N].png`
-      (solo la fecha del dia)."""
-    slug = _slug_palabra_clave(palabra_clave)
-    if not capturas_dir.exists():
-        return []
-
-    imagenes_por_clave: dict = {}
-    orden_por_clave: dict = {}
-
-    for archivo in capturas_dir.iterdir():
-        coincidencia = PATRON_CAPTURA_NUEVO.match(archivo.name)
-        if coincidencia and coincidencia.group("slug") == slug:
-            clave = coincidencia.group("lote_slug")
-            orden_por_clave[clave] = clave
-            imagenes_por_clave.setdefault(clave, []).append(
-                (int(coincidencia.group("pagina")), archivo)
-            )
-            continue
-
-        coincidencia = PATRON_CAPTURA_LEGADO.match(archivo.name)
-        if coincidencia and coincidencia.group("slug") == slug:
-            mes_num = MESES_ES.get(coincidencia.group("mes").lower())
-            if mes_num is None:
-                continue
-            fecha = pd.Timestamp(
-                year=int(coincidencia.group("anio")), month=mes_num, day=int(coincidencia.group("dia"))
-            ).date()
-            clave = f"{fecha.isoformat()}T00-00-00"
-            orden_por_clave[clave] = clave
-            imagenes_por_clave.setdefault(clave, []).append(
-                (int(coincidencia.group("pagina")), archivo)
-            )
-
-    lotes = []
-    for clave in sorted(imagenes_por_clave, key=lambda c: orden_por_clave[c]):
-        paginas_ordenadas = sorted(imagenes_por_clave[clave], key=lambda t: t[0])
-        lotes.append((clave, [ruta for _, ruta in paginas_ordenadas]))
-    return lotes
-
-
-def _asignar_lotes_a_semestres(
-    df_palabra: pd.DataFrame,
-    lotes: list[tuple[str, list[Path]]],
-    semestres: list[tuple[pd.Timestamp, pd.Timestamp]],
-) -> list[list[Path]]:
-    """Asigna cada lote de capturas al semestre que le corresponde por
-    FECHA REAL (no por posicion, para no perder lotes cuando hay mas
-    ejecuciones de scraping que semestres calculados -- p.ej. la misma
-    palabra clave buscada varias veces dentro del mismo semestre).
-
-    Para lotes del formato nuevo, la fecha ancla es la mediana de
-    `fecha_publicacion` de las filas de `df_palabra` con ese `lote_id`
-    (join por `lote_id` slugificado). Si no hay filas con ese lote_id
-    (formato legado, o el lote no dejo filas en esta palabra clave), se
-    usa la fecha embebida en la propia clave de orden del lote como
-    respaldo. El lote se coloca en el semestre cuyo rango contiene esa
-    fecha ancla (o el ultimo semestre si la fecha cae despues de todos)."""
-    resultado: list[list[Path]] = [[] for _ in semestres]
-    if not semestres:
-        return resultado
-
-    lote_slug_por_fila = (
-        df_palabra["lote_id"].map(_slug_lote_id)
-        if "lote_id" in df_palabra.columns
-        else pd.Series(dtype=object)
-    )
-
-    for clave_orden, imagenes in lotes:
-        ancla = None
-        if not lote_slug_por_fila.empty:
-            filas_lote = df_palabra[lote_slug_por_fila == clave_orden]
-            fechas_lote = pd.to_datetime(filas_lote.get("fecha_publicacion"), errors="coerce").dropna()
-            if not fechas_lote.empty:
-                ancla = fechas_lote.median()
-        if ancla is None:
-            ancla = pd.to_datetime(clave_orden.split("T")[0], errors="coerce")
-
-        indice = len(semestres) - 1
-        if not pd.isna(ancla):
-            for i, (inicio, fin) in enumerate(semestres):
-                if inicio <= ancla <= fin:
-                    indice = i
-                    break
-        resultado[indice].extend(imagenes)
-
-    return resultado
-
-
-def _rangos_semestrales(fecha_inicio_global, fecha_fin_global) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """Divide [fecha_inicio_global, fecha_fin_global] en bloques
-    consecutivos de `MESES_POR_SEMESTRE` (6) meses calendario, empezando
-    en fecha_inicio_global. El ultimo bloque se recorta a
-    fecha_fin_global si el bloque calculado se pasa de esa fecha. Si el
-    rango es invalido o de un solo dia, devuelve un unico bloque con todo
-    el rango en vez de una lista vacia."""
-    inicio = pd.to_datetime(fecha_inicio_global)
-    fin = pd.to_datetime(fecha_fin_global)
-    if pd.isna(inicio) or pd.isna(fin) or inicio >= fin:
-        return [(inicio, fin)]
-
-    bloques = []
-    cursor = inicio
-    while cursor < fin:
-        fin_bloque = cursor + pd.DateOffset(months=MESES_POR_SEMESTRE)
-        if fin_bloque > fin:
-            fin_bloque = fin
-        bloques.append((cursor, fin_bloque))
-        cursor = fin_bloque
-    return bloques
+    Si `OBSERVACION_TEXTO` (configurable via .env) no empieza con
+    "NO APLICA" -- por ejemplo si se cambio la redaccion -- no hay nada
+    que poner en negrita y todo el texto va en la parte normal."""
+    if not llenar:
+        return "", ""
+    texto_completo = f"{OBSERVACION_TEXTO}{_normalizar_espacios(objeto_proceso).upper()}"
+    if OBSERVACION_TEXTO.startswith(PREFIJO_NEGRITA_OBSERVACION):
+        return PREFIJO_NEGRITA_OBSERVACION, texto_completo[len(PREFIJO_NEGRITA_OBSERVACION):]
+    return "", texto_completo
 
 
 def _agregar_bloque_rango(documento: Document, rango_texto: str, palabra_clave: str) -> None:
-    """Par de lineas "RANGO DE BUSQUEDA: .../PALABRA CLAVE: ...", Tahoma
-    10 (tamaño de cuerpo), alineadas a la izquierda, con negrita SOLO en
-    la etiqueta ("RANGO DE BUSQUEDA:" / "PALABRA CLAVE"), no en el valor.
-    Se usa tanto para el rango global como para cada bloque semestral."""
     parrafo_rango = documento.add_paragraph()
     parrafo_rango.alignment = WD_ALIGN_PARAGRAPH.LEFT
     run_etiqueta = parrafo_rango.add_run("RANGO DE BUSQUEDA:")
@@ -497,10 +377,7 @@ def _agregar_bloque_rango(documento: Document, rango_texto: str, palabra_clave: 
 
 def _agregar_hipervinculo(parrafo, texto: str, url: str, tamano_pt: float = TAMANO_TABLA_PT) -> None:
     """python-docx no expone hyperlinks reales de forma nativa: se arma a
-    mano el elemento OOXML <w:hyperlink> con su relacion externa (receta
-    estandar de la comunidad de python-docx). El run se arma directo en
-    XML (no via `Run`/`_aplicar_fuente`), asi que la fuente/tamano se
-    fijan aqui con los mismos elementos <w:rFonts>/<w:sz>."""
+    mano el elemento OOXML <w:hyperlink>."""
     parte = parrafo.part
     id_relacion = parte.relate_to(
         url,
@@ -540,38 +417,33 @@ def _agregar_hipervinculo(parrafo, texto: str, url: str, tamano_pt: float = TAMA
 
 
 def _anchos_columnas_tabla() -> list[Cm]:
-    """Ancho fijo de cada columna, tal como se pide explicitamente (en
-    cm) en `ANCHOS_COLUMNAS_CM`: medida exacta por columna, no una
-    proporcion calculada."""
     return [Cm(valor_cm) for valor_cm in ANCHOS_COLUMNAS_CM]
 
 
 def _fijar_ancho_y_alineacion_fila(celdas, anchos: list[Length]) -> None:
-    for celda, ancho in zip(celdas, anchos):
-        # python-docx solo respeta `table.columns[i].width` de forma
-        # confiable si TAMBIEN se fija el ancho de cada celda individual
-        # de esa columna (gotcha conocido de la libreria/Word).
+    for celda, ancho in zip(celdas, anchos, strict=False):
         celda.width = ancho
         celda.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
 
 
-def _agregar_tabla_procesos(documento: Document, filas: pd.DataFrame, palabra_clave: str) -> None:
+def _agregar_tabla_procesos(documento: Document, filas: pd.DataFrame, llenar_observaciones: bool) -> None:
     tabla = documento.add_table(rows=1, cols=len(COLUMNAS_TABLA_REPORTE))
     tabla.style = "Table Grid"
     tabla.autofit = False  # respeta los anchos fijos en vez de autoajustar al contenido
     _configurar_propiedades_tabla(tabla)
 
     anchos = _anchos_columnas_tabla()
-    for columna, ancho in zip(tabla.columns, anchos):
+    for columna, ancho in zip(tabla.columns, anchos, strict=False):
         columna.width = ancho
     _fijar_ancho_y_alineacion_fila(tabla.rows[0].cells, anchos)
     _configurar_propiedades_fila(tabla.rows[0], es_encabezado=True)
 
-    for celda, nombre in zip(tabla.rows[0].cells, COLUMNAS_TABLA_REPORTE):
+    for indice_col, (celda, nombre) in enumerate(zip(tabla.rows[0].cells, COLUMNAS_TABLA_REPORTE, strict=False)):
         celda.text = nombre
+        tamano = TAMANO_OBSERVACIONES_PT if indice_col == INDICE_COLUMNA_OBSERVACIONES else TAMANO_TABLA_PT
         for parrafo in celda.paragraphs:
             for run in parrafo.runs:
-                _aplicar_fuente(run, TAMANO_TABLA_PT, negrita=True)
+                _aplicar_fuente(run, tamano, negrita=True)
 
     for numero, (_, fila) in enumerate(filas.iterrows(), start=1):
         fila_tabla = tabla.add_row()
@@ -586,9 +458,20 @@ def _agregar_tabla_procesos(documento: Document, filas: pd.DataFrame, palabra_cl
         celdas[5].text = str(fila.get("provincia_canton") or "")
         celdas[6].text = _formatear_moneda(fila.get("presupuesto_referencial"))
         celdas[7].text = _formatear_fecha_corta(fila.get("fecha_publicacion"))
-        celdas[8].text = _observacion(fila.get("objeto_proceso"), palabra_clave)
 
-        for indice_celda in (0, 2, 3, 4, 5, 6, 7, 8):
+        # Observaciones: dos runs en el mismo parrafo, en vez de
+        # `celda.text = ...`, para que solo "NO APLICA" quede en negrita
+        # y el resto (texto fijo + objeto del proceso) en texto normal.
+        parte_negrita, parte_normal = _observacion_partes(fila.get("objeto_proceso"), llenar_observaciones)
+        parrafo_observacion = celdas[INDICE_COLUMNA_OBSERVACIONES].paragraphs[0]
+        if parte_negrita:
+            run_negrita = parrafo_observacion.add_run(parte_negrita)
+            _aplicar_fuente(run_negrita, TAMANO_OBSERVACIONES_PT, negrita=True)
+        if parte_normal:
+            run_normal = parrafo_observacion.add_run(parte_normal)
+            _aplicar_fuente(run_normal, TAMANO_OBSERVACIONES_PT, negrita=False)
+
+        for indice_celda in (0, 2, 3, 4, 5, 6, 7):
             for parrafo in celdas[indice_celda].paragraphs:
                 for run in parrafo.runs:
                     _aplicar_fuente(run, TAMANO_TABLA_PT)
@@ -610,6 +493,8 @@ def generar_reporte(
     fecha_fin_global,
     ruta_salida: str | Path = "reporte_contrataciones.docx",
     capturas_dir: str | Path = "capturas",
+    directorio_salidas_capturas: str | Path | None = None,
+    llenar_observaciones: bool = True,
 ) -> Path:
     """Genera el informe .docx completo y lo guarda en `ruta_salida`.
 
@@ -620,15 +505,31 @@ def generar_reporte(
       en que deben aparecer en el informe.
     - `fecha_inicio_global` / `fecha_fin_global`: rango global (str ISO o
       date/datetime) usado en el parrafo introductorio.
+    - `directorio_salidas_capturas`: donde se guardan las partes de una
+      captura demasiado alta para una pagina (ver
+      scripts/reportes_capturas.py::dividir_imagen_si_no_cabe). Por
+      defecto, DIRECTORIO_SALIDAS_CAPTURAS (salidas/capturas/); los tests
+      lo sobreescriben con un directorio temporal.
+    - `llenar_observaciones`: si es True (default), la columna
+      "Observaciones" de la tabla lleva `OBSERVACION_TEXTO` + el objeto
+      del proceso completo en TODAS las filas (ver _observacion_partes).
+      Si es False, la columna queda vacia -- checkbox "Llenar
+      Observaciones con 'NO APLICA'" en la UI.
     """
     documento = Document()
     capturas_path = Path(capturas_dir)
+    directorio_salidas_capturas = Path(directorio_salidas_capturas or DIRECTORIO_SALIDAS_CAPTURAS)
 
-    # Tahoma 10 como fuente base del documento (estilo "Normal"): cualquier
-    # texto que no reciba un run/tamano explicito hereda esto igual.
     estilo_normal = documento.styles["Normal"]
     estilo_normal.font.name = FUENTE
     estilo_normal.font.size = Pt(TAMANO_CUERPO_PT)
+
+    # Alto util de la pagina (alto de pagina menos margenes superior e
+    # inferior), en EMU -- la misma unidad que usan Inches/Cm/Length de
+    # python-docx. Cualquier captura que, insertada a Inches(6) de ancho,
+    # renderice mas alto que esto se divide en partes (ver _agregar_captura).
+    seccion = documento.sections[0]
+    alto_util_pagina = seccion.page_height - seccion.top_margin - seccion.bottom_margin
 
     lista_comillas = _formatear_lista_con_comillas_y(palabras_clave)
     anios = _anios_entre(fecha_inicio_global, fecha_fin_global)
@@ -661,6 +562,11 @@ def generar_reporte(
         f"{_formatear_fecha_larga_mayusculas(fecha_fin_global)}"
     )
 
+    # Numera las capturas ("Captura N") de forma continua a lo largo de
+    # TODO el documento (no por palabra clave), para que no se repita un
+    # mismo numero en secciones distintas del reporte.
+    contador_capturas = 0
+
     for palabra_clave in palabras_clave:
         df_palabra = df[clave_normalizada_por_fila == _normalizar_texto(palabra_clave)]
         if df_palabra.empty:
@@ -668,8 +574,6 @@ def generar_reporte(
         if "id" in df_palabra.columns:
             df_palabra = df_palabra.sort_values("id")
 
-        # Bloque de titulo (una vez por palabra clave): "Proceso Régimen
-        # Común" + "Palabra Clave: X" (X en rojo), centrado, sin sombreado.
         parrafo_proceso = documento.add_paragraph()
         parrafo_proceso.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run_proceso = parrafo_proceso.add_run("Proceso Régimen Común")
@@ -683,19 +587,11 @@ def generar_reporte(
         _aplicar_fuente(run_palabra_roja, TAMANO_TITULO_PT, negrita=True)
         run_palabra_roja.font.color.rgb = COLOR_PALABRA_CLAVE_TITULO
 
-        # Rango global (una vez por palabra clave).
         _agregar_bloque_rango(documento, rango_fechas_global, palabra_clave)
 
-        # Bloques semestrales: cada uno con su propio par RANGO/PALABRA
-        # CLAVE, seguido de las capturas que le correspondan (ver
-        # `_asignar_lotes_a_semestres`: se emparejan por la fecha real de
-        # los datos de cada lote, no por posicion, para no perder lotes
-        # cuando hay mas ejecuciones de scraping que semestres). Si un
-        # semestre no tiene ningun lote asignado, queda con el
-        # encabezado pero sin capturas debajo.
-        lotes = _lotes_de_capturas(capturas_path, palabra_clave)
-        semestres = _rangos_semestrales(fecha_inicio_global, fecha_fin_global)
-        imagenes_por_semestre = _asignar_lotes_a_semestres(df_palabra, lotes, semestres)
+        lotes = lotes_de_capturas(capturas_path, palabra_clave)
+        semestres = rangos_semestrales(fecha_inicio_global, fecha_fin_global)
+        imagenes_por_semestre = asignar_lotes_a_semestres(df_palabra, lotes, semestres)
         for indice, (inicio_semestre, fin_semestre) in enumerate(semestres):
             rango_semestre = (
                 f"{_formatear_fecha_larga_mayusculas(inicio_semestre)} A "
@@ -704,7 +600,10 @@ def generar_reporte(
             _agregar_bloque_rango(documento, rango_semestre, palabra_clave)
 
             for imagen in imagenes_por_semestre[indice]:
-                _agregar_imagen_con_borde(documento, imagen, Inches(6))
+                contador_capturas += 1
+                _agregar_captura(
+                    documento, imagen, Inches(6), alto_util_pagina, contador_capturas, directorio_salidas_capturas
+                )
 
         parrafo_existen = documento.add_paragraph()
         parrafo_existen.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
@@ -716,32 +615,8 @@ def generar_reporte(
         )
         _aplicar_fuente(run_existen, TAMANO_CUERPO_PT)
 
-        _agregar_tabla_procesos(documento, df_palabra, palabra_clave)
+        _agregar_tabla_procesos(documento, df_palabra, llenar_observaciones)
 
     ruta_salida = Path(ruta_salida)
     documento.save(str(ruta_salida))
     return ruta_salida
-
-
-if __name__ == "__main__":
-    # Demo/smoke test: arma un reporte con todo lo que haya en la base de
-    # datos local, agrupado por cada palabra_clave distinta encontrada.
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from src import database  # noqa: E402
-
-    registros = database.get_all_contrataciones()
-    df_demo = pd.DataFrame(registros)
-    if df_demo.empty:
-        print("No hay datos en la base local; no se genero ningun reporte.")
-    else:
-        claves = sorted(df_demo["palabra_clave"].dropna().unique().tolist())
-        fechas = pd.to_datetime(df_demo["fecha_publicacion"], errors="coerce").dropna()
-        ruta = generar_reporte(
-            df=df_demo,
-            palabras_clave=claves,
-            fecha_inicio_global=fechas.min(),
-            fecha_fin_global=fechas.max(),
-        )
-        print(f"Reporte generado en: {ruta.resolve()}")

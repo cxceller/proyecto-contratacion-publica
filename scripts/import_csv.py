@@ -143,7 +143,8 @@ def importar_dataframe(
     (para registrar con que busqueda del portal se obtuvieron). Si se indica
     `lote_id`, se asigna igual a todas las filas de esta llamada, para poder
     reconstruir mas tarde que filas pertenecen a una misma ejecucion de
-    scraping/importacion (ver scripts/report_generator.py).
+    scraping/importacion (ver modulos/capturas.py en el proyecto "Estudio
+    de Mercado SERCOP", tema_5/Estudio de mercado SERCOP).
     Devuelve (registros_importados, registros_con_error)."""
     faltantes = {"codigo", "entidad_contratante", "objeto_proceso", "estado"} - set(df.columns)
     if faltantes:

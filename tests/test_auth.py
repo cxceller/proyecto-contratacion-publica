@@ -90,17 +90,6 @@ class TestAutenticacion:
         response = client_sin_header.patch("/api/todos/1", json={"estado": "Finalizada"})
         assert response.status_code == 401
 
-    def test_generar_reporte_sin_api_key_devuelve_401(self, client_sin_header):
-        response = client_sin_header.post(
-            "/api/generar-reporte",
-            json={
-                "palabras_clave": ["algo"],
-                "fecha_inicio": "2026-01-01",
-                "fecha_fin": "2026-12-31",
-            },
-        )
-        assert response.status_code == 401
-
     def test_get_no_requiere_api_key(self, client_sin_header):
         response = client_sin_header.get("/api/todos")
         assert response.status_code == 200

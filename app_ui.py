@@ -79,6 +79,13 @@ NAV_ITEMS = [
     ("Configuración", ":material/settings:"),
 ]
 
+# El modulo "Generación de Reportes Automáticos" vive en ui/reportes.py +
+# pages/Reportes.py (URL /Reportes del MISMO proceso Streamlit -- ver
+# pages/Reportes.py): no es un servidor aparte que haya que iniciar por su
+# cuenta. El item "Reportes" del sidebar (ver render_navegacion_sidebar)
+# abre esa URL relativa en pestaña nueva via st.link_button.
+URL_PAGINA_REPORTES = "Reportes"
+
 # Nombre de pagina para la vista dedicada de Importación SERCOP -- vive
 # fuera de NAV_ITEMS (se renderiza aparte, debajo de un st.divider() propio
 # en el sidebar, ver render_importacion_sercop_sidebar) pero participa del
@@ -2011,137 +2018,6 @@ def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool
             st.info(f"**Explicación:** {fila.get('explicacion_estado') or '—'}")
 
 
-def _opciones_lote_id(registros: list[dict]) -> dict[str, str]:
-    """Etiqueta legible -> lote_id real, derivada de los registros ya
-    cargados (no hay un endpoint dedicado de lotes en la API). El lote_id
-    crudo es un timestamp ISO ("2026-07-28T11:07:02"): aca se convierte a
-    una fecha/hora legible en español y se le suma la palabra clave y el
-    numero de procesos de ese lote, para no forzar al usuario a copiar/
-    pegar el timestamp a mano. Ordenado del lote mas reciente al mas
-    antiguo."""
-    info_por_lote: dict[str, dict] = {}
-    for registro in registros:
-        lote = registro.get("lote_id")
-        if not lote:
-            continue
-        info = info_por_lote.setdefault(lote, {"palabra_clave": registro.get("palabra_clave") or "", "n": 0})
-        info["n"] += 1
-
-    opciones = {}
-    for lote in sorted(info_por_lote, reverse=True):
-        info = info_por_lote[lote]
-        try:
-            fecha_legible = datetime.fromisoformat(lote).strftime("%d/%m/%Y %H:%M")
-        except ValueError:
-            fecha_legible = lote
-        palabra_clave = info["palabra_clave"] or "sin palabra clave"
-        etiqueta = f"{fecha_legible} — {palabra_clave} ({info['n']} procesos)"
-        opciones[etiqueta] = lote
-    return opciones
-
-
-SIN_LOTE_ESPECIFICO = "(Ninguno — usar todo el rango de fechas)"
-
-
-def render_generador_reportes():
-    """Seccion 'Generación de Reportes Automáticos': arma el payload y
-    llama a POST /api/generar-reporte (src/api_reportes.py), que devuelve
-    el .docx generado por scripts/report_generator.py."""
-    st.subheader(":material/description: Generación de Reportes Automáticos")
-    st.caption(
-        "Genera un informe Word (.docx) con las capturas de pantalla y la "
-        "tabla de procesos de una o varias palabras clave."
-    )
-
-    if "reporte_docx_bytes" not in st.session_state:
-        st.session_state.reporte_docx_bytes = None
-
-    claves_filtro_reportes = [
-        "reportes_palabras_clave",
-        "reportes_fecha_inicio",
-        "reportes_fecha_fin",
-        "reportes_lote_id",
-    ]
-    boton_limpiar_filtros(claves_filtro_reportes, key="reportes_limpiar_filtros")
-
-    with st.form("form_generar_reporte"):
-        palabras_clave_texto = st.text_input(
-            "Palabras clave (separadas por comas)",
-            placeholder="Ej: luminarias, repotenciacion",
-            key="reportes_palabras_clave",
-        )
-        col_inicio, col_fin = st.columns(2)
-        fecha_inicio = col_inicio.date_input("Fecha inicio", value=None, key="reportes_fecha_inicio")
-        fecha_fin = col_fin.date_input("Fecha fin", value=None, key="reportes_fecha_fin")
-
-        # "Lote ID" (el timestamp crudo de una ejecucion de scraping/
-        # importacion) es un dato de debugging, no algo que un usuario
-        # normal deba escribir a mano: se esconde en un expander colapsado
-        # y se elige por un selectbox con etiquetas legibles (fecha +
-        # palabra clave + cantidad de procesos), no el timestamp crudo.
-        with st.expander("Opciones avanzadas", expanded=False):
-            opciones_lote = _opciones_lote_id(obtener_contrataciones())
-            etiqueta_lote_sel = st.selectbox(
-                "Lote de carga específico (opcional)",
-                [SIN_LOTE_ESPECIFICO] + list(opciones_lote.keys()),
-                key="reportes_lote_id",
-                help=(
-                    "Si se indica, acota el reporte a una única ejecución de "
-                    "scraping/importación en vez de todo el rango de fechas."
-                ),
-            )
-        enviado = st.form_submit_button(":material/edit_document: Generar Reporte Word", type="primary", use_container_width=True)
-
-    if enviado:
-        palabras_clave = [p.strip() for p in palabras_clave_texto.split(",") if p.strip()]
-        if not palabras_clave:
-            st.warning("Ingresa al menos una palabra clave.")
-        elif not fecha_inicio or not fecha_fin:
-            st.warning("Selecciona la fecha de inicio y la fecha de fin.")
-        else:
-            payload = {
-                "palabras_clave": palabras_clave,
-                "fecha_inicio": fecha_inicio.isoformat(),
-                "fecha_fin": fecha_fin.isoformat(),
-            }
-            if etiqueta_lote_sel != SIN_LOTE_ESPECIFICO:
-                payload["lote_id"] = opciones_lote[etiqueta_lote_sel]
-
-            with st.spinner("Generando reporte..."):
-                response = generar_reporte(payload)
-
-            if response is not None:
-                if response.status_code == 200:
-                    st.session_state.reporte_docx_bytes = response.content
-                    st.success("Reporte generado correctamente.")
-                elif response.status_code == 404:
-                    st.session_state.reporte_docx_bytes = None
-                    st.warning(
-                        response.json().get(
-                            "detail",
-                            "No se encontraron procesos para los filtros indicados.",
-                        )
-                    )
-                elif response.status_code == 422:
-                    st.session_state.reporte_docx_bytes = None
-                    errores = response.json().get("detail", [])
-                    mensaje = "; ".join(
-                        f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in errores
-                    )
-                    st.error(f"Datos inválidos: {mensaje}")
-                else:
-                    st.session_state.reporte_docx_bytes = None
-                    st.error(f"Error al generar el reporte: {response.status_code}")
-
-    if st.session_state.reporte_docx_bytes:
-        st.download_button(
-            label=":material/download: Descargar Reporte_SERCOP.docx",
-            data=st.session_state.reporte_docx_bytes,
-            file_name="Reporte_SERCOP.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
-
-
 def _insignia_participacion(cantidad: int, total: int) -> str | None:
     """% de participacion de `cantidad` sobre `total` (1 decimal, ej.
     '32.4%'), para mostrar como insignia separada del valor principal en
@@ -2623,6 +2499,21 @@ def render_navegacion_sidebar() -> None:
         for nombre, icono in NAV_ITEMS:
             activo = st.session_state.pagina_activa == nombre
             tipo_boton = "primary" if activo else "secondary"
+
+            if nombre == "Reportes":
+                # "Generación de Reportes Automáticos" es una pagina de
+                # Streamlit aparte (ver URL_PAGINA_REPORTES/pages/Reportes.py),
+                # no una vista de esta misma pagina: este item no cambia
+                # pagina_activa, abre esa URL relativa en una pestaña nueva
+                # (st.link_button abre en pestaña nueva por defecto). El
+                # estilo se iguala al resto de botones via CSS
+                # (.stLinkButton > a, ver _inyectar_estilos_sidebar).
+                st.link_button(
+                    f"{icono}  {nombre.upper()}",
+                    url=URL_PAGINA_REPORTES,
+                    width="stretch",
+                )
+                continue
 
             if nombre == "Municipalidad de Guayaquil":
                 # Logo institucional real (600x210, apaisado) en vez de un
@@ -3113,11 +3004,6 @@ def render_pagina_procesos(registros_totales: list[dict]) -> None:
     render_tabla_con_color(registros_mostrar)
 
 
-def render_pagina_reportes() -> None:
-    st.header(":material/description: Reportes")
-    render_generador_reportes()
-
-
 def filtrar_por_entidad(registros: list[dict], entidad: str) -> list[dict]:
     """Filtra por Entidad Contratante exacta, insensible a mayusculas y
     tildes (misma normalizacion que _normalizar_texto_provincia, reusada
@@ -3381,10 +3267,11 @@ def main():
     render_navegacion_sidebar()
 
     # obtener_contrataciones() esta cacheada (ttl=600s), pero igual evitamos
-    # llamarla del todo en paginas que no la necesitan (Reportes solo pega a
-    # /api/generar-reporte, Configuración solo a /api/todos DELETE). El
-    # spinner solo se nota quando hay cache miss (round-trip real a la
-    # API); en cache hit es practicamente instantaneo.
+    # llamarla del todo en paginas que no la necesitan (Reportes vive en su
+    # propia pagina de Streamlit -- pages/Reportes.py -- , nunca pasa por
+    # pagina_activa; Configuración solo pega a /api/todos DELETE). El
+    # spinner solo se nota quando hay cache miss
+    # (round-trip real a la API); en cache hit es practicamente instantaneo.
     pagina = st.session_state.pagina_activa
     if pagina == "Dashboard":
         with st.spinner("Cargando datos del dashboard..."):
@@ -3394,8 +3281,6 @@ def main():
         with st.spinner("Cargando procesos..."):
             registros = obtener_contrataciones()
         render_pagina_procesos(registros)
-    elif pagina == "Reportes":
-        render_pagina_reportes()
     elif pagina == "Municipalidad de Guayaquil":
         with st.spinner("Cargando datos de la Municipalidad de Guayaquil..."):
             registros = obtener_contrataciones()

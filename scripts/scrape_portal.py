@@ -1352,9 +1352,10 @@ async def _procesar_busqueda(
     busqueda ya realizada por el usuario. Si se indica `palabra_clave`, se
     asigna a todos los registros importados en esta ejecucion. Si se indica
     `lote_id`, se asigna igual a todos los registros importados en esta
-    ejecucion, para poder reconstruir mas tarde (ver
-    scripts/report_generator.py) que filas pertenecen a esta misma busqueda,
-    sin depender de adivinar por saltos en el id. `context` es el
+    ejecucion, para poder reconstruir mas tarde (ver modulos/capturas.py
+    en el proyecto "Estudio de Mercado SERCOP", tema_5/Estudio de mercado
+    SERCOP) que filas pertenecen a esta misma busqueda, sin depender de
+    adivinar por saltos en el id. `context` es el
     BrowserContext compartido (ver main()): se le pasa directo a
     _obtener_montos_adjudicados, que abre ahi su propio pool de pestanas de
     detalle por cada pagina de resultados, sin interferir con `page`, que
@@ -1453,8 +1454,9 @@ async def main() -> None:
     # Un lote_id por ejecucion (no por pagina): identifica de forma
     # confiable todas las filas insertadas por esta busqueda, para poder
     # reconstruir despues los bloques de busqueda en los reportes (ver
-    # scripts/report_generator.py) sin depender de adivinar por saltos en
-    # el id.
+    # modulos/capturas.py en el proyecto "Estudio de Mercado SERCOP",
+    # tema_5/Estudio de mercado SERCOP) sin depender de adivinar por
+    # saltos en el id.
     lote_id = datetime.now().isoformat(timespec="seconds")
 
     print(f"Abriendo Chromium en: {URL_BUSQUEDA}")
@@ -1487,7 +1489,13 @@ async def main() -> None:
         context = await browser.new_context(user_agent=USER_AGENT, no_viewport=True)
         page = await context.new_page()
         await page.route("**/*", _forzar_codificacion_windows1252)
-        await page.goto(URL_BUSQUEDA, timeout=60000)
+        # wait_until="domcontentloaded" (en vez del "load" por defecto): el
+        # portal carga recursos de terceros (analitica, etc.) que a veces
+        # nunca terminan, haciendo que "load" nunca dispare y el timeout
+        # salte aunque la pagina ya sea usable. Lo siguiente que hace el
+        # script es esperar a que el usuario resuelva el CAPTCHA a mano, asi
+        # que no necesitamos la carga completa.
+        await page.goto(URL_BUSQUEDA, timeout=60000, wait_until="domcontentloaded")
 
         try:
             await page.click("button:has-text('Aceptar')", timeout=5000)

@@ -6,7 +6,6 @@ from datetime import date
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 
 from src import database
-from src.api_reportes import router as reportes_router
 from src.auth import verificar_api_key
 from src.logging_config import configurar_logging
 from src.models import (
@@ -28,7 +27,6 @@ async def lifespan(app: FastAPI):
 configurar_logging()
 
 app = FastAPI(title="API de Contratacion Publica", lifespan=lifespan)
-app.include_router(reportes_router)
 
 
 @app.get("/api/todos", response_model=list[ContratacionOut])
