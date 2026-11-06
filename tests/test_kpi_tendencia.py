@@ -322,3 +322,14 @@ class TestTarjetaAhorro:
         assert "width:100.0%" in _tarjeta_ahorro_html(250.0)
         negativo = _tarjeta_ahorro_html(-5.0)
         assert "width:0.0%" in negativo and "por encima del presupuesto referencial" in negativo
+
+
+class TestCategoriaUnica:
+    def test_el_aviso_nombra_la_categoria_y_no_dibuja_barra(self, monkeypatch):
+        import app_ui
+
+        mensajes = []
+        monkeypatch.setattr(app_ui.st, "info", lambda texto, **kw: mensajes.append(texto))
+        app_ui._aviso_categoria_unica("Provincia/Cantón", "GUAYAS / GUAYAQUIL", 70, 526783688.55)
+        assert len(mensajes) == 1
+        assert "GUAYAS / GUAYAQUIL" in mensajes[0] and "70" in mensajes[0] and "526.783.688,55" in mensajes[0]

@@ -1488,6 +1488,18 @@ def render_grafico_mensual(df: pd.DataFrame):
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
+def _aviso_categoria_unica(dimension: str, categoria: str, procesos: int, total: float | None = None) -> None:
+    """Una sola categoria no es un ranking: en vez de una barra solitaria que ocupa todo el grafico, un aviso
+    con el dato ("Todos los procesos son de GUAYAS / GUAYAQUIL"). `dimension` va en minuscula en el texto."""
+    texto = (
+        f"Todos los procesos ({formatear_numero_ec(procesos, 0)}) corresponden a un único valor de "
+        f"{dimension.lower()}: **{limpiar_texto_libre(str(categoria))}**."
+    )
+    if total is not None:
+        texto += f" Presupuesto total: {formatear_moneda_ec(total)}."
+    st.info(texto + " Quita filtros o cambia la dimensión para comparar.", icon=":material/info:")
+
+
 def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
     st.markdown("**Presupuesto por Provincia/Cantón**")
     if df.empty:
@@ -1501,6 +1513,12 @@ def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
     )
     if resumen.empty:
         st.info("No hay datos de provincia/cantón con los filtros actuales.")
+        return
+
+    if len(resumen) == 1:
+        _aviso_categoria_unica(
+            "Provincia/Cantón", resumen.iloc[0]["provincia_canton"], len(df), resumen.iloc[0]["presupuesto_referencial"]
+        )
         return
 
     if len(resumen) > top_n:
@@ -1563,6 +1581,10 @@ def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
         st.info("No hay datos para graficar con los filtros actuales.")
         return
 
+    # Si el filtro actual deja una sola provincia/canton, "Provincia/Cantón" no compara nada: la dimension
+    # inicial pasa a una con variedad (solo la primera vez; luego manda lo que elija el usuario).
+    if df["provincia_canton"].nunique() == 1:
+        st.session_state.setdefault("comparativo_dimension", "Tipo de Compra")
     col_dim, col_met = st.columns(2)
     dimension_label = col_dim.selectbox(
         "Comparar por", list(DIMENSIONES_COMPARATIVAS.keys()), key="comparativo_dimension"
@@ -1580,6 +1602,9 @@ def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
     )
     if resumen.empty or resumen["valor"].fillna(0).eq(0).all():
         st.info("No hay valores para graficar con los filtros actuales.")
+        return
+    if len(resumen) == 1:
+        _aviso_categoria_unica(dimension_label, resumen.iloc[0][columna_dim], len(df))
         return
     resumen = resumen.iloc[:top_n]
 
