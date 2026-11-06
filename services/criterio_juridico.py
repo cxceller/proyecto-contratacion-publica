@@ -8,11 +8,32 @@ un articulo real).
 Dos servicios FastAPI conviven en desarrollo, por eso puertos distintos:
 SERCOP API en 8000, este RAG en 8001 (RAG_CONTRATACION_URL)."""
 import os
+from typing import Any
 
 import requests
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from scripts.llm_seguro import _texto_llm
+from src.logging_config import obtener_logger
+
+logger = obtener_logger(__name__)
 
 RAG_BASE_URL = os.getenv("RAG_CONTRATACION_URL", "http://localhost:8001")
 RAG_TIMEOUT_S = float(os.getenv("RAG_CONTRATACION_TIMEOUT_S", "60"))
+
+
+class RespuestaRAG(BaseModel):
+    """Respuesta del RAG (un LLM): no se confia. Textos limpios (sin HTML ni
+    caracteres de control) y acotados; campos desconocidos se ignoran."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    explicacion: str = Field("", max_length=10_000)
+    explicacion_tecnica: str = Field("", max_length=20_000)
+    causal_legal: str = Field("", max_length=2_000)
+    fuentes: list[Any] = Field(default_factory=list, max_length=50)
+
+    _limpiar = field_validator("explicacion", "explicacion_tecnica", "causal_legal", mode="before")(_texto_llm)
 
 
 def explicar_desierta(
@@ -40,4 +61,8 @@ def explicar_desierta(
         return None
     if resp.status_code != 200:
         return None
-    return resp.json()
+    try:
+        return RespuestaRAG.model_validate(resp.json()).model_dump()
+    except (ValueError, ValidationError):
+        logger.warning("Respuesta del RAG invalida (se ignora)")
+        return None

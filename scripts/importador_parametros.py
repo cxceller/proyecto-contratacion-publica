@@ -25,12 +25,18 @@ alucinación o pérdida de contenido, sin bloquear el flujo.
 Nada de esto guarda en base de datos -- el resultado se anexa a las filas
 editables del formulario, igual que si el usuario las hubiera escrito a
 mano (ver app_ui.py)."""
-import json
 
 import anthropic
 import truststore
 
 from scripts.lectura_archivos_tabulares import leer_matriz_cruda
+from scripts.llm_seguro import (
+    RespaldoIADesactivado,
+    RespuestaLLMParametros,
+    llm_fallback_habilitado,
+    preparar_matriz_para_llm,
+    validar_respuesta_llm,
+)
 
 # httpx (usado por el SDK de anthropic) valida certificados TLS contra el
 # bundle de certifi -- una lista fija de CAs publicas que no incluye la CA
@@ -192,7 +198,9 @@ def _intentar_camino_rapido(matriz: list[list[str]]) -> list[dict] | None:
 def _normalizar_bloque_con_llm(
     bloque: list[list[str]], cliente_llm, modelo: str
 ) -> tuple[list[dict], list[dict]]:
-    matriz_texto = "\n".join(" | ".join(celda for celda in fila) for fila in bloque)
+    # Privacidad: solo lo necesario y con datos personales enmascarados (ver
+    # scripts/llm_seguro.py) antes de salir hacia la API externa.
+    matriz_texto = "\n".join(" | ".join(celda for celda in fila) for fila in preparar_matriz_para_llm(bloque))
     try:
         respuesta = cliente_llm.with_options(timeout=60.0).messages.create(
             model=modelo,
@@ -218,8 +226,9 @@ def _normalizar_bloque_con_llm(
     if texto_json is None:
         raise ErrorLLMImportacionParametros("La IA no devolvió una respuesta interpretable.")
     try:
-        datos = json.loads(texto_json)
-    except json.JSONDecodeError as exc:
+        # Respuesta NO confiable: se valida con Pydantic y se limpia (ver llm_seguro.py).
+        datos = validar_respuesta_llm(RespuestaLLMParametros, texto_json)
+    except ValueError as exc:
         raise ErrorLLMImportacionParametros(
             f"La IA devolvió una respuesta no válida: {exc}"
         ) from exc
@@ -246,6 +255,8 @@ def _normalizar_con_llm(
     de una fila de continuación solo opera dentro de un mismo bloque, no a
     través del límite entre bloques."""
     if cliente_llm is None:
+        if not llm_fallback_habilitado():
+            raise RespaldoIADesactivado
         cliente_llm = anthropic.Anthropic()
 
     filas_no_vacias = [fila for fila in matriz if any(celda.strip() for celda in fila)]

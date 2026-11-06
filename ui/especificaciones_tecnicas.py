@@ -75,6 +75,7 @@ from scripts.importador_parametros import (
     ErrorLLMImportacionParametros,
     importar_parametros,
 )
+from scripts.llm_seguro import AVISO_ENVIO_A_SERVICIO_EXTERNO, RespaldoIADesactivado, llm_fallback_habilitado
 from scripts.sanitizar_html import sanitizar_html_enriquecido
 from scripts.tinymce_editor import tinymce_editor
 from services.sercop import (
@@ -88,6 +89,21 @@ from ui.autenticacion import confirmar_con_clave
 from ui.tema import COLOR_LIENZO, COLOR_SIDEBAR_ACENTO, COLOR_TEXTO_EJE, PALETA_DATOS
 
 logger = obtener_logger(__name__)
+
+# Mensajes genericos para el usuario: el detalle tecnico (rutas, errores de
+# la API de IA) va solo al log (logger.exception).
+MENSAJE_ERROR_ARCHIVO_GENERICO = (
+    "No se pudo procesar el archivo. Verifica que sea un .xlsx, .csv o .txt válido con "
+    "la estructura esperada e inténtalo de nuevo."
+)
+def _aviso_respaldo_ia(contenedor) -> None:
+    """Aviso VISIBLE antes de subir un archivo: si el respaldo con IA esta
+    activo, el contenido puede salir hacia un servicio externo."""
+    if llm_fallback_habilitado():
+        contenedor.warning(AVISO_ENVIO_A_SERVICIO_EXTERNO, icon=":material/cloud_upload:")
+
+
+MENSAJE_ERROR_IA_GENERICO = "El servicio de IA no respondió correctamente. Inténtalo de nuevo en unos minutos."
 
 
 def _construir_datos_treemap_items_cacheado(df_items: pd.DataFrame) -> pd.DataFrame:
@@ -1523,6 +1539,7 @@ def render_formularios_y_registro() -> None:
                         # en el uploader en cada rerun posterior (Streamlit no lo
                         # limpia solo), sus filas se volverian a anexar una y otra
                         # vez en cualquier rerun futuro (ej. al tipear en otro campo).
+                        _aviso_respaldo_ia(col_cargar_archivo)
                         archivo_subido = col_cargar_archivo.file_uploader(
                             ":material/attach_file: Cargar parámetros desde archivo (Excel/CSV/TXT, cualquier estructura)",
                             type=["xlsx", "csv", "txt"],
@@ -1552,12 +1569,18 @@ def render_formularios_y_registro() -> None:
                                         resultado = importar_parametros(
                                             archivo_subido.name, archivo_subido.getvalue()
                                         )
-                                except ErrorLLMImportacionParametros as exc:
-                                    st.session_state[clave_error_llm] = str(exc)
-                                except ErrorImportacionParametros as exc:
+                                except RespaldoIADesactivado as exc:
                                     st.session_state[clave_procesado] = archivo_subido.file_id
                                     st.session_state[clave_error_llm] = None
-                                    st.error(f"No se pudo procesar «{archivo_subido.name}»: {exc}")
+                                    st.warning(str(exc))  # mensaje fijo y seguro
+                                except ErrorLLMImportacionParametros:
+                                    logger.exception("Fallo el respaldo con IA al importar parametros tecnicos")
+                                    st.session_state[clave_error_llm] = MENSAJE_ERROR_IA_GENERICO
+                                except ErrorImportacionParametros:
+                                    logger.exception("No se pudo importar el archivo de parametros tecnicos")
+                                    st.session_state[clave_procesado] = archivo_subido.file_id
+                                    st.session_state[clave_error_llm] = None
+                                    st.error(MENSAJE_ERROR_ARCHIVO_GENERICO)
                                 else:
                                     for nuevo in resultado.parametros:
                                         st.session_state.especificaciones_tecnicas_siguiente_param_id += 1
@@ -1649,6 +1672,7 @@ def render_formularios_y_registro() -> None:
             # scripts/importador_items.py: camino rapido deterministico
             # (deteccion de encabezado + fuzzy matching de columnas) con
             # respaldo via IA para archivos sin estructura de columnas clara.
+            _aviso_respaldo_ia(st)
             archivo_items_subido = st.file_uploader(
                 ":material/upload_file: Cargar ítems desde archivo (Excel/CSV/TXT) -- columnas "
                 "ÍTEM, DESCRIPCIÓN, UNIDAD, CANTIDAD, PRECIO UNITARIO y CPC (en cualquier orden, "
@@ -1681,12 +1705,18 @@ def render_formularios_y_registro() -> None:
                                 archivo_items_subido.getvalue(),
                                 catalogo_cpc=_cargar_catalogo_cpc(),
                             )
-                    except ErrorLLMImportacionItems as exc:
-                        st.session_state[clave_error_llm_items] = str(exc)
-                    except ErrorImportacionItems as exc:
+                    except RespaldoIADesactivado as exc:
                         st.session_state[clave_procesado_items] = archivo_items_subido.file_id
                         st.session_state[clave_error_llm_items] = None
-                        st.error(f"No se pudo procesar «{archivo_items_subido.name}»: {exc}")
+                        st.warning(str(exc))  # mensaje fijo y seguro
+                    except ErrorLLMImportacionItems:
+                        logger.exception("Fallo el respaldo con IA al importar items")
+                        st.session_state[clave_error_llm_items] = MENSAJE_ERROR_IA_GENERICO
+                    except ErrorImportacionItems:
+                        logger.exception("No se pudo importar el archivo de items")
+                        st.session_state[clave_procesado_items] = archivo_items_subido.file_id
+                        st.session_state[clave_error_llm_items] = None
+                        st.error(MENSAJE_ERROR_ARCHIVO_GENERICO)
                     else:
                         # Mismos dtypes que _dataframe_items_especificaciones_tecnicas_vacio():
                         # "Ítem" y "_fila_id" quedan en pd.NA (Int64), igual que una fila
