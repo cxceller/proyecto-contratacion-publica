@@ -25,7 +25,12 @@ import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from scripts.dashboard_analitico import construir_datos_gantt_procesos, construir_datos_treemap_presupuesto
-from scripts.formato_ec import formatear_moneda_ec, formatear_numero_ec
+from scripts.formato_ec import (
+    formatear_moneda_ec,
+    formatear_numero_ec,
+    formatear_porcentaje_ec,
+    limpiar_texto_libre,
+)
 from services.sercop import generar_reporte, obtener_contrataciones, vaciar_base_datos
 from src.logging_config import obtener_logger
 from ui.componentes import boton_limpiar_filtros
@@ -58,6 +63,10 @@ from ui.tema import (
 load_dotenv()
 
 logger = obtener_logger(__name__)
+
+# Largo maximo de la palabra clave del filtro de Procesos (el modelo del
+# backend admite hasta 200, ver src/models.py).
+MAX_LARGO_PALABRA_CLAVE = 100
 
 NAV_ITEMS = [
     ("Dashboard", ":material/monitoring:"),
@@ -2889,11 +2898,28 @@ def render_pagina_procesos(registros_totales: list[dict]) -> None:
         fecha_fin = st.date_input("Fecha fin", value=None, key="procesos_fecha_fin")
     with col_palabra:
         palabra_clave_filtro = st.text_input(
-            "Palabra clave", placeholder="Ej: luminarias", key="procesos_palabra_clave"
+            "Palabra clave",
+            placeholder="Ej: luminarias",
+            key="procesos_palabra_clave",
+            max_chars=MAX_LARGO_PALABRA_CLAVE,
+            help="Se ignoran tildes y mayúsculas. Máximo 100 caracteres.",
         )
+    # Seguridad: el texto se sanea antes de salir hacia la API (Unicode NFC,
+    # sin caracteres de control/ancho cero, espacios colapsados). Se conservan
+    # ñ y tildes. Ver scripts/formato_ec.py::limpiar_texto_libre.
+    palabra_clave_filtro = limpiar_texto_libre(palabra_clave_filtro, max_len=MAX_LARGO_PALABRA_CLAVE)
+
+    rango_fechas_invalido = bool(fecha_inicio and fecha_fin and fecha_inicio > fecha_fin)
+    if rango_fechas_invalido:
+        st.warning(":material/event_busy: La fecha de inicio no puede ser posterior a la fecha fin.")
 
     col_buscar, col_limpiar, _ = st.columns([1, 1, 4])
-    buscar = col_buscar.button(":material/search: Buscar", type="primary", use_container_width=True)
+    buscar = col_buscar.button(
+        ":material/search: Buscar",
+        type="primary",
+        width="stretch",
+        disabled=rango_fechas_invalido,
+    )
     with col_limpiar:
         boton_limpiar_filtros(
             CLAVES_FILTRO_PROCESOS,
