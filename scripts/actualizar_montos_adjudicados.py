@@ -23,6 +23,7 @@ from playwright.async_api import async_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.scrape_portal import USER_AGENT, _obtener_montos_adjudicados  # noqa: E402
+from scripts.url_segura import url_portal_valida  # noqa: E402
 from src import database  # noqa: E402
 
 # Estados (ya normalizados via database._normalizar_para_busqueda: minusculas,
@@ -70,7 +71,7 @@ def _procesos_pendientes(entidad: str | None) -> list[dict]:
     pendientes = [
         r
         for r in todos
-        if r.get("url") and r.get("monto_adjudicado") is None and _es_estado_adjudicable(r.get("estado"))
+        if url_portal_valida(r.get("url")) and r.get("monto_adjudicado") is None and _es_estado_adjudicable(r.get("estado"))
     ]
     if entidad:
         clave = entidad.strip().lower()

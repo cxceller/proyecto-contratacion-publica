@@ -42,6 +42,7 @@ from scripts.scrape_portal import (  # noqa: E402
     USER_AGENT,
     _extraer_motivo_estado,
 )
+from scripts.url_segura import url_portal_valida  # noqa: E402
 from src import database  # noqa: E402
 
 
@@ -52,7 +53,7 @@ def _procesos_pendientes(entidad: str | None) -> list[dict]:
     se aplica en Python, mismo patron que _procesos_pendientes en
     actualizar_montos_adjudicados.py y en explicar_estado_desierta.py."""
     todos = database.get_all_contrataciones(status="Desierta")
-    pendientes = [r for r in todos if r.get("url") and not r.get("motivo_estado_raw")]
+    pendientes = [r for r in todos if url_portal_valida(r.get("url")) and not r.get("motivo_estado_raw")]
     if entidad:
         clave = entidad.strip().lower()
         pendientes = [r for r in pendientes if (r.get("entidad_contratante") or "").strip().lower() == clave]

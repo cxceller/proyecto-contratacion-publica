@@ -70,6 +70,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.import_csv import importar_dataframe, mapear_columnas, parsear_presupuesto  # noqa: E402
+from scripts.url_segura import url_portal_valida  # noqa: E402
 
 URL_BUSQUEDA = "https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/PC/buscarProceso.cpe"
 ESPERA_POR_DEFECTO_S = 90  # tiempo maximo para completar el captcha y la busqueda
@@ -1100,6 +1101,9 @@ async def _obtener_montos_adjudicados(
     motivos: dict[str, str | None] = {}
     cola: asyncio.Queue = asyncio.Queue()
     for item in mapa_urls.items():
+        if not url_portal_valida(item[1]):
+            print(f"  Se omite {item[0]}: la URL no pertenece al portal oficial (lista blanca).")
+            continue
         cola.put_nowait(item)
 
     total = len(mapa_urls)

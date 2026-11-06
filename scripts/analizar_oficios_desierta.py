@@ -64,6 +64,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from scripts.url_segura import url_portal_valida  # noqa: E402
 from services.criterio_juridico import explicar_desierta as _explicar_desierta_rag  # noqa: E402
 from src import database  # noqa: E402
 
@@ -103,6 +104,8 @@ def _extraer_texto_oficio(page: Page, url_proceso: str, oficio: str) -> str | No
     (o None si no se encuentra el oficio, no hay enlace de descarga, la
     descarga falla, o el PDF no tiene capa de texto -- escaneado, sin
     OCR configurado en este script)."""
+    if not url_portal_valida(url_proceso):
+        return None  # url fuera de la lista blanca del portal: no se visita
     page.goto(url_proceso, wait_until="networkidle", timeout=TIMEOUT_NAVEGACION_MS)
     _aceptar_banner_politica_datos(page)
 

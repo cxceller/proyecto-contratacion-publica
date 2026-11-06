@@ -38,6 +38,7 @@ from playwright.async_api import BrowserContext, Page, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from scripts.scrape_portal import USER_AGENT  # noqa: E402
+from scripts.url_segura import url_portal_valida  # noqa: E402
 from src import database  # noqa: E402
 
 RAIZ_REPO = Path(__file__).resolve().parent.parent
@@ -256,6 +257,8 @@ async def _descargar_pdf_resolucion(context: BrowserContext, pagina: Page, url: 
     None. Nunca lanza para fallos esperados (enlace ausente): los reporta
     como motivo, para que _procesar_uno los escriba en montos_fallidos.csv
     en vez de abortar el resto del lote."""
+    if not url_portal_valida(url):
+        return None, None, "url fuera de la lista blanca del portal (no se visita)"
     await pagina.goto(url, timeout=30000)
     try:
         await pagina.click("button:has-text('Aceptar')", timeout=3000)
