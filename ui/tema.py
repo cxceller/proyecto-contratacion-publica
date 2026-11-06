@@ -56,9 +56,10 @@ COLOR_TEXTO_EJE = "#0b0b0b"  # texto de ejes/fuente general, = textColor (.strea
 # (render_grafico_mensual, render_grafico_provincia, render_grafico_
 # comparativo): todas las barras en azul suave (el color no codifica
 # categoria, solo son "datos"), salvo la de mayor valor, que se resalta en
-# naranja de acento -- el unico uso de naranja fuera de una alerta.
+# azul fuerte (antes naranja: la paleta de graficos es solo azul).
 COLOR_BARRA_DATO = "#cfe0f5"
-COLOR_BARRA_DESTACADA = "#eb6834"
+COLOR_BARRA_DESTACADA = "#0f3d75"  # azul fuerte (sin naranja en los graficos)
+COLOR_TARJETA = "#FFFFFF"  # fondo de los graficos = fondo de las tarjetas (--card en estilos_sercop.py)
 
 # Altura minima comun a los TRES tipos de tarjeta KPI (P1-6 del plan de
 # mejoras): simple (_tarjeta_kpi_html), con sparkline

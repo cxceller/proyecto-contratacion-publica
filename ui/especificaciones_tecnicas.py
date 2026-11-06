@@ -86,6 +86,7 @@ from services.sercop import (
 )
 from src.logging_config import obtener_logger
 from ui.autenticacion import confirmar_con_clave
+from ui.plantilla_plotly import mostrar_grafico
 from ui.tema import COLOR_LIENZO, COLOR_SIDEBAR_ACENTO, COLOR_TEXTO_EJE, PALETA_DATOS
 
 logger = obtener_logger(__name__)
@@ -179,7 +180,7 @@ def render_treemap_items_especificaciones_tecnicas(df_items: pd.DataFrame) -> No
         showlegend=False,
         separators=",.",
     )
-    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    mostrar_grafico(fig, width="stretch", config={"displayModeBar": False})
 
 
 COLUMNAS_ITEMS_ESPECIFICACIONES_TECNICAS = [
