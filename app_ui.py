@@ -448,10 +448,11 @@ def render_filtros_dashboard(df: pd.DataFrame, key_prefix: str = "") -> pd.DataF
     solo la usa render_pagina_dashboard, pero el prefijo se mantiene por si
     algun otro caller la reusa mas adelante (evita que dos instancias
     compartan keys y una seleccion pise a la otra)."""
-    # Año/Mes necesitan ancho para "(Todos)" sin cortarse; vertical_alignment
+    # Año/Mes necesitan >= ~110 px para "(Todos)" sin cortarse (medido a 1100/1280/1440 px); el boton
+    # Limpiar es solo un icono, asi que su columna es angosta. vertical_alignment
     # "bottom" alinea el boton Limpiar con la base de los selectores (antes un
     # st.write("") de relleno).
-    col1, col2, col3, col4, col5 = st.columns([1.2, 1.2, 2.2, 2, 1.4], vertical_alignment="bottom")
+    col1, col2, col3, col4, col5 = st.columns([1.6, 1.6, 2.1, 2.1, 0.7], vertical_alignment="bottom")
 
     if df.empty:
         col1.selectbox("Año", ["(Todos)"], disabled=True)
