@@ -4,6 +4,8 @@ registros crudos) y _variacion_pct_ultimo_periodo (variación % del
 ultimo periodo de una serie vs. el anterior). No prueban
 render_kpi_card_tendencia en si (requiere Streamlit) -- mismo criterio
 que el resto de tests de app_ui.py, que solo cubren las funciones puras."""
+from datetime import UTC
+
 from app_ui import _serie_mensual, _variacion_pct_ultimo_periodo
 
 
@@ -130,18 +132,24 @@ class TestCoherenciaDeLasTarjetas:
         assert len(_serie_alineada(subconjunto, meses, "presupuesto_referencial")) == len(meses) == 6
 
     def test_detalle_nombra_el_mes_y_compara_con_el_anterior(self):
+        from datetime import date
+
         from app_ui import _detalle_ultimo_mes
 
-        d = _detalle_ultimo_mes([36.0, 12.0], ["2026-10", "2026-11"], lambda v: f"{v:.0f}")
+        # hoy fijo posterior a nov: ambos meses estan completos
+        d = _detalle_ultimo_mes([36.0, 12.0], ["2026-10", "2026-11"], lambda v: f"{v:.0f}", hoy=date(2026, 12, 15))
         assert d["mes"] == "nov 2026" and d["mes_previo"] == "oct 2026"
         assert d["valor"] == "12" and d["valor_previo"] == "36" and round(d["pct"], 1) == -66.7
 
     def test_detalle_sin_mes_previo_comparable(self):
+        from datetime import date
+
         from app_ui import _detalle_ultimo_mes
 
-        assert _detalle_ultimo_mes([0.0, 5.0], ["2026-10", "2026-11"])["pct"] is None
-        assert _detalle_ultimo_mes([5.0], ["2026-11"])["mes_previo"] is None
-        assert _detalle_ultimo_mes([], []) is None
+        hoy = date(2026, 12, 15)
+        assert _detalle_ultimo_mes([0.0, 5.0], ["2026-10", "2026-11"], hoy=hoy)["pct"] is None
+        assert _detalle_ultimo_mes([5.0], ["2026-11"], hoy=hoy)["mes_previo"] is None
+        assert _detalle_ultimo_mes([], [], hoy=hoy) is None
 
     def test_moneda_compacta(self):
         from scripts.formato_ec import formatear_moneda_compacta_ec as c
@@ -177,3 +185,121 @@ class TestFuenteVendorizada:
 
         config = (Path(__file__).resolve().parent.parent / ".streamlit" / "config.toml").read_text(encoding="utf-8")
         assert "enableStaticServing = true" in config
+
+
+class TestMesCompletoVsEnCurso:
+    """El badge compara el ultimo mes COMPLETO con el anterior; el mes en curso se rotula aparte, sin porcentaje.
+    Todas con fechas fijas (America/Guayaquil)."""
+
+    MESES = ["2026-08", "2026-09", "2026-10", "2026-11"]
+
+    def test_hoy_en_guayaquil_es_utc_menos_5(self):
+        from datetime import date, datetime
+
+        from app_ui import _hoy_guayaquil
+
+        assert _hoy_guayaquil(datetime(2026, 11, 6, 15, 0, tzinfo=UTC)) == date(2026, 11, 6)
+        # 03:00 UTC del 1 de diciembre todavia es 30 de noviembre en Ecuador (22:00)
+        assert _hoy_guayaquil(datetime(2026, 12, 1, 3, 0, tzinfo=UTC)) == date(2026, 11, 30)
+        assert _hoy_guayaquil(datetime(2026, 12, 1, 5, 0)) == date(2026, 12, 1)  # naive = UTC
+
+    def test_mes_en_curso_no_se_compara_oct_vs_sep(self):
+        from datetime import date
+
+        from app_ui import _detalle_ultimo_mes
+
+        d = _detalle_ultimo_mes([10.0, 20.0, 30.0, 5.0], self.MESES, lambda v: f"{v:.0f}", hoy=date(2026, 11, 6))
+        assert d["parcial"] is True
+        assert d["mes"] == "oct 2026" and d["mes_corto"] == "oct" and d["mes_previo"] == "sep 2026"
+        assert d["valor"] == "30" and d["valor_previo"] == "20" and d["pct"] == 50.0  # +50 %, no -83 %
+        assert d["en_curso"]["mes"] == "nov 2026" and d["en_curso"]["valor"] == "5"
+
+    def test_al_cerrar_el_mes_ya_se_compara_noviembre(self):
+        from datetime import date
+
+        from app_ui import _detalle_ultimo_mes
+
+        d = _detalle_ultimo_mes([10.0, 20.0, 30.0, 5.0], self.MESES, lambda v: f"{v:.0f}", hoy=date(2026, 12, 1))
+        assert d["parcial"] is False and d["en_curso"] is None
+        assert d["mes"] == "nov 2026" and round(d["pct"], 1) == -83.3
+
+    def test_el_limite_de_mes_usa_la_fecha_de_guayaquil_no_utc(self):
+        from datetime import datetime
+
+        from app_ui import _detalle_ultimo_mes, _hoy_guayaquil
+
+        hoy = _hoy_guayaquil(datetime(2026, 12, 1, 3, 0, tzinfo=UTC))  # 30/11 en Ecuador
+        assert _detalle_ultimo_mes([10.0, 20.0, 30.0, 5.0], self.MESES, hoy=hoy)["parcial"] is True
+
+    def test_si_los_datos_terminan_antes_del_mes_actual_todo_esta_completo(self):
+        from datetime import date
+
+        from app_ui import _detalle_ultimo_mes
+
+        d = _detalle_ultimo_mes([20.0, 30.0], ["2026-09", "2026-10"], hoy=date(2026, 11, 6))
+        assert d["parcial"] is False and d["mes"] == "oct 2026" and d["pct"] == 50.0
+
+    def test_solo_el_mes_en_curso_no_tiene_porcentaje(self):
+        from datetime import date
+
+        from app_ui import _detalle_ultimo_mes
+
+        d = _detalle_ultimo_mes([5.0], ["2026-11"], lambda v: f"{v:.0f}", hoy=date(2026, 11, 6))
+        assert d["parcial"] is True and d["mes"] is None and d["pct"] is None
+        assert d["en_curso"]["mes"] == "nov 2026"
+
+    def test_un_mes_completo_y_el_en_curso_no_dan_porcentaje(self):
+        from datetime import date
+
+        from app_ui import _detalle_ultimo_mes
+
+        d = _detalle_ultimo_mes([30.0, 5.0], ["2026-10", "2026-11"], hoy=date(2026, 11, 6))
+        assert d["mes"] == "oct 2026" and d["pct"] is None and d["mes_previo"] is None
+
+    def test_mes_previo_en_cero_no_da_porcentaje(self):
+        from datetime import date
+
+        from app_ui import _detalle_ultimo_mes
+
+        assert _detalle_ultimo_mes([0.0, 7.0, 3.0], ["2026-09", "2026-10", "2026-11"], hoy=date(2026, 11, 6))["pct"] is None
+
+    def test_serie_vacia(self):
+        from datetime import date
+
+        from app_ui import _detalle_ultimo_mes
+
+        assert _detalle_ultimo_mes([], [], hoy=date(2026, 11, 6)) is None
+
+
+class TestSparklineParcial:
+    def test_con_mes_en_curso_el_ultimo_tramo_es_punteado_y_el_punto_hueco(self):
+        from app_ui import _figura_sparkline
+
+        fig = _figura_sparkline([1.0, 2.0, 3.0, 1.0], parcial=True)
+        assert len(fig.data) == 3
+        assert list(fig.data[0].y) == [1.0, 2.0, 3.0] and fig.data[0].line.dash is None  # meses completos: continua
+        assert fig.data[1].line.dash == "dot" and list(fig.data[1].y) == [3.0, 1.0]  # tramo parcial: punteado
+        assert fig.data[2].mode == "markers" and fig.data[2].marker.color == "#FFFFFF"  # punto hueco
+
+    def test_sin_parcial_es_una_sola_linea(self):
+        from app_ui import _figura_sparkline
+
+        fig = _figura_sparkline([1.0, 2.0, 3.0])
+        assert len(fig.data) == 1 and fig.data[0].mode == "lines"
+
+
+class TestCifraPrincipalCorta:
+    def test_formato_corto_con_un_decimal(self):
+        from scripts.formato_ec import formatear_moneda_compacta_ec as c
+
+        assert c(242_532_054.24, decimales=1) == "$ 242,5 M"
+        assert c(122_680_393.95, decimales=1) == "$ 122,7 M"
+        assert c(35_990_000, decimales=1) == "$ 36,0 M"
+
+    def test_total_lleva_pie_de_texto_no_badge(self):
+        from app_ui import _tarjeta_kpi_html
+
+        html_total = _tarjeta_kpi_html("Total", "337", pie="procesos registrados")
+        assert "procesos registrados" in html_total and "<span" not in html_total
+        con_insignia = _tarjeta_kpi_html("Adjudicada", "5", insignia="1,5 % del total")
+        assert "<span>1,5 % del total</span>" in con_insignia

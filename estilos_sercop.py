@@ -88,13 +88,14 @@ html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):
 
 /* ───────── Tarjetas KPI (contador) ───────── */
 .sercop-kpi-card{
+  container-type:inline-size; /* la etiqueta solo se reduce cuando la tarjeta es realmente angosta (cqw) */
   background:var(--card) !important; border:1px solid var(--line) !important; border-radius:var(--r-lg) !important;
   box-shadow:var(--shadow) !important; padding:1.25rem 1.35rem !important; position:relative; overflow:hidden;
   transition:transform .3s var(--ease), box-shadow .3s var(--ease), border-color .3s var(--ease);
 }
 .sercop-kpi-card:hover{ transform:translateY(-2px) scale(1.01); box-shadow:var(--shadow-hover) !important; border-color:var(--line-strong) !important; }
 .sercop-kpi-card > div:nth-child(1){
-  font-size:clamp(.7rem, .9vw, .82rem) !important; font-weight:600 !important; color:var(--ink-500) !important; letter-spacing:.01em;
+  font-size:clamp(.75rem, 13cqw, .85rem) !important; font-weight:600 !important; color:var(--ink-500) !important; letter-spacing:.01em;
   white-space:normal; overflow-wrap:anywhere; line-height:1.3; min-height:2.6em; display:flex; align-items:flex-start; gap:.35rem;
 }
 .sercop-kpi-card > div:nth-child(1) .notranslate{ color:var(--kpi-c, var(--ink-400)); font-size:1rem !important; }
@@ -124,12 +125,13 @@ html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):
 [data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] [data-testid="stPlotlyChart"]):has(> [data-testid="stElementContainer"] [data-testid="stMarkdown"]):hover{
   transform:translateY(-2px); box-shadow:var(--shadow-hover);
 }
-/* Montos: NUNCA se truncan. El tamano sigue el ANCHO DE LA TARJETA (container query: la tarjeta de tendencia declara
+/* Cifra principal de las tarjetas con tendencia: formato corto y GRANDE (hasta 2,35rem = el del contador).
+   Montos: NUNCA se truncan. El tamano sigue el ANCHO DE LA TARJETA (container query: la tarjeta de tendencia declara
    `container-type:inline-size` en app_ui.py), no el de la ventana; el primer clamp es el respaldo sin cqw. */
 [data-testid="stMain"] [data-testid="stColumn"] [data-testid="stMarkdownContainer"] > div:not(.sercop-kpi-card) > div:first-child + div{
   font-variant-numeric:tabular-nums; letter-spacing:-.03em; font-weight:700 !important;
-  font-size:clamp(1.05rem, 1.3vw, 1.7rem) !important; font-size:clamp(1.05rem, 6.6cqw, 1.9rem) !important;
-  white-space:nowrap; overflow:visible; text-overflow:clip;
+  font-size:clamp(1.4rem, 2.6vw, 2.2rem) !important; font-size:clamp(1.5rem, 18cqw, 2.35rem) !important;
+  line-height:1.2 !important; white-space:nowrap; overflow:visible; text-overflow:clip;
 }
 /* Titulo de la tarjeta: hasta 2 lineas con altura fija (las tarjetas de una fila quedan alineadas), sin puntos suspensivos. */
 [data-testid="stMain"] [data-testid="stColumn"] [data-testid="stMarkdownContainer"] > div:not(.sercop-kpi-card) > div:first-child{

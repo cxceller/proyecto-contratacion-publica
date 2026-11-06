@@ -82,9 +82,10 @@ def formatear_porcentaje_ec(valor, decimales: int = 1) -> str:
     return f"{numero_formateado}%"
 
 
-def formatear_moneda_compacta_ec(valor, simbolo: str = "$") -> str:
+def formatear_moneda_compacta_ec(valor, simbolo: str = "$", decimales: int = 2) -> str:
     """Monto corto para espacios angostos (badges): 12345678.9 -> "$ 12,35 M" (millones),
-    1234567890 -> "$ 1,23 mil M" (miles de millones), 45678 -> "$ 45,68 mil"; por debajo de 1.000 el
+    1234567890 -> "$ 1,23 mil M" (miles de millones), 45678 -> "$ 45,68 mil" (`decimales`=2 por
+    defecto; 242532054 con decimales=1 -> "$ 242,5 M"); por debajo de 1.000 el
     monto completo. Cadena vacia si `valor` es None/""/NaN/infinito. El valor completo debe mostrarse
     aparte (tooltip, cifra principal): esta forma redondea."""
     if valor is None or valor == "":
@@ -97,10 +98,10 @@ def formatear_moneda_compacta_ec(valor, simbolo: str = "$") -> str:
         return ""
     signo, absoluto = ("-" if numero < 0 else ""), abs(numero)
     if absoluto >= 1e9:
-        return f"{signo}{simbolo} {formatear_numero_ec(absoluto / 1e9, 2)} mil M"
+        return f"{signo}{simbolo} {formatear_numero_ec(absoluto / 1e9, decimales)} mil M"
     if absoluto >= 1e6:
-        return f"{signo}{simbolo} {formatear_numero_ec(absoluto / 1e6, 2)} M"
+        return f"{signo}{simbolo} {formatear_numero_ec(absoluto / 1e6, decimales)} M"
     if absoluto >= 1e3:
-        return f"{signo}{simbolo} {formatear_numero_ec(absoluto / 1e3, 2)} mil"
+        return f"{signo}{simbolo} {formatear_numero_ec(absoluto / 1e3, decimales)} mil"
     return f"{signo}{formatear_moneda_ec(absoluto)}"
 

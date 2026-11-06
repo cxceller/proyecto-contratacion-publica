@@ -14,8 +14,9 @@ import subprocess
 import sys
 import time
 import unicodedata
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
@@ -609,6 +610,7 @@ def _tarjeta_kpi_html(
     icono: str | None = None,
     insignia: str | None = None,
     modificador: str = CLASE_KPI_DEFECTO,
+    pie: str | None = None,
 ) -> str:
     """Tarjeta KPI en HTML puro (no st.metric), mismo componente en toda la
     app (Dashboard, Procesos y Municipio de Guayaquil, via render_kpi_card).
@@ -637,6 +639,12 @@ def _tarjeta_kpi_html(
     insignia_html = (
         f'<div style="margin-top:auto;"><span>{html.escape(insignia)}</span></div>' if insignia else ""
     )
+    if pie and not insignia:
+        # Pie de texto (caption, sin pildora): el tercer hijo NO lleva <span>, asi estilos_sercop no lo pinta como badge.
+        insignia_html = (
+            f'<div style="margin-top:auto;padding-top:0.4rem;font-size:0.75rem;'
+            f'color:{COLOR_NEUTRO_TEXTO_SUAVE};">{html.escape(pie)}</div>'
+        )
     return (
         f'<div{atributo_titulo} class="sercop-kpi-card {modificador}" '
         f'style="box-sizing:border-box;margin-bottom:0.5rem;display:flex;flex-direction:column;'
@@ -656,6 +664,7 @@ def render_kpi_card(
     icono: str | None = None,
     insignia: str | None = None,
     modificador: str = CLASE_KPI_DEFECTO,
+    pie: str | None = None,
 ) -> None:
     """Tarjeta KPI reutilizable: mismo componente para Dashboard
     (render_kpis_dashboard), Procesos y Municipio de Guayaquil
@@ -663,7 +672,7 @@ def render_kpi_card(
     opcionales y `modificador` elige el color semantico -- ver
     _tarjeta_kpi_html."""
     columna.markdown(
-        _tarjeta_kpi_html(etiqueta, valor, ayuda, icono=icono, insignia=insignia, modificador=modificador),
+        _tarjeta_kpi_html(etiqueta, valor, ayuda, icono=icono, insignia=insignia, modificador=modificador, pie=pie),
         unsafe_allow_html=True,
     )
 
@@ -727,31 +736,41 @@ def _inyectar_estilos_kpi_tendencia() -> None:
     )
 
 
-def _figura_sparkline(serie: list[float]) -> go.Figure:
-    """Mini-grafico de linea (sin ejes/grid/leyenda/hover) para el
-    sparkline de render_kpi_card_tendencia -- misma paleta que el resto de
-    graficos (COLOR_SIDEBAR_ACENTO = "#2a78d6"), pero SIN
-    _aplicar_estilo_base: esa funcion fija una altura de 380px pensada
-    para graficos normales, no para un sparkline de ~48px dentro de una
-    tarjeta KPI."""
-    fig = go.Figure(
-        go.Scatter(
-            y=serie,
-            mode="lines",
-            line=dict(color=COLOR_SIDEBAR_ACENTO, width=2, shape="spline", smoothing=0.6),
-            fill="tozeroy",
-            fillcolor="rgba(42, 120, 214, 0.12)",
-            hoverinfo="skip",
-        )
-    )
+def _figura_sparkline(serie: list[float], parcial: bool = False) -> go.Figure:
+    """Mini-grafico de linea (sin ejes/grid/leyenda/hover) para el sparkline de render_kpi_card_tendencia
+    -- misma paleta que el resto (COLOR_SIDEBAR_ACENTO), pero SIN _aplicar_estilo_base (fija 380 px).
+
+    `parcial`: el ULTIMO punto es un mes en curso (incompleto). Se dibuja con el tramo final punteado y un
+    marcador HUECO, para que no se lea como una caida real; los meses completos van en linea continua."""
+    color = COLOR_SIDEBAR_ACENTO
+    x = list(range(len(serie)))
+    if parcial and len(serie) >= 2:
+        trazas = [
+            go.Scatter(
+                x=x[:-1], y=serie[:-1], mode="lines", line=dict(color=color, width=2, shape="spline", smoothing=0.6),
+                fill="tozeroy", fillcolor="rgba(42, 120, 214, 0.12)", hoverinfo="skip",
+            ),
+            go.Scatter(x=x[-2:], y=serie[-2:], mode="lines", line=dict(color=color, width=2, dash="dot"), hoverinfo="skip"),
+            go.Scatter(
+                x=[x[-1]], y=[serie[-1]], mode="markers", hoverinfo="skip",
+                marker=dict(size=8, color="#FFFFFF", line=dict(color=color, width=2)),
+            ),
+        ]
+    else:
+        trazas = [
+            go.Scatter(
+                x=x, y=serie, mode="lines", line=dict(color=color, width=2, shape="spline", smoothing=0.6),
+                fill="tozeroy", fillcolor="rgba(42, 120, 214, 0.12)", hoverinfo="skip",
+            )
+        ]
+    fig = go.Figure(trazas)
     fig.update_xaxes(visible=False, showgrid=False, fixedrange=True)
     fig.update_yaxes(visible=False, showgrid=False, fixedrange=True)
     fig.update_layout(
         height=48,
-        # b=6 (no 2): colchon extra para que el area rellena
-        # (fill="tozeroy") no quede pegada al borde inferior real de la
-        # tarjeta -- ver _inyectar_estilos_kpi_tendencia (P1-6).
-        margin=dict(l=0, r=0, t=2, b=6),
+        # b=6: colchon para que el area rellena no quede pegada al borde inferior de la tarjeta;
+        # l/r pequenos para que el marcador hueco del ultimo punto no se recorte.
+        margin=dict(l=4, r=6, t=4, b=6),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
@@ -769,6 +788,7 @@ def render_kpi_card_tendencia(
     sentido: str = "neutro",
     periodo: str | None = None,
     detalle_mes: dict | None = None,
+    valor_exacto: str | None = None,
 ) -> None:
     """Tarjeta KPI con mini-sparkline (tendencia mensual) y badge de
     variación porcentual vs. el periodo anterior, para los KPIs monetarios
@@ -821,65 +841,86 @@ def render_kpi_card_tendencia(
             # Seguridad (XSS): ver _tarjeta_kpi_html.
             etiqueta_html = html.escape(str(etiqueta))
             valor_html = html.escape(str(valor))
-            # Tooltip: valor completo (los montos no se truncan, pero asi se ve exacto) + ayuda.
-            titulo_texto = f"{etiqueta}: {valor}" + (f" -- {ayuda}" if ayuda else "")
+            # Tooltip: valor exacto (la cifra principal puede ir en formato corto) + ayuda.
+            titulo_texto = f"{etiqueta}: {valor_exacto or valor}" + (f" -- {ayuda}" if ayuda else "")
             atributo_titulo = f' title="{html.escape(titulo_texto, quote=True)}"'
             badge_html = ""
             detalle = detalle_mes
             if detalle is None and variacion_pct is not None:
                 detalle = {"pct": variacion_pct}
+            parcial = bool(detalle and detalle.get("parcial"))
             if detalle is not None:
                 pct = detalle.get("pct")
                 partes = []
-                if detalle.get("mes") and detalle.get("valor") is not None:
-                    partes.append(f"{detalle['mes']}: {detalle['valor']}")
                 color, color_texto = COLOR_NEUTRO_TEXTO_SUAVE, COLOR_NEUTRO_TEXTO_INSIGNIA
-                if pct is not None:
-                    positivo = pct >= 0
-                    flecha = "↑" if positivo else "↓"
-                    # Fondo = tinte (22 de alfa) del color semantico; texto = su variante oscura (AA 4.5:1).
-                    if sentido != "neutro":
-                        color, color_texto = (
-                            (COLOR_ESTADO_OK, COLOR_ESTADO_OK_TEXTO)
-                            if positivo
-                            else (COLOR_ESTADO_CRITICO, COLOR_ESTADO_CRITICO_TEXTO)
-                        )
-                    sufijo = "" if detalle.get("mes_previo") else " vs. mes anterior"
-                    partes.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} %{sufijo}")
+                if detalle.get("mes") and detalle.get("valor") is not None:
+                    # Ultimo mes COMPLETO (nunca el mes en curso): "oct: $ 35,9 M · ↑ 1,9 %"
+                    partes.append(f"{detalle.get('mes_corto') or detalle['mes']}: {detalle['valor']}")
+                    if pct is not None:
+                        positivo = pct >= 0
+                        flecha = "↑" if positivo else "↓"
+                        # Fondo = tinte (22 de alfa) del color semantico; texto = su variante oscura (AA 4.5:1).
+                        if sentido != "neutro":
+                            color, color_texto = (
+                                (COLOR_ESTADO_OK, COLOR_ESTADO_OK_TEXTO)
+                                if positivo
+                                else (COLOR_ESTADO_CRITICO, COLOR_ESTADO_CRITICO_TEXTO)
+                            )
+                        sufijo = "" if detalle.get("mes_previo") else " vs. mes anterior"
+                        partes.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} %{sufijo}")
+                elif detalle.get("en_curso"):
+                    # Solo hay el mes en curso: se rotula asi y SIN porcentaje.
+                    en_curso = detalle["en_curso"]
+                    partes.append(f"{en_curso['mes']} (en curso): {en_curso['valor']}")
+                elif pct is not None:  # compatibilidad: solo un porcentaje suelto
+                    flecha = "↑" if pct >= 0 else "↓"
+                    partes.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} % vs. mes anterior")
                 if partes:
-                    ayuda_badge = ""
+                    lineas_tooltip = []
                     if detalle.get("mes_previo"):
-                        ayuda_badge = (
+                        lineas_tooltip.append(
                             f"{detalle['mes']} ({detalle.get('valor_completo', detalle['valor'])}) frente a "
-                            f"{detalle['mes_previo']} ({detalle.get('valor_previo_completo', detalle.get('valor_previo'))})"
+                            f"{detalle['mes_previo']} ({detalle.get('valor_previo_completo', detalle.get('valor_previo'))})."
                         )
+                    if detalle.get("en_curso"):
+                        ec = detalle["en_curso"]
+                        lineas_tooltip.append(
+                            f"{ec['mes']} (en curso, mes incompleto): {ec.get('valor_completo', ec['valor'])}; "
+                            "no se compara para no mostrar una caída falsa."
+                        )
+                    texto_tooltip = html.escape(" ".join(lineas_tooltip), quote=True)
                     badge_html = (
-                        f'<span title="{html.escape(ayuda_badge, quote=True)}" style="display:inline-block;'
-                        f"padding:0.15rem 0.6rem;border-radius:999px;background-color:{color}22;"
-                        f'color:{color_texto};font-size:0.75rem;font-weight:700;line-height:1.4;">'
+                        f'<span title="{texto_tooltip}" style="display:inline-block;'
+                        f"white-space:nowrap;padding:0.15rem 0.5rem;border-radius:999px;background-color:{color}22;"
+                        f'color:{color_texto};font-size:0.72rem;font-weight:700;line-height:1.4;">'
                         f"{html.escape(' · '.join(partes))}</span>"
                     )
+            exacto_html = html.escape(valor_exacto) if valor_exacto else "&nbsp;"
             st.markdown(
                 f'<div{atributo_titulo}>'
                 f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};'
                 f'min-height:2.5rem;">{etiqueta_html}</div>'
-                f'<div style="font-size:2rem;font-weight:600;color:{COLOR_TEXTO_EJE};'
-                f'line-height:1.3;">{valor_html}</div>'
-                f'<div style="min-height:2.7rem;margin-top:0.2rem;">{badge_html}</div>'
+                f'<div style="font-size:2rem;font-weight:700;color:{COLOR_TEXTO_EJE};'
+                f'line-height:1.2;">{valor_html}</div>'
+                f'<div style="font-size:0.72rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};min-height:1.1rem;">{exacto_html}</div>'
+                f'<div style="min-height:1.8rem;margin-top:0.2rem;">{badge_html}</div>'
                 f"</div>",
                 unsafe_allow_html=True,
             )
             if serie and len(serie) >= 2:
                 st.plotly_chart(
-                    _figura_sparkline(serie),
+                    _figura_sparkline(serie, parcial=parcial),
                     width="stretch",
                     config={"displayModeBar": False},
                     key=f"spark_{clave}",
                 )
                 if periodo:
+                    nota = ""
+                    if parcial and detalle.get("en_curso"):
+                        nota = f" · {detalle['en_curso']['mes'].split()[0]} en curso"
                     st.markdown(
-                        f'<div style="font-size:0.72rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};margin-top:-0.4rem;">'
-                        f"Mensual · {html.escape(periodo)}</div>",
+                        f'<div style="font-size:0.7rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};margin-top:-0.4rem;min-height:2rem;">'
+                        f"Mensual · {html.escape(periodo)}{html.escape(nota)}</div>",
                         unsafe_allow_html=True,
                     )
 
@@ -1070,29 +1111,71 @@ def _periodo_de_meses(meses: list[str]) -> str | None:
     return primero if primero == ultimo else f"{primero} – {ultimo}"
 
 
-def _detalle_ultimo_mes(serie: list[float], meses: list[str], formatear=formatear_numero_ec, completo=None) -> dict | None:
-    """Datos del badge: cifra del ULTIMO mes de la serie y su variacion % frente al mes anterior.
-    `formatear` da la forma corta (badge) y `completo` la exacta (tooltip; por defecto la misma).
-    None si no hay al menos un mes. `pct` es None si el mes previo vale 0 (sin base de comparacion)."""
+ZONA_ECUADOR = ZoneInfo("America/Guayaquil")
+
+
+def _hoy_guayaquil(ahora: datetime | None = None) -> date:
+    """Fecha de hoy en America/Guayaquil (UTC-5, sin horario de verano). `ahora` es inyectable para pruebas
+    (naive = UTC). Importa en los limites de mes: 01/12 03:00 UTC todavia es 30/11 en Ecuador."""
+    ahora = ahora or datetime.now(UTC)
+    if ahora.tzinfo is None:
+        ahora = ahora.replace(tzinfo=UTC)
+    return ahora.astimezone(ZONA_ECUADOR).date()
+
+
+def _detalle_ultimo_mes(
+    serie: list[float],
+    meses: list[str],
+    formatear=formatear_numero_ec,
+    completo=None,
+    hoy: date | None = None,
+) -> dict | None:
+    """Datos del badge de las tarjetas con tendencia: cifra del ULTIMO MES COMPLETO y su variacion % frente
+    al mes completo anterior (p. ej. oct vs sep si hoy es 6 de nov).
+
+    Si el ultimo mes de la serie es el mes en curso (segun `hoy`, por defecto la fecha de Guayaquil) esta
+    incompleto: NO se compara (compararlo con un mes completo mostraria una caida falsa) y se devuelve aparte
+    en `en_curso` para rotularlo "(en curso)" y marcar el sparkline como parcial (`parcial` True).
+    `formatear` da la forma corta (badge) y `completo` la exacta (tooltip). `pct` es None si el mes previo
+    vale 0 o no hay dos meses completos. None si la serie esta vacia o no coincide con `meses`."""
     if not serie or len(serie) != len(meses):
         return None
     completo = completo or formatear
+    hoy = hoy or _hoy_guayaquil()
+    parcial = meses[-1] == f"{hoy:%Y-%m}"
+    base_meses, base_serie = (meses[:-1], serie[:-1]) if parcial else (meses, serie)
     detalle = {
-        "mes": _etiqueta_mes(meses[-1]),
-        "valor": formatear(serie[-1]),
-        "valor_completo": completo(serie[-1]),
+        "parcial": parcial,
+        "en_curso": None,
+        "mes": None,
+        "mes_corto": None,
+        "valor": None,
+        "valor_completo": None,
         "mes_previo": None,
         "valor_previo": None,
         "valor_previo_completo": None,
         "pct": None,
     }
-    if len(serie) >= 2:
+    if parcial:
+        detalle["en_curso"] = {
+            "mes": _etiqueta_mes(meses[-1]),
+            "valor": formatear(serie[-1]),
+            "valor_completo": completo(serie[-1]),
+        }
+    if base_serie:
         detalle.update(
-            mes_previo=_etiqueta_mes(meses[-2]),
-            valor_previo=formatear(serie[-2]),
-            valor_previo_completo=completo(serie[-2]),
-            pct=_variacion_pct_ultimo_periodo(serie),
+            mes=_etiqueta_mes(base_meses[-1]),
+            mes_corto=MESES_ABREV_ES[int(base_meses[-1].split("-")[1])],
+            valor=formatear(base_serie[-1]),
+            valor_completo=completo(base_serie[-1]),
         )
+        if len(base_serie) >= 2:
+            detalle.update(
+                mes_previo=_etiqueta_mes(base_meses[-2]),
+                valor_previo=formatear(base_serie[-2]),
+                valor_previo_completo=completo(base_serie[-2]),
+                pct=_variacion_pct_ultimo_periodo(base_serie),
+            )
     return detalle
 
 
@@ -1119,8 +1202,8 @@ ESTADOS_VALOR_ADJUDICADO = {
 
 
 AYUDA_PROCESOS_TENDENCIA = (
-    "Cantidad de procesos del filtro actual. El badge nombra el último mes y lo compara con el mes anterior "
-    "(no con el total)."
+    "Cantidad de procesos del filtro actual. El badge compara el último mes COMPLETO con el anterior "
+    "(no con el total ni con el mes en curso)."
 )
 
 
@@ -1137,42 +1220,52 @@ def _render_trio_tendencia(
     etiqueta_presupuesto: str,
     etiqueta_valor: str,
     ayuda_valor: str,
+    hoy: date | None = None,
 ) -> None:
     """Las TRES tarjetas con tendencia (procesos, presupuesto, valor en contratacion/adjudicado) con el
-    mismo componente y la MISMA base temporal: un unico rango continuo de meses (el del `df_base`
-    filtrado) para las tres series, rellenando con 0 los meses sin datos -- asi los sparklines y el
-    periodo mostrado coinciden entre tarjetas. La cifra principal es el total del periodo; el badge
-    habla solo del ultimo mes (ver render_kpi_card_tendencia)."""
+    mismo componente, el mismo tamano de cifra principal y la MISMA base temporal: un unico rango continuo
+    de meses (el del `df_base` filtrado), rellenando con 0 los meses sin datos.
+
+    Cifra principal = total del periodo en formato corto ("$ 242,5 M"); el valor exacto va en una linea
+    pequena debajo y en el tooltip. El badge habla solo del ultimo mes COMPLETO (ver _detalle_ultimo_mes);
+    si el ultimo mes es el actual (incompleto) se rotula "en curso" y el sparkline lo marca como parcial."""
     meses = _meses_continuos(df_base)
     periodo = _periodo_de_meses(meses)
     serie_procesos = _serie_alineada(df_base, meses)
     serie_presupuesto = _serie_alineada(df_base, meses, "presupuesto_referencial")
     serie_valor = _serie_alineada(df_valor, meses, campo_valor)
+    hoy = hoy or _hoy_guayaquil()
+
+    def corto_dinero(v):
+        return formatear_moneda_compacta_ec(v, decimales=1)
 
     col1, col2, col3 = columnas
     render_kpi_card_tendencia(
         col1,
         etiqueta_procesos,
         formatear_numero_ec(total_procesos),
+        valor_exacto="procesos del periodo",
         serie=serie_procesos,
-        detalle_mes=_detalle_ultimo_mes(serie_procesos, meses, lambda v: formatear_numero_ec(v, 0)),
+        detalle_mes=_detalle_ultimo_mes(serie_procesos, meses, lambda v: formatear_numero_ec(v, 0), hoy=hoy),
         ayuda=AYUDA_PROCESOS_TENDENCIA,
         periodo=periodo,
     )
     render_kpi_card_tendencia(
         col2,
         etiqueta_presupuesto,
-        formatear_moneda_ec(total_presupuesto),
+        corto_dinero(total_presupuesto),
+        valor_exacto=formatear_moneda_ec(total_presupuesto),
         serie=serie_presupuesto,
-        detalle_mes=_detalle_ultimo_mes(serie_presupuesto, meses, formatear_moneda_compacta_ec, formatear_moneda_ec),
+        detalle_mes=_detalle_ultimo_mes(serie_presupuesto, meses, corto_dinero, formatear_moneda_ec, hoy=hoy),
         periodo=periodo,
     )
     render_kpi_card_tendencia(
         col3,
         etiqueta_valor,
-        formatear_moneda_ec(total_valor),
+        corto_dinero(total_valor),
+        valor_exacto=formatear_moneda_ec(total_valor),
         serie=serie_valor,
-        detalle_mes=_detalle_ultimo_mes(serie_valor, meses, formatear_moneda_compacta_ec, formatear_moneda_ec),
+        detalle_mes=_detalle_ultimo_mes(serie_valor, meses, corto_dinero, formatear_moneda_ec, hoy=hoy),
         periodo=periodo,
         ayuda=ayuda_valor,
     )
@@ -2254,7 +2347,7 @@ def render_contadores(registros_totales: list[dict]):
     cols = st.columns(4)
     # "Total" es el agregado, no un estado individual -- sin icono a
     # proposito (ver ICONOS_ESTADO).
-    render_kpi_card(cols[0], "Total", formatear_numero_ec(total), insignia="procesos registrados")
+    render_kpi_card(cols[0], "Total", formatear_numero_ec(total), pie="procesos registrados")
     for i, estado_categoria in enumerate(ESTADOS_DESTACADOS, start=1):
         _render_tarjeta_estado(cols[i], estado_categoria, conteos, total)
 
