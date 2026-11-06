@@ -45,7 +45,7 @@ def _opciones_documentacion() -> dict:
 app = FastAPI(title="API de Contratacion Publica", lifespan=lifespan, **_opciones_documentacion())
 
 
-@app.get("/api/todos", response_model=list[ContratacionOut])
+@app.get("/api/todos", response_model=list[ContratacionOut], dependencies=[Depends(verificar_api_key)])
 def listar_contrataciones(
     estado: str | None = Query(None, max_length=100),
     fecha_inicio: date | None = None,
@@ -61,7 +61,9 @@ def listar_contrataciones(
     return [ContratacionOut(**row) for row in rows]
 
 
-@app.get("/api/todos/{contratacion_id}", response_model=ContratacionOut)
+@app.get(
+    "/api/todos/{contratacion_id}", response_model=ContratacionOut, dependencies=[Depends(verificar_api_key)]
+)
 def obtener_contratacion(contratacion_id: int):
     row = database.get_contratacion_by_id(contratacion_id)
     if row is None:
@@ -181,13 +183,17 @@ def reset_completo(payload: ResetCompletoRequest = _RESET_COMPLETO_POR_DEFECTO):
         ) from exc
 
 
-@app.get("/api/borradores", response_model=list[BorradorContratacionResumen])
+@app.get(
+    "/api/borradores", response_model=list[BorradorContratacionResumen], dependencies=[Depends(verificar_api_key)]
+)
 def listar_borradores():
     rows = database.get_all_borradores()
     return [BorradorContratacionResumen(**row) for row in rows]
 
 
-@app.get("/api/borradores/{borrador_id}", response_model=BorradorContratacionOut)
+@app.get(
+    "/api/borradores/{borrador_id}", response_model=BorradorContratacionOut, dependencies=[Depends(verificar_api_key)]
+)
 def obtener_borrador(borrador_id: int):
     row = database.get_borrador_by_id(borrador_id)
     if row is None:
