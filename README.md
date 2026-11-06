@@ -360,7 +360,7 @@ gcloud compute backend-services update sercop-backend --global --project=PROYECT
   --custom-response-header="Content-Security-Policy: ${CSP}" \
   --custom-response-header="X-Content-Type-Options: nosniff" \
   --custom-response-header="Strict-Transport-Security: max-age=31536000; includeSubDomains" \
-  --custom-response-header="Referrer-Policy: strict-origin-when-cross-origin" \
+  --custom-response-header="Referrer-Policy: no-referrer" \
   --custom-response-header="Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), interest-cohort=()"
 ```
 
@@ -431,6 +431,7 @@ Un proxy de pruebas añadió estas mismas cabeceras a **todas** las respuestas (
 - Estilos inline de Streamlit (sidebar con degradado, tarjetas) ✔ · iframes invisibles `srcdoc` con sus scripts ✔
 - Editor TinyMCE vendorizado, dentro de la app y suelto ✔ (con `frame-ancestors 'self'`, o `'none'` + excepción en `/component/`;
   con `'none'` en todo el editor no carga)
+- `Referrer-Policy: no-referrer` probada también contra el mapa de CARTO: estilo y teselas responden 200, sin errores (no necesita el referrer).
 - **0 violaciones de CSP** y las 5 cabeceras presentes. Para conseguirlo: el script del componente TinyMCE se movió a
   `assets/tinymce_editor/editor.js` y los scripts de iframes invisibles son constantes hasheables (`ui/componentes.py`).
 - En la consola aparece un `404` de «Download Button source»; ocurre **también sin CSP** (no está relacionado).
