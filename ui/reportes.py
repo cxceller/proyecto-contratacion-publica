@@ -289,8 +289,10 @@ def render_generador_reportes() -> None:
         else:
             try:
                 validar_rango_fechas(fecha_inicio, fecha_fin)
-            except ValueError as exc:
-                st.error(f"Datos inválidos: {exc}")
+            except ValueError:
+                # Mensaje fijo al usuario; el detalle de la excepcion va solo al log.
+                logger.exception("Rango de fechas invalido en Reportes")
+                st.error("Datos inválidos: la fecha de inicio debe ser anterior o igual a la fecha de fin.")
                 return
 
             lote_id = opciones_lote.get(etiqueta_lote_sel) if etiqueta_lote_sel != SIN_LOTE_ESPECIFICO else None
