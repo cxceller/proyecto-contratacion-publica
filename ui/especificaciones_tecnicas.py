@@ -1179,15 +1179,16 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
         )
 
     st.markdown("**:material/folder_open: Gestor de Contrataciones** (guardado persistente en la base de datos)")
-    col_selector, col_guardar, col_nuevo, col_eliminar = st.columns([3, 1, 1, 1])
-
-    id_seleccionado = col_selector.selectbox(
+    # Selector a todo el ancho y, DEBAJO, los tres botones con su texto completo: en una sola fila de 4 columnas
+    # a ~1100 px los botones quedaban en "Guar..." / "Nuev..." / "Elimi...".
+    id_seleccionado = st.selectbox(
         "Cargar contratación guardada",
         ids_disponibles,
         format_func=lambda id_: etiqueta_por_id.get(id_, "— Nueva contratación (sin guardar) —"),
         key="especificaciones_tecnicas_borrador_selector",
         label_visibility="collapsed",
     )
+    col_guardar, col_nuevo, col_eliminar = st.columns(3)
     # Cargar: solo cuando el usuario ACABA de elegir un id distinto al que
     # ya esta activo (si fueran iguales, se re-cargaria en cada rerun
     # posterior sin que el usuario haya vuelto a tocar el selector).
@@ -1226,7 +1227,7 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
                 st.success(f"Contratación «{borrador['nombre_contratacion']}» cargada.")
                 st.rerun()
 
-    if col_guardar.button(":material/save: Guardar progreso", key="especificaciones_tecnicas_guardar_borrador", width="stretch"):
+    if col_guardar.button(":material/save: Guardar progreso", key="especificaciones_tecnicas_guardar_borrador", width="stretch", help="Guarda el progreso de esta contratación en la base de datos"):
         nombre_contratacion = (st.session_state.get("especificaciones_tecnicas_objeto_contratacion") or "").strip()
         if not nombre_contratacion:
             st.error(
@@ -1247,7 +1248,7 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
                 st.success(f"Progreso guardado como «{nombre_contratacion}».")
                 st.rerun()
 
-    if col_nuevo.button(":material/note_add: Nueva contratación", key="especificaciones_tecnicas_nueva_contratacion", width="stretch"):
+    if col_nuevo.button(":material/note_add: Nueva contratación", key="especificaciones_tecnicas_nueva_contratacion", width="stretch", help="Deja el formulario en blanco para una contratación nueva"):
         _reiniciar_estado_especificaciones_tecnicas()
         st.success("Formulario en blanco: lista para una nueva contratación.")
         st.rerun()
@@ -1259,6 +1260,7 @@ def _render_panel_borradores_especificaciones_tecnicas() -> None:
         ":material/delete: Eliminar contratación",
         key="especificaciones_tecnicas_eliminar_borrador",
         width="stretch",
+        help="Elimina la contratación guardada seleccionada (pide tu clave)",
         disabled=st.session_state.especificaciones_tecnicas_borrador_id is None,
     ):
         st.session_state.especificaciones_tecnicas_confirmar_eliminar_borrador = True
