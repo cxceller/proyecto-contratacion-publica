@@ -55,3 +55,6 @@ CLAUDE.local.md
 # Respaldos automaticos de la BD/.docx antes de un reset completo (Zona de
 # peligro, ver src/reset.py) -- artefacto local, no versionado
 /respaldos/
+
+# Respaldo manual del codigo antes de separar el modulo de Reportes -- local, no versionado
+/_respaldo_antes_de_separar/
