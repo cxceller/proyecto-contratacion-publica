@@ -23,10 +23,11 @@ implementación de cada cosa, no importa por qué camino llegó la fila.
 
 El catálogo CPC (`catalogo_cpc: dict[str, str]`) se recibe por inyección de
 dependencia -- este módulo no sabe ni le importa cómo se carga (en
-app_ui.py vive `_cargar_catalogo_cpc()`, cacheada con `st.cache_data`); acá
-solo se usa para marcar códigos no reconocidos, igual que ya hace
-`_autocompletar_descripcion_cpc` en app_ui.py al guardar (ver ese módulo:
-esta es una conveniencia de UX inmediata, no un reemplazo de esa lógica).
+ui/especificaciones_tecnicas.py vive `_cargar_catalogo_cpc()`, cacheada con
+`st.cache_data`); acá solo se usa para marcar códigos no reconocidos, igual
+que ya hace `_autocompletar_descripcion_cpc` en ese mismo módulo al guardar
+(ver ese módulo: esta es una conveniencia de UX inmediata, no un reemplazo
+de esa lógica).
 
 "Tipo" (Bien/Servicio) se infiere de la descripción del producto/servicio
 por palabras clave (`_inferir_tipo`) en el camino rápido, y por el propio
@@ -41,7 +42,6 @@ Nada de esto guarda en base de datos -- el resultado se anexa a las filas
 editables de la tabla, igual que si el usuario las hubiera escrito a mano
 (ver app_ui.py)."""
 import difflib
-import json
 import re
 import unicodedata
 
@@ -49,6 +49,13 @@ import anthropic
 import truststore
 
 from scripts.lectura_archivos_tabulares import leer_matriz_cruda
+from scripts.llm_seguro import (
+    RespaldoIADesactivado,
+    RespuestaLLMItems,
+    llm_fallback_habilitado,
+    preparar_matriz_para_llm,
+    validar_respuesta_llm,
+)
 
 # Ver el mismo bloque de comentario en scripts/importador_parametros.py:
 # la red institucional de este proyecto tiene un proxy/firewall con
@@ -446,7 +453,9 @@ def _normalizar_bloque_con_llm(
     catalogo_cpc: dict[str, str] | None,
     cpc_no_encontrados: list[str],
 ) -> tuple[list[dict], list[dict]]:
-    matriz_texto = "\n".join(" | ".join(celda for celda in fila) for fila in bloque)
+    # Privacidad: solo lo necesario y con datos personales enmascarados (ver
+    # scripts/llm_seguro.py) antes de salir hacia la API externa.
+    matriz_texto = "\n".join(" | ".join(celda for celda in fila) for fila in preparar_matriz_para_llm(bloque))
     try:
         respuesta = cliente_llm.with_options(timeout=60.0).messages.create(
             model=modelo,
@@ -470,8 +479,9 @@ def _normalizar_bloque_con_llm(
     if texto_json is None:
         raise ErrorLLMImportacionItems("La IA no devolvió una respuesta interpretable.")
     try:
-        datos = json.loads(texto_json)
-    except json.JSONDecodeError as exc:
+        # Respuesta NO confiable: se valida con Pydantic y se limpia (ver llm_seguro.py).
+        datos = validar_respuesta_llm(RespuestaLLMItems, texto_json)
+    except ValueError as exc:
         raise ErrorLLMImportacionItems(f"La IA devolvió una respuesta no válida: {exc}") from exc
 
     filas: list[dict] = []
@@ -515,6 +525,8 @@ def _normalizar_con_llm(
     documentada que en importador_parametros.py: nada que dependa de
     contexto entre bloques se resuelve a través del límite de bloque)."""
     if cliente_llm is None:
+        if not llm_fallback_habilitado():
+            raise RespaldoIADesactivado
         cliente_llm = anthropic.Anthropic()
 
     filas_no_vacias = [fila for fila in matriz if any(celda.strip() for celda in fila)]

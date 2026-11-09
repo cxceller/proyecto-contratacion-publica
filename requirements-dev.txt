@@ -1,0 +1,7 @@
+# Dependencias de desarrollo/CI (no van en la imagen de produccion).
+-r requirements.txt
+pytest==9.0.3
+iniconfig==2.3.0
+pluggy==1.6.0
+ruff==0.16.2
+pip-audit==2.10.1

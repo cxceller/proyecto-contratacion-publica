@@ -1,110 +1,87 @@
 """Interfaz Streamlit para visualizar procesos de contratacion publica.
 
-Consume la API FastAPI (src/main.py) via requests. Arranque:
+Consume la API FastAPI (src/main.py) via services/sercop.py -- esta capa
+de UI no llama a `requests` ni conoce URLs/endpoints directamente, ver
+ese modulo. Arranque:
 
     uvicorn src.main:app --port 8000
     streamlit run app_ui.py --server.port 8501
 """
-import base64
 import html
-import io
 import json
-import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 import unicodedata
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
-from scripts.especificaciones_tecnicas_generator import (
-    COLOR_BORDE_TABLA_ITEMS,
-    COORDINACION_FIJA,
-    FIRMA_APROBADO_POR_DEFECTO_CARGO,
-    FIRMA_APROBADO_POR_DEFECTO_NOMBRE,
-    IMAGEN_ENCABEZADO,
-    IMAGEN_PIE_PAGINA,
-    TABLA_CHECKLIST_CRITERIOS_FIJOS,
-    TABLA_CHECKLIST_ENCABEZADO,
-    TABLA_PATRIMONIO_BIENES_SERVICIOS,
-    TABLA_PATRIMONIO_ENCABEZADO,
-    TABLA_PATRIMONIO_OBRAS,
-    TABLA_PUNTAJE_ENCABEZADO,
-    TABLA_PUNTAJE_FIJA,
-    TEXTO_ADMINISTRADOR_CIERRE,
-    TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES,
-    TEXTO_ADMINISTRADOR_OBLIGACIONES_INTRO,
-    TEXTO_ADMINISTRADOR_INTRO_PLANTILLA,
-    TEXTO_ANALISIS_ESTRATEGIA_FIJO,
-    TEXTO_ATRIBUCIONES_ADMINISTRADOR,
-    TEXTO_CERTIFICADO_PROVEEDOR_EXCLUSIVO_INTRO,
-    TEXTO_CHECKLIST_INTRO,
-    TEXTO_EXPERIENCIA_ESPECIFICA_PLANTILLA,
-    TEXTO_EXPERIENCIA_GENERAL_PLANTILLA,
-    TEXTO_EXPERIENCIA_PERSONAL_TECNICO,
-    TEXTO_FORMACION_PERSONAL_TECNICO_PLANTILLA,
-    TEXTO_GARANTIA_BUEN_USO_ANTICIPO,
-    TEXTO_GARANTIA_FIEL_CUMPLIMIENTO,
-    TEXTO_GARANTIA_RESPONSABILIDAD_CIVIL_PLANTILLA,
-    TEXTO_MULTAS,
-    TEXTO_PARAMETROS_EVALUACION_INTRO,
-    TEXTO_PATRIMONIO_INTRO,
-    TEXTO_PUNTAJE_INTRO,
-    TEXTO_REAJUSTE_PRECIOS,
-    TEXTO_TIEMPO_EXISTENCIA_LEGAL,
-    TEXTO_VIGENCIA_OFERTA_PLANTILLA,
-    TITULO_PROCESO_FIJO,
-    generar_especificaciones_tecnicas,
+from estilos_sercop import aplicar_estilos
+from scripts.dashboard_analitico import construir_datos_gantt_procesos, construir_datos_treemap_presupuesto
+from scripts.formato_ec import (
+    formatear_moneda_compacta_ec,
+    formatear_moneda_ec,
+    formatear_numero_ec,
+    formatear_porcentaje_ec,
+    limpiar_texto_libre,
 )
-from scripts.dashboard_analitico import (
-    construir_datos_gantt_procesos,
-    construir_datos_treemap_items,
-    construir_datos_treemap_presupuesto,
+from services.sercop import obtener_contrataciones, reset_completo
+from src.logging_config import obtener_logger
+from ui.autenticacion import confirmar_con_clave, requerir_login
+from ui.componentes import (
+    SCRIPT_NO_TRADUCIR,
+    SCRIPT_REVELAR_SIDEBAR,
+    boton_limpiar_filtros,
+    ejecutar_script_invisible,
 )
-from scripts.formato_ec import formatear_moneda_ec, formatear_numero_ec
-from scripts.importador_items import (
-    ErrorImportacionItems,
-    ErrorLLMImportacionItems,
-    importar_items,
+from ui.especificaciones_tecnicas import (
+    _dataframe_items_especificaciones_tecnicas_vacio,
+    render_formularios_y_registro,
+    render_treemap_items_especificaciones_tecnicas,
 )
-from scripts.importador_parametros import (
-    ErrorImportacionParametros,
-    ErrorLLMImportacionParametros,
-    importar_parametros,
+from ui.plantilla_plotly import PLANTILLA_POR_DEFECTO, etiqueta_mes_es, mostrar_grafico, registrar_plantilla_sercop
+from ui.tema import (
+    ALTURA_KPI_REM,
+    COLOR_AXIS,
+    COLOR_BARRA_DATO,
+    COLOR_BARRA_DESTACADA,
+    COLOR_ESTADO_AVISO,
+    COLOR_ESTADO_CRITICO,
+    COLOR_ESTADO_CRITICO_TEXTO,
+    COLOR_ESTADO_OK,
+    COLOR_ESTADO_OK_TEXTO,
+    COLOR_GRID,
+    COLOR_LIENZO,
+    COLOR_NEUTRO_TEXTO_INSIGNIA,
+    COLOR_NEUTRO_TEXTO_SUAVE,
+    COLOR_PELIGRO,
+    COLOR_SIDEBAR_ACENTO,
+    COLOR_SIDEBAR_TEXTO,
+    COLOR_SIDEBAR_TEXTO_ACTIVO,
+    COLOR_TARJETA,
+    COLOR_TEXTO_EJE,
+    PALETA_DATOS,
 )
-from scripts.tinymce_editor import tinymce_editor
 
 load_dotenv()
+registrar_plantilla_sercop()  # plantilla Plotly comun (fuente, paleta azul, fondo blanco, formato Ecuador)
 
-API_URL = os.environ.get("API_URL", "http://localhost:8000")
+logger = obtener_logger(__name__)
 
-# Panel lateral de navegacion (estilo ERP: fondo oscuro, etiqueta de
-# seccion con acento de color, items con icono + texto claro).
-COLOR_SIDEBAR_FONDO = "#1E293B"
-COLOR_SIDEBAR_TEXTO = "#CBD5E1"
-COLOR_SIDEBAR_TEXTO_ACTIVO = "#FFFFFF"
-COLOR_SIDEBAR_ACENTO = "#FF9800"  # mismo naranja de PALETA_VIVA, como acento de marca
+# Largo maximo de la palabra clave del filtro de Procesos (el modelo del
+# backend admite hasta 200, ver src/models.py).
+MAX_LARGO_PALABRA_CLAVE = 100
 
-# Paleta general de la interfaz (fuera de graficos): el naranja/rojo vibrante
-# se reserva para botones de accion primaria (type="primary", ya configurado
-# como primaryColor en .streamlit/config.toml) y para alertas -- el resto de
-# la UI usa estos tonos neutros. COLOR_PELIGRO es un rojo aparte, mas oscuro
-# y saturado que el naranja de marca, exclusivo para acciones destructivas
-# (Vaciar Base de Datos), para que nunca se confunda con una accion primaria
-# normal (Generar Reporte, Guardar Items, etc.).
-COLOR_PELIGRO = "#DC2626"
-COLOR_NEUTRO_BORDE = "#E2E8F0"
-COLOR_NEUTRO_TEXTO_SUAVE = "#64748B"
+# Formato de fechas de la UI (Ecuador): dd/mm/aaaa.
+FORMATO_FECHA_UI = "DD/MM/YYYY"
 
 NAV_ITEMS = [
     ("Dashboard", ":material/monitoring:"),
@@ -113,6 +90,13 @@ NAV_ITEMS = [
     ("Municipalidad de Guayaquil", ":material/location_city:"),
     ("Configuración", ":material/settings:"),
 ]
+
+# El modulo "Generación de Reportes Automáticos" vive en ui/reportes.py +
+# pages/Reportes.py (URL /Reportes del MISMO proceso Streamlit -- ver
+# pages/Reportes.py): no es un servidor aparte que haya que iniciar por su
+# cuenta. El item "Reportes" del sidebar (ver render_navegacion_sidebar)
+# abre esa URL relativa en pestaña nueva via st.link_button.
+URL_PAGINA_REPORTES = "Reportes"
 
 # Nombre de pagina para la vista dedicada de Importación SERCOP -- vive
 # fuera de NAV_ITEMS (se renderiza aparte, debajo de un st.divider() propio
@@ -162,20 +146,6 @@ PATRON_RESUMEN_ACTUALIZAR_MONTOS = re.compile(
 # aparecen variantes de escritura en datos futuros).
 ENTIDAD_MUNICIPALIDAD_GUAYAQUIL = "Municipalidad de Guayaquil"
 
-# Escudo institucional oficial para el item de menu "Municipalidad de
-# Guayaquil", en vez de un emoji. Recortado del logo apaisado original
-# (600x210px, "Muy Ilustre Municipalidad de Guayaquil") para quedarse
-# solo con el emblema (circulo + estrella + corona de laurel, 196x200px):
-# el wordmark de texto del logo completo, a tamaño de icono de menu, no
-# se leia (texto navy sobre el fondo navy del sidebar, y demasiado chico
-# de por si) -- el nombre ya esta como texto en el boton de al lado.
-# st.image solo permite fijar el ancho (la altura se escala sola
-# preservando el aspecto), asi que el ancho se calcula a partir de la
-# altura deseada y la relacion de aspecto real del recorte.
-LOGO_MUNICIPALIDAD_PATH = Path(__file__).resolve().parent / "assets" / "mimg_escudo.png"
-LOGO_MUNICIPALIDAD_ALTO_PX = 30
-LOGO_MUNICIPALIDAD_ANCHO_PX = round(LOGO_MUNICIPALIDAD_ALTO_PX * 196 / 200)
-
 # Estados tal como los expone el portal de Compras Publicas (algunos truncados).
 ESTADOS = [
     "Cancelado",
@@ -189,6 +159,11 @@ ESTADOS = [
     "Suspendido",
     "Por Adjudicar",
 ]
+
+# Subconjunto de ESTADOS visible por defecto en render_contadores (revelacion
+# progresiva: 4 tarjetas en vez de las ~12 de antes) -- las 3 categorias mas
+# consultadas de un vistazo, el resto queda dentro de un expander.
+ESTADOS_DESTACADOS = ["Adjudicada", "Ejecución de", "Desierta"]
 
 # Nombre completo (no truncado) de cada categoria de ESTADOS, para mostrar
 # en las tarjetas de render_contadores en vez del prefijo truncado
@@ -215,22 +190,23 @@ NOMBRES_ESTADO_COMPLETOS = {
 # punto del loop antes de mapear al nombre a mostrar. "Otros" tiene entrada
 # propia (no es parte de ESTADOS, se agrega aparte en render_contadores);
 # "Total" NO tiene icono a proposito (es el agregado, no un estado
-# individual). Paleta Tailwind, consistente con el resto de colores ya
-# definidos en el archivo (COLOR_SIDEBAR_FONDO, COLOR_PELIGRO, etc.) --
-# los rojos de aca son tonos DISTINTOS a COLOR_PELIGRO, que segun su propio
-# comentario es "exclusivo para acciones destructivas" (Vaciar Base de
-# Datos) y no deberia reusarse para otra cosa.
+# individual). Solo 3 colores posibles -- COLOR_ESTADO_OK/_AVISO/_CRITICO --
+# en vez de un tono distinto por estado: el color pasa a comunicar
+# unicamente severidad (ok/aviso/critico), la categoria especifica la
+# distingue el icono + la etiqueta de texto (nunca el color solo). Los
+# rojos de aca son el mismo tono que COLOR_PELIGRO (critico) a proposito
+# -- misma severidad semantica, ya no tonos Tailwind sueltos.
 ICONOS_ESTADO = {
-    "Cancelado": ("cancel", "#EF4444"),  # red-500
-    "Finalizada": ("check_circle", "#16A34A"),  # green-600
-    "Ejecución de": ("engineering", "#2563EB"),  # blue-600
-    "Desierta": ("block", "#F97316"),  # orange-500
-    "En Recepción": ("inbox", "#2563EB"),  # blue-600
-    "Terminado U": ("report", "#991B1B"),  # red-800
-    "Adjudicado -": ("task_alt", "#16A34A"),  # green-600
-    "Adjudicada": ("task_alt", "#16A34A"),  # green-600
-    "Suspendido": ("pause_circle", "#F59E0B"),  # amber-500
-    "Por Adjudicar": ("hourglass_top", "#94A3B8"),  # slate-400
+    "Cancelado": ("cancel", COLOR_ESTADO_CRITICO),
+    "Finalizada": ("check_circle", COLOR_ESTADO_OK),
+    "Ejecución de": ("engineering", COLOR_ESTADO_OK),
+    "Desierta": ("block", COLOR_ESTADO_CRITICO),
+    "En Recepción": ("inbox", COLOR_ESTADO_AVISO),
+    "Terminado U": ("report", COLOR_ESTADO_CRITICO),
+    "Adjudicado -": ("task_alt", COLOR_ESTADO_OK),
+    "Adjudicada": ("task_alt", COLOR_ESTADO_OK),
+    "Suspendido": ("pause_circle", COLOR_ESTADO_AVISO),
+    "Por Adjudicar": ("hourglass_top", COLOR_ESTADO_AVISO),
     "Otros": ("more_horiz", COLOR_NEUTRO_TEXTO_SUAVE),
 }
 
@@ -260,19 +236,6 @@ MESES_ES = {
     9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
 }
 
-# Paleta viva del dashboard: se reparte automaticamente entre barras/segmentos
-# (color_discrete_sequence) para dar contraste y dinamismo visual, sin atarse
-# al significado de ninguna variable especifica.
-PALETA_VIVA = [
-    "#E91E63", "#FF9800", "#FFEB3B", "#8BC34A",
-    "#00BCD4", "#9C27B0", "#F44336", "#2196F3",
-]
-COLOR_LIENZO = "#FFFFFF"  # plot_bgcolor / paper_bgcolor: fondo claro fijo,
-                          # independiente del tema (claro u oscuro) de Streamlit
-COLOR_GRID = "#E0E0E0"  # gridlines grises muy tenues
-COLOR_AXIS = "black"  # linea solida de eje ("trazo de tinta")
-COLOR_TEXTO_EJE = "black"  # texto de ejes/fuente general, alto contraste sobre el lienzo claro
-
 # Opciones del selector "Comparar por" de render_grafico_comparativo: cada
 # etiqueta visible mapea a la columna real de df_filtrado por la que agrupar.
 DIMENSIONES_COMPARATIVAS = {
@@ -292,8 +255,6 @@ METRICAS_COMPARATIVAS = {
         "formato": formatear_moneda_ec, "es_moneda": True,
     },
 }
-COLOR_BARRA_RESALTADA = COLOR_SIDEBAR_ACENTO  # naranja de marca, para la categoria lider
-COLOR_BARRA_TENUE = "#B0BEC5"  # gris azulado para el resto de las barras
 
 # Capital y coordenadas (lat, lon) de cada una de las 24 provincias del
 # Ecuador, para ubicar el mapa de burbujas del Dashboard Analitico. Clave
@@ -379,6 +340,12 @@ EMOJI_ESTADO = {
     "cancelado": ("⭕", "Cancelado"),
     "suspendido": ("🟠", "Suspendido"),
     "adjudicado - registro de contratos": ("🟩", "Adjudicado - Registro de Contratos"),
+    # Doble emoji (🟩🟩/✅✅ vs. el 🟩 simple de "Adjudicado - Registro de
+    # Contratos" y el ✅ simple de "En Recepción" mas abajo) a proposito --
+    # para que "Adjudicada" y "Finalizada" se distingan de esos dos estados
+    # a simple vista en la tabla, no por error de copiar/pegar.
+    "adjudicada": ("🟩🟩", "Adjudicada"),
+    "finalizada": ("✅✅", "Finalizada"),
     "por adjudicar": ("🍏", "Por Adjudicar"),
     "preguntas, respuestas y aclaraciones": ("🟡", "Preguntas, Respuestas y Aclaraciones"),
     "en recepción": ("✅", "En Recepción"),
@@ -413,102 +380,7 @@ def _formatear_porcentaje_ahorro(valor) -> str:
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return ""
     emoji = "🟢" if valor >= 0 else "🔴"
-    return f"{emoji} {valor:.2f} %"
-
-
-def api_request(method: str, path: str, timeout: int = 10, **kwargs):
-    # Si la API exige X-API-Key (variable API_KEY configurada del lado del
-    # servidor -- ver src/auth.py), Streamlit debe mandar la misma clave via
-    # esta misma variable de entorno en su propio proceso.
-    api_key = os.environ.get("API_KEY")
-    if api_key:
-        headers = {"X-API-Key": api_key, **kwargs.pop("headers", {})}
-        kwargs["headers"] = headers
-    try:
-        response = requests.request(method, f"{API_URL}{path}", timeout=timeout, **kwargs)
-    except requests.exceptions.ConnectionError:
-        st.error(
-            f"No se pudo conectar a la API en {API_URL}. "
-            "¿Está corriendo `uvicorn src.main:app --port 8000`?"
-        )
-        return None
-    return response
-
-
-@st.cache_data(ttl=60)
-def obtener_contrataciones(status=None, fecha_inicio=None, fecha_fin=None, palabra_clave=None):
-    params = {}
-    if status:
-        # El query param se llama "estado" en la API (ver
-        # src/main.py::listar_contrataciones) -- se renombro para no
-        # colisionar con el modulo `status` de FastAPI importado ahi mismo.
-        params["estado"] = status
-    if fecha_inicio:
-        params["fecha_inicio"] = fecha_inicio.isoformat()
-    if fecha_fin:
-        params["fecha_fin"] = fecha_fin.isoformat()
-    if palabra_clave:
-        params["palabra_clave"] = palabra_clave
-
-    response = api_request("GET", "/api/todos", params=params)
-    if response is None:
-        return []
-    if response.status_code != 200:
-        st.error(f"Error al consultar la API: {response.status_code}")
-        return []
-    return response.json()
-
-
-# Sin @st.cache_data: a diferencia de obtener_contrataciones (datos del
-# portal, cambian poco), la lista de borradores debe reflejar de
-# inmediato cualquier guardado/eliminado hecho en el propio rerun
-# anterior -- un TTL, por corto que sea, mostraria el selectbox
-# desactualizado justo despues de guardar o borrar.
-def listar_borradores_especificaciones_tecnicas() -> list[dict]:
-    response = api_request("GET", "/api/borradores")
-    if response is None:
-        return []
-    if response.status_code != 200:
-        st.error(f"Error al consultar los borradores guardados: {response.status_code}")
-        return []
-    return response.json()
-
-
-def obtener_borrador_especificaciones_tecnicas(borrador_id: int) -> dict | None:
-    response = api_request("GET", f"/api/borradores/{borrador_id}")
-    if response is None:
-        return None
-    if response.status_code != 200:
-        st.error(f"Error al cargar el borrador: {response.status_code}")
-        return None
-    return response.json()
-
-
-def guardar_borrador_especificaciones_tecnicas(borrador_id: int | None, nombre_contratacion: str, datos_json: str) -> dict | None:
-    """Crea (borrador_id is None) o reemplaza (borrador_id dado) un
-    borrador. Siempre manda el registro completo -- no hay actualizacion
-    parcial de un borrador, ver BorradorContratacionUpsert."""
-    payload = {"nombre_contratacion": nombre_contratacion, "datos_json": datos_json}
-    if borrador_id is None:
-        response = api_request("POST", "/api/borradores", json=payload)
-    else:
-        response = api_request("PUT", f"/api/borradores/{borrador_id}", json=payload)
-    if response is None:
-        return None
-    if response.status_code not in (200, 201):
-        st.error(f"Error al guardar el progreso: {response.status_code} {response.text}")
-        return None
-    return response.json()
-
-
-def eliminar_borrador_especificaciones_tecnicas(borrador_id: int) -> bool:
-    response = api_request("DELETE", f"/api/borradores/{borrador_id}")
-    if response is None:
-        return False
-    if response.status_code != 204:
-        st.error(f"Error al eliminar la contratación: {response.status_code}")
-        return False
-    return True
+    return f"{emoji} {formatear_numero_ec(valor, 2)} %"
 
 
 def extraer_tipo_compra(objeto_proceso: str) -> str:
@@ -557,44 +429,69 @@ def preparar_dataframe(registros: list[dict]) -> pd.DataFrame:
     return df
 
 
-CLAVES_FILTRO_DASHBOARD = ["dashboard_anio", "dashboard_mes", "dashboard_provincia"]
+CLAVES_FILTRO_DASHBOARD = ["dashboard_anio", "dashboard_mes", "dashboard_provincia", "dashboard_entidad"]
 
 
-def render_filtros_dashboard(df: pd.DataFrame) -> pd.DataFrame:
-    """Fila de filtros superiores (Año, Mes, Provincia/Cantón) que acota
-    todo lo que se muestra debajo: graficos, tablas y KPIs comparten el
-    mismo dataframe filtrado, para que las cifras siempre coincidan. Los
-    widgets tienen key propia para que "Limpiar filtros" pueda resetearlos
-    de verdad (no solo re-consultar datos), ver CLAVES_FILTRO_DASHBOARD."""
-    col1, col2, col3, col4 = st.columns([1, 1, 2, 1])
+def render_filtros_dashboard(df: pd.DataFrame, key_prefix: str = "") -> pd.DataFrame:
+    """Fila de filtros superiores (Año, Mes, Provincia/Cantón, Entidad
+    Contratante) que acota todo lo que se muestra debajo: graficos, tablas
+    y KPIs comparten el mismo dataframe filtrado, para que las cifras
+    siempre coincidan. Los widgets tienen key propia para que "Limpiar
+    filtros" pueda resetearlos de verdad (no solo re-consultar datos), ver
+    CLAVES_FILTRO_DASHBOARD.
+
+    El filtro de Entidad Contratante (P0-2 del plan de mejoras) reemplaza
+    lo que antes era un item de menu aparte ("Dashboard Municipio de
+    Guayaquil", el mismo render_dashboard con los registros pre-filtrados a
+    esa entidad): ahora es un filtro mas de esta misma fila, sin duplicar
+    pagina ni logica -- "Municipalidad de Guayaquil" en este selectbox logra
+    la misma vista que antes tenia su propio item de navegacion.
+
+    `key_prefix` distingue las keys de session_state cuando esta misma
+    funcion se llama mas de una vez en la app con datos distintos -- hoy
+    solo la usa render_pagina_dashboard, pero el prefijo se mantiene por si
+    algun otro caller la reusa mas adelante (evita que dos instancias
+    compartan keys y una seleccion pise a la otra)."""
+    # Año/Mes necesitan >= ~110 px para "(Todos)" sin cortarse (medido a 1100/1280/1440 px); el boton
+    # Limpiar es solo un icono, asi que su columna es angosta. vertical_alignment
+    # "bottom" alinea el boton Limpiar con la base de los selectores (antes un
+    # st.write("") de relleno).
+    col1, col2, col3, col4, col5 = st.columns([1.6, 1.6, 2.1, 2.1, 0.7], vertical_alignment="bottom")
 
     if df.empty:
         col1.selectbox("Año", ["(Todos)"], disabled=True)
         col2.selectbox("Mes", ["(Todos)"], disabled=True)
         col3.multiselect("Provincia/Cantón", [], disabled=True, placeholder="Sin datos disponibles")
+        col4.selectbox("Entidad Contratante", ["(Todas)"], disabled=True)
         return df
 
     anios_disponibles = sorted(df["anio"].dropna().unique().astype(int), reverse=True)
-    anio_sel = col1.selectbox("Año", ["(Todos)"] + [str(a) for a in anios_disponibles], key="dashboard_anio")
+    anio_sel = col1.selectbox(
+        "Año", ["(Todos)"] + [str(a) for a in anios_disponibles], key=f"{key_prefix}dashboard_anio"
+    )
 
     meses_disponibles = sorted(df["mes_num"].dropna().unique().astype(int))
     opciones_mes = ["(Todos)"] + [MESES_ES[m] for m in meses_disponibles]
-    mes_sel = col2.selectbox("Mes", opciones_mes, key="dashboard_mes")
+    mes_sel = col2.selectbox("Mes", opciones_mes, key=f"{key_prefix}dashboard_mes")
 
     provincias_disponibles = sorted(df["provincia_canton"].dropna().unique())
     provincias_sel = col3.multiselect(
         "Provincia/Cantón",
         provincias_disponibles,
-        key="dashboard_provincia",
+        key=f"{key_prefix}dashboard_provincia",
         placeholder="Selecciona una o más provincias/cantones",
     )
 
-    with col4:
-        st.write("")  # alinea verticalmente el boton con los selectbox de arriba
-        if st.button(":material/filter_alt_off: Limpiar filtros", key="dashboard_limpiar_filtros", use_container_width=True):
-            for clave in CLAVES_FILTRO_DASHBOARD:
-                st.session_state.pop(clave, None)
-            st.rerun()
+    entidades_disponibles = sorted(df["entidad_contratante"].dropna().unique())
+    entidad_sel = col4.selectbox(
+        "Entidad Contratante", ["(Todas)"] + entidades_disponibles, key=f"{key_prefix}dashboard_entidad"
+    )
+
+    with col5:
+        boton_limpiar_filtros(
+            [f"{key_prefix}{clave}" for clave in CLAVES_FILTRO_DASHBOARD],
+            key=f"{key_prefix}dashboard_limpiar_filtros",
+        )
 
     df_filtrado = df
     if anio_sel != "(Todos)":
@@ -604,36 +501,28 @@ def render_filtros_dashboard(df: pd.DataFrame) -> pd.DataFrame:
         df_filtrado = df_filtrado[df_filtrado["mes_num"] == mes_num]
     if provincias_sel:
         df_filtrado = df_filtrado[df_filtrado["provincia_canton"].isin(provincias_sel)]
+    if entidad_sel != "(Todas)":
+        df_filtrado = df_filtrado[
+            df_filtrado["entidad_contratante"].map(_normalizar_texto_provincia)
+            == _normalizar_texto_provincia(entidad_sel)
+        ]
 
     return df_filtrado
 
 
 def _aplicar_estilo_base(fig: go.Figure, altura: int = 380) -> None:
-    """Fondo estructural tipo lienzo de papel: SIEMPRE blanco puro,
-    independientemente de si Streamlit esta en modo claro u oscuro (un fondo
-    transparente heredaria el fondo oscuro del tema y volveria illegible el
-    texto negro de los ejes). Es el lienzo neutro sobre el que resalta la
-    paleta viva de los datos."""
+    """Estilo comun de los graficos: tipografia, paleta, fondo blanco (= tarjetas) y formato Ecuador vienen de
+    la plantilla `sercop` (ui/plantilla_plotly.py); aca solo lo propio de cada grafico de barras/lineas."""
     fig.update_layout(
-        plot_bgcolor=COLOR_LIENZO,
-        paper_bgcolor=COLOR_LIENZO,
-        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),
+        template=PLANTILLA_POR_DEFECTO,
         margin=dict(l=10, r=10, t=20, b=10),
         height=altura,
         showlegend=False,
-        hoverlabel=dict(bgcolor=COLOR_LIENZO, font_size=13, font_color=COLOR_TEXTO_EJE),
         bargap=0.35,
-        # Formato numerico de Ecuador (coma decimal, punto de miles) para
-        # TODOS los numeros que Plotly renderiza con specs tipo d3-format
-        # (tickformat de ejes, ":,.2f" embebido en hovertemplate, etc.):
-        # "separators" es el mecanismo nativo de Plotly para esto -- primer
-        # caracter es el separador decimal, segundo el de miles -- asi no
-        # hace falta reescribir cada hovertemplate/tickformat a mano.
-        separators=",.",
     )
 
 
-def _span_icono_material(nombre_icono: str, color: str, tamano_rem: float = 1.05) -> str:
+def _span_icono_material(nombre_icono: str, color: str | None = None, tamano_rem: float = 1.05) -> str:
     """Renderiza un icono de Material Symbols como ligature (el texto del
     nombre del icono se sustituye por el glifo cuando se le aplica la
     fuente correcta), el mismo mecanismo estandar de Google que usa
@@ -658,15 +547,50 @@ def _span_icono_material(nombre_icono: str, color: str, tamano_rem: float = 1.05
     vez del icono. Se confirmo que hasta los propios iconos :material/xxx:
     del sidebar de Streamlit sufren el mismo problema (no tienen esta
     proteccion) -- no es algo que se pueda arreglar ahi (es codigo de
-    Streamlit, no de este archivo), pero si se puede evitar aca."""
+    Streamlit, no de este archivo), pero si se puede evitar aca.
+
+    `color` es opcional: sin el, el icono hereda el color del CSS (en las
+    tarjetas KPI, `--kpi-c` del modificador kpi--*, ver estilos_sercop.py)."""
+    estilo_color = f"color:{html.escape(color, quote=True)}; " if color else ""
     return (
         f'<span translate="no" class="notranslate" '
         f'style="font-family:\'Material Symbols Rounded\'; font-weight:normal; '
         f'font-style:normal; font-size:{tamano_rem}rem; line-height:1; letter-spacing:normal; '
         f'text-transform:none; display:inline-block; white-space:nowrap; word-wrap:normal; '
         f'direction:ltr; -webkit-font-feature-settings:\'liga\'; -webkit-font-smoothing:antialiased; '
-        f'color:{color}; vertical-align:middle;">{nombre_icono}</span>'
+        f'{estilo_color}vertical-align:middle;">{html.escape(nombre_icono)}</span>'
     )
+
+
+# Modificador de color de las tarjetas KPI (clases de estilos_sercop.py: solo
+# definen --kpi-c / --kpi-soft). Clave = nombre COMPLETO del estado (ver
+# NOMBRES_ESTADO_COMPLETOS); un estado fuera del mapa usa CLASE_KPI_DEFECTO.
+CLASE_KPI_DEFECTO = "kpi--total"
+CLASE_KPI_POR_ESTADO = {
+    "Total": "kpi--total",
+    "Adjudicada": "kpi--ok",
+    "Finalizada": "kpi--ok",
+    "Adjudicado - Registro de Contratos": "kpi--ok",
+    "Ejecución de Contrato": "kpi--info",
+    "En Recepción": "kpi--info",
+    "Suspendido": "kpi--warn",
+    "Convalidación de Errores": "kpi--warn",
+    "Preguntas y Respuestas": "kpi--warn",
+    "Preguntas/Respuestas": "kpi--warn",
+    "Desierta": "kpi--danger",
+    "Cancelado": "kpi--danger",
+}
+_CLASES_KPI_VALIDAS = frozenset(CLASE_KPI_POR_ESTADO.values())
+
+# Etiqueta abreviada SOLO para mostrar en la tarjeta (los datos y filtros
+# siguen usando el nombre completo del estado).
+ETIQUETA_TARJETA_ESTADO = {"Ejecución de Contrato": "En ejecución"}
+
+
+def _clase_kpi_estado(nombre_estado: str) -> str:
+    """Clase modificadora de color para el estado `nombre_estado` (nombre
+    completo); estados fuera de CLASE_KPI_POR_ESTADO caen en kpi--total."""
+    return CLASE_KPI_POR_ESTADO.get(nombre_estado, CLASE_KPI_DEFECTO)
 
 
 def _tarjeta_kpi_html(
@@ -674,36 +598,52 @@ def _tarjeta_kpi_html(
     valor: str,
     ayuda: str | None = None,
     icono: str | None = None,
-    color_icono: str | None = None,
+    insignia: str | None = None,
+    modificador: str = CLASE_KPI_DEFECTO,
+    pie: str | None = None,
 ) -> str:
-    """Tarjeta KPI en HTML puro (no st.metric): mismo fondo/tipografia/
-    bordes en toda la app (Dashboard, Procesos y Municipio de Guayaquil,
-    vía render_kpi_card mas abajo), en vez de la mezcla anterior de
-    st.metric (texto plano) en unas paginas y esta tarjeta HTML en otras.
-    El fondo se fuerza por inline-style con COLOR_LIENZO, igual que
-    plot_bgcolor/paper_bgcolor de los graficos, para que ambos recuadros
-    hagan juego sin depender del tema claro/oscuro de Streamlit.
+    """Tarjeta KPI en HTML puro (no st.metric), mismo componente en toda la
+    app (Dashboard, Procesos y Municipio de Guayaquil, via render_kpi_card).
 
-    `icono`/`color_icono` son opcionales (la mayoria de las tarjetas KPI --
-    Procesos, Presupuesto Total, Valor Adjudicado -- no representan un
-    estado y no llevan icono): cuando se indican, se agregan ANTES de la
-    etiqueta de texto (nunca en su reemplazo, para no depender solo del
-    color/icono para distinguir estados -- ver render_contadores, el unico
-    caller que los pasa hoy)."""
-    atributo_titulo = f' title="{html.escape(ayuda)}"' if ayuda else ""
-    icono_html = _span_icono_material(icono, color_icono) + " " if icono else ""
-    return f"""
-    <div{atributo_titulo} style="background-color:{COLOR_LIENZO};
-                border:1px solid {COLOR_NEUTRO_BORDE}; border-radius:8px;
-                padding:1.25rem 1.5rem; margin-bottom:0.5rem;">
-        <div style="font-size:0.875rem; color:{COLOR_NEUTRO_TEXTO_SUAVE};">
-            {icono_html}{etiqueta}
-        </div>
-        <div style="font-size:2rem; font-weight:600; color:{COLOR_TEXTO_EJE}; line-height:1.3;">
-            {valor}
-        </div>
-    </div>
-    """
+    Estructura que espera estilos_sercop.py (selectores `> div:nth-child(n)`):
+    div.sercop-kpi-card con 1) etiqueta (+ icono), 2) valor, 3) opcional, un
+    div con un <span> que lleva la insignia (% de participacion). Colores,
+    sombra, radio, padding y la pildora de la insignia viven en ese CSS; el
+    color semantico lo da `modificador` (kpi--ok/info/warn/danger/total, ver
+    CLASE_KPI_POR_ESTADO). Inline queda solo el layout (flex, min-height,
+    alineacion de la insignia al fondo).
+
+    Todo el HTML se arma en UNA sola linea (sin lineas en blanco internas):
+    st.markdown(unsafe_allow_html=True) usa un parser de Markdown, y una
+    linea en blanco a mitad del bloque lo corta en dos y el resto se
+    muestra como texto crudo."""
+    # Seguridad (XSS): todo dato dinamico se escapa; formatear_numero_ec
+    # devuelve str(valor) tal cual si no es numerico. `modificador` se valida
+    # contra la lista blanca (va a un atributo class).
+    etiqueta = html.escape(str(etiqueta))
+    valor = html.escape(str(valor))
+    if modificador not in _CLASES_KPI_VALIDAS:
+        modificador = CLASE_KPI_DEFECTO
+    atributo_titulo = f' title="{html.escape(ayuda, quote=True)}"' if ayuda else ""
+    icono_html = _span_icono_material(icono) + " " if icono else ""
+    insignia_html = (
+        f'<div style="margin-top:auto;"><span>{html.escape(insignia)}</span></div>' if insignia else ""
+    )
+    if pie and not insignia:
+        # Pie de texto (caption, sin pildora): el tercer hijo NO lleva <span>, asi estilos_sercop no lo pinta como badge.
+        insignia_html = (
+            f'<div style="margin-top:auto;padding-top:0.4rem;font-size:0.75rem;'
+            f'color:{COLOR_NEUTRO_TEXTO_SUAVE};">{html.escape(pie)}</div>'
+        )
+    return (
+        f'<div{atributo_titulo} class="sercop-kpi-card {modificador}" '
+        f'style="box-sizing:border-box;margin-bottom:0.5rem;display:flex;flex-direction:column;'
+        f'min-height:{ALTURA_KPI_REM}rem;">'
+        f"<div>{icono_html}{etiqueta}</div>"
+        f"<div>{valor}</div>"
+        f"{insignia_html}"
+        f"</div>"
+    )
 
 
 def render_kpi_card(
@@ -712,42 +652,767 @@ def render_kpi_card(
     valor: str,
     ayuda: str | None = None,
     icono: str | None = None,
-    color_icono: str | None = None,
+    insignia: str | None = None,
+    modificador: str = CLASE_KPI_DEFECTO,
+    pie: str | None = None,
 ) -> None:
     """Tarjeta KPI reutilizable: mismo componente para Dashboard
     (render_kpis_dashboard), Procesos y Municipio de Guayaquil
-    (render_contadores, render_metricas_resumen), en vez de que cada
-    pagina eligiera su propio estilo (st.metric vs. tarjeta HTML).
-    `icono`/`color_icono` son opcionales -- ver _tarjeta_kpi_html."""
+    (render_contadores, render_metricas_resumen). `icono`/`insignia` son
+    opcionales y `modificador` elige el color semantico -- ver
+    _tarjeta_kpi_html."""
     columna.markdown(
-        _tarjeta_kpi_html(etiqueta, valor, ayuda, icono=icono, color_icono=color_icono),
+        _tarjeta_kpi_html(etiqueta, valor, ayuda, icono=icono, insignia=insignia, modificador=modificador, pie=pie),
         unsafe_allow_html=True,
     )
 
 
+def _inyectar_estilos_kpi_tendencia() -> None:
+    """CSS para que render_kpi_card_tendencia (etiqueta+valor+badge en HTML
+    + sparkline via st.plotly_chart) tenga el mismo fondo/borde/padding que
+    _tarjeta_kpi_html, aunque ya no es un unico <div> HTML -- el sparkline
+    necesita su propio elemento Streamlit, asi que la tarjeta pasa a ser un
+    st.container(key=...) real que envuelve markdown + plotly_chart. Mismo
+    patron ".st-key-<key>" que el resto de la app (ver
+    _inyectar_estilos_especificaciones_tecnicas_cards), pero por SUBCADENA
+    ([class*=...]): cada tarjeta tiene su propia key (una por etiqueta, ver
+    render_kpi_card_tendencia), asi que una key fija no alcanzaria a todas.
+    Se llama en cada render (idempotente, mismo criterio que
+    _inyectar_estilos_sidebar): reinyectar el mismo <style> no tiene efecto
+    visible.
+
+    `min-height: {ALTURA_KPI_REM}rem` (P1-6 del plan de mejoras, mismo
+    valor que _tarjeta_kpi_html/_inyectar_estilos_gauge_ahorro): antes esta
+    tarjeta no tenia altura minima propia, crecia con el contenido + el
+    sparkline (~11rem) y quedaba desalineada frente a las tarjetas simples
+    (8.5rem fijo) en la misma fila. `overflow: hidden` + `display:flex`
+    con el sparkline en `margin-top:auto` evita ademas que el sparkline
+    (fill="tozeroy", pegado al padding inferior) cruce el borde de la
+    tarjeta -- confirmado en vivo antes de este cambio.
+
+    Se probo tambien `height: 100%` para que la tarjeta se estirara exacto
+    a lo que mida la columna de Streamlit -- NO funciona: entre esta
+    tarjeta y `[data-testid="stColumn"]` (el unico nivel que Streamlit
+    estira via align-items:stretch) hay varios wrappers internos
+    (stVerticalBlockBorderWrapper, stVerticalBlock, etc.) sin altura
+    propia, asi que el 100% se resuelve contra un padre en "auto" y no
+    tiene efecto (confirmado midiendo con getBoundingClientRect en vivo).
+    Forzarlo con !important en esos selectores genericos de Streamlit
+    afectaria TODA la app (cualquier st.container/st.columns), no solo
+    estas tarjetas -- demasiado riesgo para un ajuste cosmetico. Por eso
+    la alineacion depende solo de ALTURA_KPI_REM: un piso lo bastante alto
+    para que el contenido real de las 3 tarjetas (simple/sparkline/gauge)
+    quede exactamente en ese piso, sin pelear la cascada de Streamlit."""
+    st.markdown(
+        f"""
+        <style>
+        /* Fondo/borde/radio/sombra/hover: los pone estilos_sercop.py (regla
+        :has(stPlotlyChart):has(stMarkdown)); aca solo el layout. */
+        div[class*="st-key-kpi_tendencia_"] {{
+            container-type: inline-size;  /* los montos escalan con el ANCHO DE LA TARJETA (cqw, ver estilos_sercop.py) */
+            padding: 1.25rem 1.5rem 1.1rem 1.5rem;
+            margin-bottom: 0.5rem;
+            min-height: {ALTURA_KPI_REM}rem;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }}
+        div[class*="st-key-kpi_tendencia_"] .js-plotly-plot {{
+            margin-top: auto;
+        }}
+        /* Badge del ultimo mes: UNA linea siempre. Con espacio: "oct: $ 46,7 M · ↑ 1,7 %"; en tarjetas angostas
+           (4 columnas a ~1100 px) la version corta "oct · ↑ 1,7 %" y la cifra completa en el tooltip. */
+        div[class*="st-key-kpi_tendencia_"] .kpi-ins-corta {{ display: none; }}
+        @container (max-width: 175px) {{
+            div[class*="st-key-kpi_tendencia_"] .kpi-ins-completa {{ display: none; }}
+            div[class*="st-key-kpi_tendencia_"] .kpi-ins-corta {{ display: inline; }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _figura_sparkline(serie: list[float], parcial: bool = False) -> go.Figure:
+    """Mini-grafico de linea (sin ejes/grid/leyenda/hover) para el sparkline de render_kpi_card_tendencia
+    -- misma paleta que el resto (COLOR_SIDEBAR_ACENTO), pero SIN _aplicar_estilo_base (fija 380 px).
+
+    `parcial`: el ULTIMO punto es un mes en curso (incompleto). Se dibuja con el tramo final punteado y un
+    marcador HUECO, para que no se lea como una caida real; los meses completos van en linea continua."""
+    color = COLOR_SIDEBAR_ACENTO
+    x = list(range(len(serie)))
+    if parcial and len(serie) >= 2:
+        trazas = [
+            go.Scatter(
+                x=x[:-1], y=serie[:-1], mode="lines", line=dict(color=color, width=2, shape="spline", smoothing=0.6),
+                fill="tozeroy", fillcolor="rgba(42, 120, 214, 0.12)", hoverinfo="skip",
+            ),
+            go.Scatter(x=x[-2:], y=serie[-2:], mode="lines", line=dict(color=color, width=2, dash="dot"), hoverinfo="skip"),
+            go.Scatter(
+                x=[x[-1]], y=[serie[-1]], mode="markers", hoverinfo="skip",
+                marker=dict(size=8, color="#FFFFFF", line=dict(color=color, width=2)),
+            ),
+        ]
+    else:
+        trazas = [
+            go.Scatter(
+                x=x, y=serie, mode="lines", line=dict(color=color, width=2, shape="spline", smoothing=0.6),
+                fill="tozeroy", fillcolor="rgba(42, 120, 214, 0.12)", hoverinfo="skip",
+            )
+        ]
+    fig = go.Figure(trazas)
+    fig.update_xaxes(visible=False, showgrid=False, fixedrange=True)
+    fig.update_yaxes(visible=False, showgrid=False, fixedrange=True)
+    fig.update_layout(
+        height=48,
+        # b=6: colchon para que el area rellena no quede pegada al borde inferior de la tarjeta;
+        # l/r pequenos para que el marcador hueco del ultimo punto no se recorte.
+        margin=dict(l=4, r=6, t=4, b=6),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+    )
+    return fig
+
+
+def render_kpi_card_tendencia(
+    columna,
+    etiqueta: str,
+    valor: str,
+    serie: list[float] | None = None,
+    variacion_pct: float | None = None,
+    ayuda: str | None = None,
+    sentido: str = "neutro",
+    periodo: str | None = None,
+    detalle_mes: dict | None = None,
+    valor_exacto: str | None = None,
+) -> None:
+    """Tarjeta KPI con mini-sparkline (tendencia mensual) y badge de
+    variación porcentual vs. el periodo anterior, para los KPIs monetarios
+    (Presupuesto Total, Valor Adjudicado/Presupuesto en Contratación) de
+    Dashboard, Procesos y Municipio de Guayaquil -- ver
+    render_kpis_dashboard/render_metricas_resumen.
+
+    `sentido` (P1-4 del plan de mejoras) decide el color del badge:
+    - "neutro" (default): gris (COLOR_NEUTRO_TEXTO_SUAVE) con la flecha
+      ↑/↓ segun el signo, sin verde/rojo -- para metricas donde subir o
+      bajar NO es intrinsecamente bueno/malo, solo describe cuanta
+      actividad hubo el periodo (hoy, los 3 unicos callers: Presupuesto
+      Total, Presupuesto en Contratación, Valor Adjudicado Total -- que
+      un mes tenga menos presupuesto publicado no es "malo", es solo
+      menos actividad ese periodo).
+    - "positivo_sube": verde con "↑" si `variacion_pct` es >= 0, rojo con
+      "↓" si es negativo -- reservado para metricas donde la direccion SI
+      implica bueno/malo (ej. una futura tendencia de "% de Ahorro", hoy
+      mostrado aparte como gauge sin badge, ver _figura_gauge_ahorro). En
+      ambos modos, el icono (↑/↓) siempre acompaña al color -- nunca
+      color solo.
+
+    Si `serie` tiene menos de 2 puntos (sin historia suficiente para
+    graficar una tendencia) se omite el sparkline; si `variacion_pct` es
+    None (sin base para calcularlo, ej. periodo anterior en 0) se omite el
+    badge -- en ambos casos la tarjeta degrada a mostrar solo etiqueta +
+    valor, nunca un grafico vacio ni un badge sin sentido.
+
+    `_inyectar_estilos_kpi_tendencia()` se llama ANTES de `with columna:`
+    (mismo patron que `_inyectar_estilos_gauge_ahorro()`/col4 en
+    render_pagina_municipalidad_guayaquil), no dentro -- un `st.markdown`
+    dentro de `with columna:` reserva su propio elemento (con el gap
+    vertical por defecto entre elementos de Streamlit) DENTRO de esa
+    columna especifica, empujando el resto del contenido ~16px hacia
+    abajo. Eso rompia la alineacion con las tarjetas simples de la misma
+    fila (que no tienen ese elemento extra) aunque ambas midieran la
+    misma altura -- confirmado midiendo `top`/`bottom` con
+    getBoundingClientRect en vivo: mismo `height`, `top` distinto.
+
+    La cifra principal es el TOTAL del periodo filtrado; el delta compara solo el ULTIMO MES con el
+    anterior, asi que el badge nombra el mes y su cifra para que no se lea como "el total cayo X %":
+    `detalle_mes` (ver _detalle_ultimo_mes) = {mes, mes_previo, valor, valor_previo, valor_completo,
+    valor_previo_completo, pct} -> "nov 2026: 12 · ↓ 66,7 %", con el detalle completo en el tooltip.
+    `periodo` (ej. "ene 2025 – jun 2025") se muestra bajo el sparkline como el rango graficado.
+    (`variacion_pct` suelto se conserva solo por compatibilidad: sin mes/valor no hay contexto.)"""
+    _inyectar_estilos_kpi_tendencia()
+    with columna:
+        clave = "kpi_tendencia_" + re.sub(r"[^a-z0-9]+", "_", etiqueta.lower()).strip("_")
+        with st.container(key=clave):
+            # Seguridad (XSS): ver _tarjeta_kpi_html.
+            etiqueta_html = html.escape(str(etiqueta))
+            valor_html = html.escape(str(valor))
+            # Tooltip: valor exacto (la cifra principal puede ir en formato corto) + ayuda.
+            titulo_texto = f"{etiqueta}: {valor_exacto or valor}" + (f" -- {ayuda}" if ayuda else "")
+            atributo_titulo = f' title="{html.escape(titulo_texto, quote=True)}"'
+            badge_html = ""
+            detalle = detalle_mes
+            if detalle is None and variacion_pct is not None:
+                detalle = {"pct": variacion_pct}
+            parcial = bool(detalle and detalle.get("parcial"))
+            if detalle is not None:
+                pct = detalle.get("pct")
+                partes = []
+                partes_cortas = []  # version abreviada para tarjetas angostas (sin la cifra; el detalle va al tooltip)
+                color, color_texto = COLOR_NEUTRO_TEXTO_SUAVE, COLOR_NEUTRO_TEXTO_INSIGNIA
+                if detalle.get("mes") and detalle.get("valor") is not None:
+                    # Ultimo mes COMPLETO (nunca el mes en curso): "oct: $ 35,9 M · ↑ 1,9 %"
+                    partes.append(f"{detalle.get('mes_corto') or detalle['mes']}: {detalle['valor']}")
+                    partes_cortas.append(detalle.get("mes_corto") or detalle["mes"])
+                    if pct is not None:
+                        positivo = pct >= 0
+                        flecha = "↑" if positivo else "↓"
+                        # Fondo = tinte (22 de alfa) del color semantico; texto = su variante oscura (AA 4.5:1).
+                        if sentido != "neutro":
+                            color, color_texto = (
+                                (COLOR_ESTADO_OK, COLOR_ESTADO_OK_TEXTO)
+                                if positivo
+                                else (COLOR_ESTADO_CRITICO, COLOR_ESTADO_CRITICO_TEXTO)
+                            )
+                        sufijo = "" if detalle.get("mes_previo") else " vs. mes anterior"
+                        partes.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} %{sufijo}")
+                        partes_cortas.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} %")
+                elif detalle.get("en_curso"):
+                    # Solo hay el mes en curso: se rotula asi y SIN porcentaje.
+                    en_curso = detalle["en_curso"]
+                    partes.append(f"{en_curso['mes']} (en curso): {en_curso['valor']}")
+                    partes_cortas.append(f"{en_curso['mes'].split()[0]} (en curso)")
+                elif pct is not None:  # compatibilidad: solo un porcentaje suelto
+                    flecha = "↑" if pct >= 0 else "↓"
+                    partes.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} % vs. mes anterior")
+                    partes_cortas.append(f"{flecha} {formatear_numero_ec(abs(pct), 1)} %")
+                if partes:
+                    lineas_tooltip = []
+                    if not detalle.get("mes_previo") and detalle.get("mes"):
+                        lineas_tooltip.append(f"{detalle['mes']}: {detalle.get('valor_completo', detalle['valor'])}.")
+                    if detalle.get("mes_previo"):
+                        lineas_tooltip.append(
+                            f"{detalle['mes']} ({detalle.get('valor_completo', detalle['valor'])}) frente a "
+                            f"{detalle['mes_previo']} ({detalle.get('valor_previo_completo', detalle.get('valor_previo'))})."
+                        )
+                    if detalle.get("en_curso"):
+                        ec = detalle["en_curso"]
+                        lineas_tooltip.append(
+                            f"{ec['mes']} (en curso, mes incompleto): {ec.get('valor_completo', ec['valor'])}; "
+                            "no se compara para no mostrar una caída falsa."
+                        )
+                    texto_tooltip = html.escape(" ".join(lineas_tooltip), quote=True)
+                    badge_html = (
+                        f'<span title="{texto_tooltip}" style="display:inline-block;'
+                        f"white-space:nowrap;padding:0.15rem 0.5rem;border-radius:999px;background-color:{color}22;"
+                        f'color:{color_texto};font-size:0.72rem;font-weight:700;line-height:1.4;">'
+                        f'<span class="kpi-ins-completa">{html.escape(" · ".join(partes))}</span>'
+                        f'<span class="kpi-ins-corta">{html.escape(" · ".join(partes_cortas))}</span></span>'
+                    )
+            exacto_html = html.escape(valor_exacto) if valor_exacto else "&nbsp;"
+            st.markdown(
+                f'<div{atributo_titulo}>'
+                f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};'
+                f'min-height:2.5rem;">{etiqueta_html}</div>'
+                f'<div style="font-size:2rem;font-weight:700;color:{COLOR_TEXTO_EJE};'
+                f'line-height:1.2;">{valor_html}</div>'
+                f'<div style="font-size:0.72rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};min-height:1.1rem;">{exacto_html}</div>'
+                f'<div style="min-height:1.8rem;margin-top:0.2rem;">{badge_html}</div>'
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            if serie and len(serie) >= 2:
+                mostrar_grafico(
+                    _figura_sparkline(serie, parcial=parcial),
+                    width="stretch",
+                    config={"displayModeBar": False},
+                    key=f"spark_{clave}",
+                )
+                if periodo:
+                    nota = ""
+                    if parcial and detalle.get("en_curso"):
+                        nota = f" · {detalle['en_curso']['mes'].split()[0]} en curso"
+                    st.markdown(
+                        f'<div style="font-size:0.7rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};margin-top:-0.4rem;min-height:2rem;">'
+                        f"Mensual · {html.escape(periodo)}{html.escape(nota)}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+
+def _tarjeta_ahorro_html(porcentaje: float, ayuda: str | None = None) -> str:
+    """Tarjeta KPI de "% de Ahorro General": cifra grande + barra de progreso + que significa.
+
+    Reemplaza al gauge (el numero se montaba sobre el arco y se cortaba en tarjetas de 4 columnas). El mismo
+    componente `.sercop-kpi-card` de las demas, asi que hereda tipografia, alto y sombra. La barra va de 0 a
+    100 % del presupuesto referencial (un ahorro mayor al 100 % o negativo se satura, sin romper); el signo y
+    la cifra exacta van en el texto. Una sola linea de HTML (st.markdown no tolera lineas en blanco)."""
+    ancho = max(0.0, min(100.0, porcentaje))
+    atributo_titulo = f' title="{html.escape(ayuda, quote=True)}"' if ayuda else ""
+    cifra = html.escape(formatear_porcentaje_ec(porcentaje))
+    significado = (
+        "Se adjudicó por debajo del presupuesto referencial"
+        if porcentaje >= 0
+        else "Se adjudicó por encima del presupuesto referencial"
+    )
+    return (
+        f"<div{atributo_titulo}>"
+        f'<div style="font-size:0.875rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};min-height:2.5rem;">% de Ahorro General</div>'
+        f'<div style="font-size:2rem;font-weight:700;color:{COLOR_TEXTO_EJE};line-height:1.2;white-space:nowrap;">'
+        f"{cifra}</div>"
+        f'<div style="font-size:0.72rem;color:{COLOR_NEUTRO_TEXTO_SUAVE};min-height:1.1rem;">de ahorro general</div>'
+        f'<div role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{ancho:.1f}" '
+        f'style="height:8px;border-radius:999px;background:{COLOR_LIENZO};overflow:hidden;margin-top:0.9rem;">'
+        f'<div style="width:{ancho:.1f}%;height:100%;border-radius:999px;background:{COLOR_SIDEBAR_ACENTO};"></div></div>'
+        f'<div style="padding-top:0.4rem;font-size:0.7rem;line-height:1.3;color:{COLOR_NEUTRO_TEXTO_SUAVE};">'
+        f"{significado}</div></div>"
+    )
+
+
+def _serie_mensual_desde_df(df: pd.DataFrame, campo: str) -> list[float]:
+    """Suma de `campo` agregada por mes (columna "anio_mes", ya calculada
+    por preparar_dataframe), ordenada cronologicamente -- para el
+    sparkline de render_kpi_card_tendencia. Lista vacia si `df` esta vacio
+    o no tiene la columna "anio_mes" (ej. sin ningun registro con fecha de
+    publicacion valida)."""
+    if df.empty or "anio_mes" not in df.columns:
+        return []
+    return df.dropna(subset=["anio_mes"]).groupby("anio_mes")[campo].sum().sort_index().tolist()
+
+
+def _serie_mensual(registros: list[dict], campo: str) -> list[float]:
+    """Igual que _serie_mensual_desde_df, pero a partir de una lista de
+    registros crudos -- usado por render_metricas_resumen (Procesos y
+    Municipio de Guayaquil), que no arma un DataFrame con "anio_mes" como
+    si hace render_dashboard (ver preparar_dataframe)."""
+    if not registros:
+        return []
+    df = pd.DataFrame(registros)
+    if df.empty or "fecha_publicacion" not in df.columns or campo not in df.columns:
+        return []
+    df["anio_mes"] = pd.to_datetime(df["fecha_publicacion"], errors="coerce").dt.strftime("%Y-%m")
+    return _serie_mensual_desde_df(df, campo)
+
+
+MESES_ABREV_ES = {
+    1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
+    7: "jul", 8: "ago", 9: "sep", 10: "oct", 11: "nov", 12: "dic",
+}
+
+
+def _etiqueta_mes(anio_mes: str) -> str:
+    """"2025-01" -> "ene 2025" (abreviatura en español)."""
+    anio, mes = anio_mes.split("-")
+    return f"{MESES_ABREV_ES[int(mes)]} {anio}"
+
+
+def _periodo_mensual_desde_df(df: pd.DataFrame) -> str | None:
+    """Rango de meses de la serie mensual de `df`, ej. "ene 2025 – jun 2025" (o un solo
+    mes si hay uno). None si no hay ningun mes valido. Debe usarse con el MISMO df del que
+    sale la serie del sparkline para que el periodo mostrado coincida con lo graficado."""
+    if df.empty or "anio_mes" not in df.columns:
+        return None
+    meses = sorted(df["anio_mes"].dropna().unique())
+    if not meses:
+        return None
+    primero, ultimo = _etiqueta_mes(meses[0]), _etiqueta_mes(meses[-1])
+    return primero if primero == ultimo else f"{primero} – {ultimo}"
+
+
+def _df_con_anio_mes(registros: list[dict]) -> pd.DataFrame:
+    """DataFrame de `registros` con la columna "anio_mes" (vacio si no hay fechas)."""
+    if not registros:
+        return pd.DataFrame()
+    df = pd.DataFrame(registros)
+    if "fecha_publicacion" not in df.columns:
+        return pd.DataFrame()
+    df["anio_mes"] = pd.to_datetime(df["fecha_publicacion"], errors="coerce").dt.strftime("%Y-%m")
+    return df
+
+
+def _serie_conteo_mensual_desde_df(df: pd.DataFrame) -> list[float]:
+    """Cantidad de procesos por mes (columna "anio_mes"), cronologica -- sparkline de la
+    tarjeta "Procesos"."""
+    if df.empty or "anio_mes" not in df.columns:
+        return []
+    return df.dropna(subset=["anio_mes"]).groupby("anio_mes").size().sort_index().astype(float).tolist()
+
+
+def _meses_continuos(df: pd.DataFrame) -> list[str]:
+    """Todos los meses ("AAAA-MM") entre el primero y el ultimo de `df`, SIN huecos. Las tres
+    series de las tarjetas (procesos, presupuesto, en contratacion) usan este mismo rango para que
+    sus sparklines y su periodo coincidan; los meses sin datos valen 0."""
+    if df.empty or "anio_mes" not in df.columns:
+        return []
+    meses = df["anio_mes"].dropna()
+    if meses.empty:
+        return []
+    rango = pd.period_range(meses.min(), meses.max(), freq="M")
+    return [str(m) for m in rango]
+
+
+def _serie_alineada(df: pd.DataFrame, meses: list[str], campo: str | None = None) -> list[float]:
+    """Serie mensual de `df` sobre `meses` (rellena con 0 los meses sin datos): suma de `campo`, o la
+    cantidad de filas si `campo` es None."""
+    if not meses:
+        return []
+    if df.empty or "anio_mes" not in df.columns:
+        return [0.0] * len(meses)
+    validos = df.dropna(subset=["anio_mes"])
+    agrupado = validos.groupby("anio_mes").size() if campo is None else validos.groupby("anio_mes")[campo].sum()
+    return [float(agrupado.get(m, 0.0)) for m in meses]
+
+
+def _periodo_de_meses(meses: list[str]) -> str | None:
+    if not meses:
+        return None
+    primero, ultimo = _etiqueta_mes(meses[0]), _etiqueta_mes(meses[-1])
+    return primero if primero == ultimo else f"{primero} – {ultimo}"
+
+
+ZONA_ECUADOR = ZoneInfo("America/Guayaquil")
+
+
+def _hoy_guayaquil(ahora: datetime | None = None) -> date:
+    """Fecha de hoy en America/Guayaquil (UTC-5, sin horario de verano). `ahora` es inyectable para pruebas
+    (naive = UTC). Importa en los limites de mes: 01/12 03:00 UTC todavia es 30/11 en Ecuador."""
+    ahora = ahora or datetime.now(UTC)
+    if ahora.tzinfo is None:
+        ahora = ahora.replace(tzinfo=UTC)
+    return ahora.astimezone(ZONA_ECUADOR).date()
+
+
+def _detalle_ultimo_mes(
+    serie: list[float],
+    meses: list[str],
+    formatear=formatear_numero_ec,
+    completo=None,
+    hoy: date | None = None,
+) -> dict | None:
+    """Datos del badge de las tarjetas con tendencia: cifra del ULTIMO MES COMPLETO y su variacion % frente
+    al mes completo anterior (p. ej. oct vs sep si hoy es 6 de nov).
+
+    Si el ultimo mes de la serie es el mes en curso (segun `hoy`, por defecto la fecha de Guayaquil) esta
+    incompleto: NO se compara (compararlo con un mes completo mostraria una caida falsa) y se devuelve aparte
+    en `en_curso` para rotularlo "(en curso)" y marcar el sparkline como parcial (`parcial` True).
+    `formatear` da la forma corta (badge) y `completo` la exacta (tooltip). `pct` es None si el mes previo
+    vale 0 o no hay dos meses completos. None si la serie esta vacia o no coincide con `meses`."""
+    if not serie or len(serie) != len(meses):
+        return None
+    completo = completo or formatear
+    hoy = hoy or _hoy_guayaquil()
+    parcial = meses[-1] == f"{hoy:%Y-%m}"
+    base_meses, base_serie = (meses[:-1], serie[:-1]) if parcial else (meses, serie)
+    detalle = {
+        "parcial": parcial,
+        "en_curso": None,
+        "mes": None,
+        "mes_corto": None,
+        "valor": None,
+        "valor_completo": None,
+        "mes_previo": None,
+        "valor_previo": None,
+        "valor_previo_completo": None,
+        "pct": None,
+    }
+    if parcial:
+        detalle["en_curso"] = {
+            "mes": _etiqueta_mes(meses[-1]),
+            "valor": formatear(serie[-1]),
+            "valor_completo": completo(serie[-1]),
+        }
+    if base_serie:
+        detalle.update(
+            mes=_etiqueta_mes(base_meses[-1]),
+            mes_corto=MESES_ABREV_ES[int(base_meses[-1].split("-")[1])],
+            valor=formatear(base_serie[-1]),
+            valor_completo=completo(base_serie[-1]),
+        )
+        if len(base_serie) >= 2:
+            detalle.update(
+                mes_previo=_etiqueta_mes(base_meses[-2]),
+                valor_previo=formatear(base_serie[-2]),
+                valor_previo_completo=completo(base_serie[-2]),
+                pct=_variacion_pct_ultimo_periodo(base_serie),
+            )
+    return detalle
+
+
+def _variacion_pct_ultimo_periodo(serie: list[float]) -> float | None:
+    """% de variación del último periodo de `serie` respecto al anterior.
+    None si hay menos de 2 periodos o el periodo anterior es 0/vacío
+    (división por cero) -- en ese caso render_kpi_card_tendencia no
+    muestra badge."""
+    if len(serie) < 2 or not serie[-2]:
+        return None
+    return (serie[-1] - serie[-2]) / serie[-2] * 100
+
+
+ESTADOS_VALOR_ADJUDICADO = {
+    _normalizar_texto_provincia(estado).lower()
+    for estado in (
+        "Adjudicada",
+        "Adjudicado - Registro de Contratos",
+        "Ejecución de Contrato",
+        "Finalizada",
+        "En Recepción",
+    )
+}
+
+
+AYUDA_PROCESOS_TENDENCIA = (
+    "Cantidad de procesos del filtro actual. El badge compara el último mes COMPLETO con el anterior "
+    "(no con el total ni con el mes en curso)."
+)
+
+
+def _render_trio_tendencia(
+    columnas,
+    *,
+    df_base: pd.DataFrame,
+    df_valor: pd.DataFrame,
+    campo_valor: str,
+    total_procesos: int,
+    total_presupuesto: float,
+    total_valor: float,
+    etiqueta_procesos: str,
+    etiqueta_presupuesto: str,
+    etiqueta_valor: str,
+    ayuda_valor: str,
+    hoy: date | None = None,
+) -> None:
+    """Las TRES tarjetas con tendencia (procesos, presupuesto, valor en contratacion/adjudicado) con el
+    mismo componente, el mismo tamano de cifra principal y la MISMA base temporal: un unico rango continuo
+    de meses (el del `df_base` filtrado), rellenando con 0 los meses sin datos.
+
+    Cifra principal = total del periodo en formato corto ("$ 242,5 M"); el valor exacto va en una linea
+    pequena debajo y en el tooltip. El badge habla solo del ultimo mes COMPLETO (ver _detalle_ultimo_mes);
+    si el ultimo mes es el actual (incompleto) se rotula "en curso" y el sparkline lo marca como parcial."""
+    meses = _meses_continuos(df_base)
+    periodo = _periodo_de_meses(meses)
+    serie_procesos = _serie_alineada(df_base, meses)
+    serie_presupuesto = _serie_alineada(df_base, meses, "presupuesto_referencial")
+    serie_valor = _serie_alineada(df_valor, meses, campo_valor)
+    hoy = hoy or _hoy_guayaquil()
+
+    def corto_dinero(v):
+        return formatear_moneda_compacta_ec(v, decimales=1)
+
+    col1, col2, col3 = columnas
+    render_kpi_card_tendencia(
+        col1,
+        etiqueta_procesos,
+        formatear_numero_ec(total_procesos),
+        valor_exacto="procesos del periodo",
+        serie=serie_procesos,
+        detalle_mes=_detalle_ultimo_mes(serie_procesos, meses, lambda v: formatear_numero_ec(v, 0), hoy=hoy),
+        ayuda=AYUDA_PROCESOS_TENDENCIA,
+        periodo=periodo,
+    )
+    render_kpi_card_tendencia(
+        col2,
+        etiqueta_presupuesto,
+        corto_dinero(total_presupuesto),
+        valor_exacto=formatear_moneda_ec(total_presupuesto),
+        serie=serie_presupuesto,
+        detalle_mes=_detalle_ultimo_mes(serie_presupuesto, meses, corto_dinero, formatear_moneda_ec, hoy=hoy),
+        periodo=periodo,
+    )
+    render_kpi_card_tendencia(
+        col3,
+        etiqueta_valor,
+        corto_dinero(total_valor),
+        valor_exacto=formatear_moneda_ec(total_valor),
+        serie=serie_valor,
+        detalle_mes=_detalle_ultimo_mes(serie_valor, meses, corto_dinero, formatear_moneda_ec, hoy=hoy),
+        periodo=periodo,
+        ayuda=ayuda_valor,
+    )
+
+
 def render_kpis_dashboard(df: pd.DataFrame):
-    """KPIs principales del Dashboard: Procesos, Presupuesto Total y Valor
-    Adjudicado -- lo unico visible por defecto antes de expandir cualquier
-    detalle (ver render_pagina_dashboard)."""
+    """KPIs principales del Dashboard: Procesos, Presupuesto Total y
+    Presupuesto en Contratación -- lo unico visible por defecto antes de
+    expandir cualquier detalle (ver render_pagina_dashboard). Los dos KPIs
+    monetarios llevan ademas un mini-sparkline (tendencia mensual del
+    presupuesto) y un badge de variación vs. el mes anterior -- ver
+    render_kpi_card_tendencia."""
     col1, col2, col3 = st.columns(3)
     presupuesto_total = df["presupuesto_referencial"].fillna(0).sum() if not df.empty else 0
-    valor_adjudicado_total = (
-        df.loc[df["estado"].str.strip().str.lower().str.startswith("adjudicad", na=False), "presupuesto_referencial"]
-        .fillna(0)
-        .sum()
+    df_contratacion = (
+        df.loc[df["estado"].map(_normalizar_texto_provincia).str.lower().isin(ESTADOS_VALOR_ADJUDICADO)]
         if not df.empty
-        else 0
+        else df
     )
-    render_kpi_card(col1, "Procesos (filtro actual)", formatear_numero_ec(len(df)))
-    render_kpi_card(col2, "Presupuesto Total (filtro actual)", formatear_moneda_ec(presupuesto_total))
-    render_kpi_card(
-        col3,
-        "Valor Adjudicado (filtro actual)",
-        formatear_moneda_ec(valor_adjudicado_total),
-        ayuda=(
-            "Suma del Presupuesto Referencial de los procesos con estado "
-            "Adjudicada/Adjudicado dentro del filtro actual."
+    valor_adjudicado_total = (
+        df_contratacion["presupuesto_referencial"].fillna(0).sum() if not df_contratacion.empty else 0
+    )
+
+    _render_trio_tendencia(
+        (col1, col2, col3),
+        df_base=df,
+        df_valor=df_contratacion,
+        campo_valor="presupuesto_referencial",
+        total_procesos=len(df),
+        total_presupuesto=presupuesto_total,
+        total_valor=valor_adjudicado_total,
+        etiqueta_procesos="Procesos (filtro actual)",
+        etiqueta_presupuesto="Presupuesto Total (filtro actual)",
+        etiqueta_valor="En contratación (filtro actual)",
+        ayuda_valor=(
+            "Presupuesto Referencial (no el monto adjudicado real) de los procesos que "
+            "ya avanzaron a contratación: estados Adjudicada, Adjudicado - Registro de "
+            "Contratos, Ejecución de Contrato, Finalizada o En Recepción, dentro del "
+            "filtro actual."
         ),
+    )
+
+
+def render_grafico_estado_clic(registros: list[dict]) -> str | None:
+    """Grafico de barras "Procesos por Estado" con clic-para-filtrar
+    (drill-down): usa el soporte nativo de seleccion de st.plotly_chart
+    (`on_select="rerun"`, Streamlit >= 1.35 -- sin necesitar streamlit-
+    echarts ni ninguna libreria externa) en vez de streamlit-echarts (ver
+    render_kpi_card_tendencia/_figura_gauge_ahorro sobre por que este
+    proyecto usa Plotly para todo lo interactivo, no ECharts).
+
+    Devuelve el nombre del estado clicado en ESTA ejecucion del script (o
+    None si no hay seleccion) -- no toca session_state ella misma, deja
+    que el caller (render_pagina_municipalidad_guayaquil) decida como
+    persistir/combinar el filtro; una sola responsabilidad (dibujar +
+    leer el evento).
+
+    Barras en azul suave (COLOR_BARRA_DATO) -- la del estado
+    ACTUALMENTE FILTRADO (session_state.filtro_estado_click, leido aca
+    solo para colorear, no para decidir el retorno) se resalta en
+    azul fuerte (COLOR_BARRA_DESTACADA), mismo patron "barra lider
+    destacada" que el resto de graficos de ranking de esta app, pero aca
+    lo que se resalta es la SELECCION activa, no el valor mas alto."""
+    conteos: dict[str, int] = {}
+    for r in registros:
+        estado = (r.get("estado") or "").strip()
+        if estado:
+            conteos[estado] = conteos.get(estado, 0) + 1
+    if not conteos:
+        st.info("No hay datos para graficar con los filtros actuales.")
+        return None
+
+    # Descendente + autorange="reversed" mas abajo: mismo criterio que
+    # render_grafico_comparativo/render_gantt_procesos, para que el estado
+    # con mas procesos quede arriba.
+    estados = sorted(conteos, key=lambda e: conteos[e], reverse=True)
+    valores = [conteos[e] for e in estados]
+    estado_activo = st.session_state.get("filtro_estado_click")
+    colores = [COLOR_BARRA_DESTACADA if e == estado_activo else COLOR_BARRA_DATO for e in estados]
+
+    # Horizontal (P1-3 del plan de mejoras): estados largos como "Adjudicado
+    # - Registro de Contratos" salian rotados a 45° en el eje X y costaban
+    # de leer -- en horizontal, la etiqueta completa se lee de corrido en
+    # el eje Y, sin rotar.
+    fig = go.Figure(
+        go.Bar(
+            x=valores,
+            y=estados,
+            orientation="h",
+            marker=dict(color=colores, cornerradius=4, line=dict(width=0)),
+            # Valor al final de cada barra: no hay que adivinarlo contra el eje.
+            text=[formatear_numero_ec(v, 0) for v in valores],
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=13, color=COLOR_TEXTO_EJE),
+            hovertemplate="<b>%{y}</b><br>%{x} proceso(s)<extra></extra>",
+        )
+    )
+    fig.update_xaxes(
+        showgrid=True, gridcolor=COLOR_GRID, zeroline=False, showline=True,
+        linewidth=2, linecolor=COLOR_AXIS, tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+    )
+    fig.update_yaxes(
+        autorange="reversed", showgrid=False, showline=True, linewidth=2,
+        linecolor=COLOR_AXIS, tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+    )
+    _aplicar_estilo_base(fig, altura=max(320, 34 * len(estados)))
+    fig.update_layout(margin=dict(l=10, r=50, t=20, b=10))  # holgura para el valor al final de la barra
+
+    st.markdown("**Procesos por Estado** _(clic en una barra para filtrar)_")
+    # SIN config={"displayModeBar": False}: verificado en vivo que ese flag
+    # rompe la deteccion de clic/seleccion de Plotly en esta version de
+    # Streamlit (1.41.1) -- con el modebar oculto, plotly_click nunca se
+    # dispara, asi que el drill-down quedaria muerto. El modebar (zoom/pan/
+    # camara) queda visible como costo aceptado de esa limitacion.
+    evento = mostrar_grafico(
+        fig,
+        width="stretch",
+        key="grafico_estado_clic",
+        on_select="rerun",
+        selection_mode="points",
+    )
+    puntos = evento.selection.points if evento and evento.selection else []
+    # "y" (no "x"): el grafico es horizontal, la categoria (estado) vive en
+    # el eje Y -- ver orientation="h" mas arriba.
+    return puntos[0]["y"] if puntos else None
+
+
+# Etapas del pipeline de contratacion en el ORDEN REAL del flujo SERCOP (de la mas temprana a Finalizada):
+# se publica y se responden preguntas -> se entregan propuestas -> se convalidan errores -> por adjudicar ->
+# adjudicada -> registro del contrato -> ejecucion -> recepcion -> finalizada.
+ETAPAS_PIPELINE_CONTRATACION = [
+    "Preguntas, Respuestas y Aclaraciones",
+    "Entrega de Propuesta",
+    "Convalidación de Errores",
+    "Por Adjudicar",
+    "Adjudicada",
+    "Adjudicado - Registro de Contratos",
+    "Ejecución de Contrato",
+    "En Recepción",
+    "Finalizada",
+]
+# Estados de "fuga": el proceso sale del flujo y no avanza a ninguna etapa posterior.
+ESTADOS_FUGA_PIPELINE = ["Desierta", "Cancelado", "Suspendido", "Terminado Unilateralmente"]
+
+
+def _conteos_por_estado(registros: list[dict]) -> dict[str, int]:
+    """Procesos por estado con clave normalizada (sin tildes/mayusculas): el dato crudo no siempre trae la
+    misma grafia que las listas de etapas."""
+    conteos: dict[str, int] = {}
+    for r in registros:
+        clave = _normalizar_texto_provincia(r.get("estado") or "")
+        if clave:
+            conteos[clave] = conteos.get(clave, 0) + 1
+    return conteos
+
+
+def render_grafico_pipeline(registros: list[dict]) -> None:
+    """Pipeline de contratacion como barras horizontales en el orden real del flujo (arriba la etapa mas
+    temprana, abajo Finalizada). Las barras de "fuga" (Desierta, Cancelado, Suspendido, Terminado
+    Unilateralmente) van en el MISMO grafico, debajo y en rojo, para leer de un vistazo cuantos procesos
+    avanzaron y cuantos se perdieron -- sin tarjeta aparte ni huecos."""
+    conteos = _conteos_por_estado(registros)
+    etapas = [(e, conteos.get(_normalizar_texto_provincia(e), 0)) for e in ETAPAS_PIPELINE_CONTRATACION]
+    fugas = [(e, conteos.get(_normalizar_texto_provincia(e), 0)) for e in ESTADOS_FUGA_PIPELINE]
+    total = sum(v for _, v in etapas + fugas)
+    if not total:
+        st.info("No hay datos para graficar con los filtros actuales.")
+        return
+
+    st.markdown("**Pipeline de Contratación**")
+    filas = etapas + fugas
+    colores = [COLOR_SIDEBAR_ACENTO] * len(etapas) + [COLOR_ESTADO_CRITICO] * len(fugas)
+    textos = [f"{formatear_numero_ec(v, 0)} ({formatear_porcentaje_ec(v / total * 100)})" for _, v in filas]
+    fig = go.Figure(
+        go.Bar(
+            x=[v for _, v in filas],
+            y=[e for e, _ in filas],
+            orientation="h",
+            marker=dict(color=colores, cornerradius=4, line=dict(width=0)),
+            text=textos,
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=13, color=COLOR_TEXTO_EJE),
+            hovertemplate="<b>%{y}</b><br>%{x} proceso(s)<extra></extra>",
+        )
+    )
+    # Separador entre el flujo normal y las fugas.
+    fig.add_hline(y=len(etapas) - 0.5, line=dict(color=COLOR_GRID, width=1, dash="dot"))
+    fig.update_yaxes(autorange="reversed", showgrid=False, title=None, tickfont=dict(size=13, color=COLOR_TEXTO_EJE))
+    fig.update_xaxes(showgrid=True, gridcolor=COLOR_GRID, zeroline=False, title=None, rangemode="tozero")
+    _aplicar_estilo_base(fig, altura=max(360, 34 * len(filas)))
+    fig.update_layout(margin=dict(l=10, r=70, t=10, b=10))
+    mostrar_grafico(fig, width="stretch", config={"displayModeBar": False})
+    perdidos = sum(v for _, v in fugas)
+    st.caption(
+        f"Azul: etapas del flujo ({formatear_numero_ec(total - perdidos, 0)} procesos). Rojo: fuga del pipeline "
+        f"({formatear_numero_ec(perdidos, 0)} procesos, {formatear_porcentaje_ec(perdidos / total * 100)})."
     )
 
 
@@ -767,28 +1432,55 @@ def render_grafico_mensual(df: pd.DataFrame):
         st.info("Los procesos filtrados no tienen fecha de publicación.")
         return
 
+    # Monocromo: el color deja de codificar la categoria (mes, una por
+    # barra) y pasa a codificar unicamente "es el mes de mayor presupuesto
+    # o no" -- ver COLOR_BARRA_DATO/COLOR_BARRA_DESTACADA.
+    indice_max = resumen["presupuesto_referencial"].idxmax()
+    colores_barras = [
+        COLOR_BARRA_DESTACADA if idx == indice_max else COLOR_BARRA_DATO
+        for idx in resumen.index
+    ]
+
     fig = px.bar(
         resumen,
         x="anio_mes",
         y="presupuesto_referencial",
-        color="anio_mes",
-        color_discrete_sequence=PALETA_VIVA,
     )
     fig.update_traces(
-        marker=dict(cornerradius=4, line=dict(width=0)),
+        marker=dict(color=colores_barras, cornerradius=4, line=dict(width=0)),
         hovertemplate="<b>$ %{y:,.2f}</b><br>%{x}<extra></extra>",
     )
     fig.update_xaxes(
         showgrid=False, showline=True, linewidth=2, linecolor=COLOR_AXIS,
         tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
+        # Meses en espanol ("ene 2026"): el locale 'es' de Plotly.js no viene en el bundle de Streamlit.
+        tickmode="array", tickvals=list(resumen["anio_mes"]), ticktext=[etiqueta_mes_es(m) for m in resumen["anio_mes"]],
+        # Rangeslider (zoom en el tiempo): util cuando el filtro de Año/Mes
+        # deja muchos meses en pantalla a la vez -- arrastrando los extremos
+        # se acota el rango visible sin perder el resto de la serie. Altura
+        # del grafico ampliada mas abajo (altura=440 en vez del default 380)
+        # para que el slider no le quite espacio a las barras.
+        rangeslider=dict(visible=True, thickness=0.08, bgcolor=COLOR_LIENZO, bordercolor=COLOR_GRID),
     )
     fig.update_yaxes(
         showgrid=True, gridcolor=COLOR_GRID, zeroline=False,
         showline=True, linewidth=2, linecolor=COLOR_AXIS,
         tickprefix="$ ", tickformat=",.0f", tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
     )
-    _aplicar_estilo_base(fig)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    _aplicar_estilo_base(fig, altura=440)
+    mostrar_grafico(fig, width="stretch", config={"displayModeBar": False})
+
+
+def _aviso_categoria_unica(dimension: str, categoria: str, procesos: int, total: float | None = None) -> None:
+    """Una sola categoria no es un ranking: en vez de una barra solitaria que ocupa todo el grafico, un aviso
+    con el dato ("Todos los procesos son de GUAYAS / GUAYAQUIL"). `dimension` va en minuscula en el texto."""
+    texto = (
+        f"Todos los procesos ({formatear_numero_ec(procesos, 0)}) corresponden a un único valor de "
+        f"{dimension.lower()}: **{limpiar_texto_libre(str(categoria))}**."
+    )
+    if total is not None:
+        texto += f" Presupuesto total: {formatear_moneda_ec(total)}."
+    st.info(texto + " Quita filtros o cambia la dimensión para comparar.", icon=":material/info:")
 
 
 def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
@@ -806,6 +1498,12 @@ def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
         st.info("No hay datos de provincia/cantón con los filtros actuales.")
         return
 
+    if len(resumen) == 1:
+        _aviso_categoria_unica(
+            "Provincia/Cantón", resumen.iloc[0]["provincia_canton"], len(df), resumen.iloc[0]["presupuesto_referencial"]
+        )
+        return
+
     if len(resumen) > top_n:
         principal = resumen.iloc[:top_n]
         resto = resumen.iloc[top_n:]["presupuesto_referencial"].sum()
@@ -819,16 +1517,24 @@ def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
     # con mas presupuesto en la primera fila (arriba) para lectura inmediata.
     resumen = resumen.sort_values("presupuesto_referencial", ascending=False)
 
+    # Monocromo, mismo patron que render_grafico_mensual: el eje Y ya
+    # identifica cada provincia por su etiqueta, asi que un color distinto
+    # por barra no aportaba informacion -- solo se resalta la de mayor
+    # presupuesto.
+    indice_max = resumen["presupuesto_referencial"].idxmax()
+    colores_barras = [
+        COLOR_BARRA_DESTACADA if idx == indice_max else COLOR_BARRA_DATO
+        for idx in resumen.index
+    ]
+
     fig = px.bar(
         resumen,
         x="presupuesto_referencial",
         y="provincia_canton",
         orientation="h",
-        color="provincia_canton",
-        color_discrete_sequence=PALETA_VIVA,
     )
     fig.update_traces(
-        marker=dict(cornerradius=4, line=dict(width=0)),
+        marker=dict(color=colores_barras, cornerradius=4, line=dict(width=0)),
         hovertemplate="<b>$ %{x:,.2f}</b><br>%{y}<extra></extra>",
     )
     fig.update_xaxes(
@@ -841,7 +1547,7 @@ def render_grafico_provincia(df: pd.DataFrame, top_n: int = 15):
         tickfont=dict(color=COLOR_TEXTO_EJE), title=None,
     )
     _aplicar_estilo_base(fig, altura=max(320, 34 * len(resumen)))
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    mostrar_grafico(fig, width="stretch", config={"displayModeBar": False})
 
 
 def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
@@ -850,14 +1556,18 @@ def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
     presupuesto referencial total) via los selectores de
     DIMENSIONES_COMPARATIVAS/METRICAS_COMPARATIVAS, y se dibuja una barra
     por categoria, de mayor a menor, con la de mayor valor resaltada en
-    COLOR_BARRA_RESALTADA (naranja de marca) y el resto en
-    COLOR_BARRA_TENUE -- el valor tambien se anota como texto al final de
+    COLOR_BARRA_DESTACADA (azul fuerte) y el resto en
+    COLOR_BARRA_DATO -- el valor tambien se anota como texto al final de
     cada barra para no depender solo del color para distinguir al lider."""
     st.markdown("**Comparativa por ranking**")
     if df.empty:
         st.info("No hay datos para graficar con los filtros actuales.")
         return
 
+    # Si el filtro actual deja una sola provincia/canton, "Provincia/Cantón" no compara nada: la dimension
+    # inicial pasa a una con variedad (solo la primera vez; luego manda lo que elija el usuario).
+    if df["provincia_canton"].nunique() == 1:
+        st.session_state.setdefault("comparativo_dimension", "Tipo de Compra")
     col_dim, col_met = st.columns(2)
     dimension_label = col_dim.selectbox(
         "Comparar por", list(DIMENSIONES_COMPARATIVAS.keys()), key="comparativo_dimension"
@@ -876,11 +1586,14 @@ def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
     if resumen.empty or resumen["valor"].fillna(0).eq(0).all():
         st.info("No hay valores para graficar con los filtros actuales.")
         return
+    if len(resumen) == 1:
+        _aviso_categoria_unica(dimension_label, resumen.iloc[0][columna_dim], len(df))
+        return
     resumen = resumen.iloc[:top_n]
 
     valor_maximo = resumen["valor"].max()
     colores = [
-        COLOR_BARRA_RESALTADA if v == valor_maximo else COLOR_BARRA_TENUE
+        COLOR_BARRA_DESTACADA if v == valor_maximo else COLOR_BARRA_DATO
         for v in resumen["valor"]
     ]
     textos = [cfg["formato"](v) for v in resumen["valor"]]
@@ -912,7 +1625,7 @@ def render_grafico_comparativo(df: pd.DataFrame, top_n: int = 12):
     fig.update_xaxes(**eje_x)
 
     _aplicar_estilo_base(fig, altura=max(320, 38 * len(resumen)))
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    mostrar_grafico(fig, width="stretch", config={"displayModeBar": False})
 
 
 _MAPA_HOVERTEMPLATE = (
@@ -932,8 +1645,7 @@ def _aplicar_estilo_mapa_oscuro(fig: go.Figure) -> None:
         mapbox_style="carto-darkmatter",
         margin=dict(l=0, r=0, t=0, b=0),
         height=620,
-        paper_bgcolor=COLOR_LIENZO,
-        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),
+        paper_bgcolor=COLOR_TARJETA,
         coloraxis_colorbar=dict(
             # El colorbar se dibuja fuera del area del mapa (sobre
             # paper_bgcolor, que es blanco -- ver COLOR_LIENZO), no sobre
@@ -949,8 +1661,6 @@ def _aplicar_estilo_mapa_oscuro(fig: go.Figure) -> None:
             tickformat=",.0f",
             nticks=9,
         ),
-        hoverlabel=dict(bgcolor=COLOR_LIENZO, font_size=13, font_color=COLOR_TEXTO_EJE),
-        separators=",.",  # formato numerico de Ecuador -- ver _aplicar_estilo_base
     )
 
 
@@ -961,7 +1671,7 @@ def _construir_mapa_burbujas(df_mapa: pd.DataFrame) -> go.Figure:
         lon="lon",
         size="procesos",
         color="presupuesto",
-        color_continuous_scale="Viridis",
+        color_continuous_scale="Blues",
         size_max=45,
         zoom=5.8,
         center={"lat": -1.5, "lon": -78.5},
@@ -980,7 +1690,7 @@ def _construir_mapa_coropletico(df_mapa: pd.DataFrame) -> go.Figure:
         locations="provincia_clave",
         featureidkey="properties.provincia_clave",
         color="presupuesto",
-        color_continuous_scale="Viridis",
+        color_continuous_scale="Blues",
         zoom=5.8,
         center={"lat": -1.5, "lon": -78.5},
         custom_data=_MAPA_CUSTOM_DATA,
@@ -1058,7 +1768,7 @@ def render_mapa_provincias(df: pd.DataFrame):
         fig = _construir_mapa_burbujas(df_mapa)
     else:
         fig = _construir_mapa_coropletico(df_mapa)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    mostrar_grafico(fig, width="stretch", config={"displayModeBar": False})
 
     if vista == "Coroplético":
         st.caption("Límites administrativos: INEC / HDX (data.humdata.org/dataset/cod-ab-ecu), CC BY-IGO.")
@@ -1073,9 +1783,10 @@ def render_mapa_provincias(df: pd.DataFrame):
 def render_treemap_provincia_estado(df: pd.DataFrame):
     """Treemap jerarquico Provincia/Canton -> Estado del Proceso, con el
     conteo de procesos como area de cada rectangulo. El color se asigna
-    por Provincia/Canton (PALETA_VIVA, la misma paleta viva y ciclica que
-    ya usa `render_grafico_provincia`): cada provincia tiene un color
-    solido y distintivo, y sus estados hijos heredan ese mismo tono."""
+    por Provincia/Canton (PALETA_DATOS, familia de azules ciclica): cada
+    provincia tiene un tono distintivo, y sus estados hijos heredan ese
+    mismo tono -- a diferencia de ICONOS_ESTADO, aca el color identifica
+    la categoria (provincia), no la severidad del estado."""
     st.markdown("**Provincia/Cantón → Estado del Proceso (treemap)**")
     if df.empty:
         st.info("No hay datos para graficar con los filtros actuales.")
@@ -1094,7 +1805,7 @@ def render_treemap_provincia_estado(df: pd.DataFrame):
         path=["provincia_canton", "estado"],
         values="procesos",
         color="provincia_canton",
-        color_discrete_sequence=PALETA_VIVA,
+        color_discrete_sequence=PALETA_DATOS,
     )
     fig.update_traces(
         texttemplate="<b>%{label}</b><br>%{value} procesos",
@@ -1107,7 +1818,7 @@ def render_treemap_provincia_estado(df: pd.DataFrame):
         root_color=COLOR_LIENZO,
     )
     _aplicar_estilo_base(fig, altura=560)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    mostrar_grafico(fig, width="stretch", config={"displayModeBar": False})
 
 
 def render_treemap_presupuesto_tipo(df: pd.DataFrame):
@@ -1128,7 +1839,7 @@ def render_treemap_presupuesto_tipo(df: pd.DataFrame):
         path=["tipo_compra", "estado"],
         values="presupuesto_referencial",
         color="tipo_compra",
-        color_discrete_sequence=PALETA_VIVA,
+        color_discrete_sequence=PALETA_DATOS,
     )
     fig.update_traces(
         texttemplate="<b>%{label}</b><br>$ %{value:,.2f}",
@@ -1141,84 +1852,7 @@ def render_treemap_presupuesto_tipo(df: pd.DataFrame):
         root_color=COLOR_LIENZO,
     )
     _aplicar_estilo_base(fig, altura=560)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-
-@st.cache_data(show_spinner=False)
-def _construir_datos_treemap_items_cacheado(df_items: pd.DataFrame) -> pd.DataFrame:
-    """Wrapper cacheado (@st.cache_data) sobre `construir_datos_treemap_items`
-    (scripts/dashboard_analitico.py, sin Streamlit -- mismo motivo que
-    _recalcular_items_especificaciones_tecnicas): el treemap se vuelve a dibujar en cada
-    rerun del Dashboard Analítico sobre el mismo
-    st.session_state.especificaciones_tecnicas_items_df, asi que sin cache se reagruparia
-    identico varias veces por script run."""
-    return construir_datos_treemap_items(df_items)
-
-
-def render_treemap_items_especificaciones_tecnicas(df_items: pd.DataFrame) -> None:
-    """Treemap de la distribucion del presupuesto DENTRO del documento de
-    Especificaciones Técnicas actualmente cargado en el formulario (columna "Descripción"
-    para las cajas, "Valor Total" como area/tamaño de cada una -- el color
-    se asigna por Descripción, no por escala continua de Valor Total: ver
-    el comentario junto a root_color en el cuerpo de la funcion) -- a
-    diferencia de `render_treemap_presupuesto_tipo`, que agrega presupuesto
-    entre procesos ya guardados, este lee directo de
-    st.session_state.especificaciones_tecnicas_items_df (el mismo dataframe editable en
-    la seccion "Ítems y Presupuesto"), asi que refleja los items que se
-    esten cargando en ese momento, incluso antes de guardar el borrador.
-
-    Fondo transparente (paper_bgcolor/plot_bgcolor="rgba(0,0,0,0)") en vez
-    del lienzo blanco solido de `_aplicar_estilo_base`: la app fuerza tema
-    claro con fondo blanco (.streamlit/config.toml), asi que el resultado
-    visual es identico a un lienzo blanco, pero deja que el rectangulo se
-    integre con el fondo real del contenedor (tarjeta neumorfista) en vez
-    de dibujar un bloque blanco propio encima."""
-    st.markdown("**Presupuesto por Ítem del documento actual de Especificaciones Técnicas (treemap)**")
-    st.caption(
-        "Se arma en vivo con los ítems cargados ahora mismo en la sección "
-        "'Ítems y Presupuesto' de Especificaciones Técnicas (Municipalidad de Guayaquil) -- "
-        "no depende de haber guardado el borrador."
-    )
-    resumen = _construir_datos_treemap_items_cacheado(df_items)
-    if resumen.empty:
-        st.info(
-            "No hay ítems con Descripción y Valor Total cargados todavía en "
-            "Especificaciones Técnicas para graficar."
-        )
-        return
-
-    fig = px.treemap(
-        resumen,
-        path=["descripcion"],
-        values="valor_total",
-        color="descripcion",
-        color_discrete_sequence=PALETA_VIVA,
-    )
-    fig.update_traces(
-        texttemplate="<b>%{label}</b><br>$ %{value:,.2f}",
-        textfont=dict(size=13, color="#FFFFFF"),
-        marker=dict(line=dict(width=0)),  # sin bordes duros entre cajas
-        hovertemplate="<b>%{label}</b><br>Valor Total: $ %{value:,.2f}<extra></extra>",
-        # root_color es un no-op con color_continuous_scale (el tile raiz
-        # queda en el gris rgb(68,68,68) por defecto de Plotly pase lo que
-        # pase -- comportamiento documentado, no un bug de esta app), asi
-        # que el color se asigna por categoria (color_discrete_sequence,
-        # mismo patron que render_treemap_provincia_estado/
-        # render_treemap_presupuesto_tipo) en vez de por escala continua de
-        # Valor Total; el tamaño de cada caja SI sigue siendo Valor Total
-        # (values="valor_total"). Con color discreto, root_color si aplica.
-        root_color=COLOR_LIENZO,
-    )
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=COLOR_TEXTO_EJE),
-        margin=dict(l=10, r=10, t=20, b=10),
-        height=480,
-        showlegend=False,
-        separators=",.",
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    mostrar_grafico(fig, width="stretch", config={"displayModeBar": False})
 
 
 def render_gantt_procesos(df: pd.DataFrame, limite: int = 25):
@@ -1247,7 +1881,7 @@ def render_gantt_procesos(df: pd.DataFrame, limite: int = 25):
         x_end="fin",
         y="etiqueta",
         color="estado",
-        color_discrete_sequence=PALETA_VIVA,
+        color_discrete_sequence=PALETA_DATOS,
         custom_data=["dias_transcurridos", "entidad_contratante"],
     )
     fig.update_traces(
@@ -1261,14 +1895,34 @@ def render_gantt_procesos(df: pd.DataFrame, limite: int = 25):
     fig.update_xaxes(title=None, tickfont=dict(color=COLOR_TEXTO_EJE))
     _aplicar_estilo_base(fig, altura=max(360, 32 * len(datos)))
     fig.update_layout(showlegend=True, legend_title_text="Estado")
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    mostrar_grafico(fig, width="stretch", config={"displayModeBar": False})
 
 
 def _tabla_estatica(df_mostrar: pd.DataFrame) -> pd.DataFrame:
-    """Prepara un DataFrame para `st.table`: sin indice visible (imita el
-    `hide_index=True` que tenian estas tablas con `st.dataframe`)."""
+    """Prepara un DataFrame para `st.table`. st.table no tiene `hide_index`:
+    se reinicia el indice y se deja vacio ("") para que no muestre 0,1,2...;
+    la columna de indice resultante la oculta estilos_sercop.py."""
     tabla = df_mostrar.reset_index(drop=True).copy()
     tabla.index = [""] * len(tabla)
+    return tabla
+
+
+def _formatear_tabla_resumen(
+    df_resumen: pd.DataFrame,
+    enteros: tuple[str, ...] = (),
+    porcentajes: tuple[str, ...] = (),
+    montos: tuple[str, ...] = (),
+) -> pd.DataFrame:
+    """Formato de Ecuador consistente para las tablas de resumen: `enteros`
+    sin decimales ("1.234"), `porcentajes` con 1 decimal ("12,3%", valores ya
+    en escala 0-100) y `montos` como "$ 1.234.567,89". Devuelve una copia."""
+    tabla = df_resumen.copy()
+    for columna in enteros:
+        tabla[columna] = tabla[columna].map(lambda v: formatear_numero_ec(v, 0))
+    for columna in porcentajes:
+        tabla[columna] = tabla[columna].map(formatear_porcentaje_ec)
+    for columna in montos:
+        tabla[columna] = tabla[columna].map(formatear_moneda_ec)
     return tabla
 
 
@@ -1278,7 +1932,9 @@ def render_tablas_resumen(df: pd.DataFrame):
         st.info("No hay datos para resumir con los filtros actuales.")
         return
 
-    col1, col2 = st.columns(2)
+    # Las dos tablas van APILADAS a todo el ancho (no en columnas): a 1100 px cada una necesita ~640 px para que
+    # los montos no se partan ni haya scroll horizontal, y apiladas no queda hueco junto a la tabla corta.
+    contenedor = st.container()
 
     resumen_estado = (
         df.groupby("estado", as_index=False)
@@ -1286,15 +1942,30 @@ def render_tablas_resumen(df: pd.DataFrame):
         .rename(columns={"estado": "Estado", "Presupuesto_Total": "Presupuesto Total"})
         .sort_values("Presupuesto Total", ascending=False)
     )
-    resumen_estado["Presupuesto Total"] = resumen_estado["Presupuesto Total"].map(formatear_moneda_ec)
-    col1.caption("Por Estado del Proceso")
+    # "% Participación" = Procesos de ese estado / total de procesos de ESTA
+    # tabla (no del df completo, aunque hoy coinciden -- resumen_estado ya
+    # agrupa el 100% de `df`) -- se calcula antes de formatear, sobre el
+    # numero crudo.
+    total_procesos_estado = resumen_estado["Procesos"].sum()
+    resumen_estado.insert(
+        resumen_estado.columns.get_loc("Procesos") + 1,
+        "% Participación",
+        resumen_estado["Procesos"] / total_procesos_estado * 100,
+    )
+    resumen_estado = _formatear_tabla_resumen(
+        resumen_estado,
+        enteros=("Procesos",),
+        porcentajes=("% Participación",),
+        montos=("Presupuesto Total",),
+    )
+    contenedor.caption("Por Estado del Proceso")
     # st.table (HTML estatico) en vez de st.dataframe: el componente
     # interactivo (glide-data-grid) a veces queda en negro/vacio hasta que
     # el usuario hace clic dentro (bug conocido de ese componente con
     # grids canvas fuera de la vista inicial). Estas tablas son chicas y
     # no necesitan ordenar/redimensionar columnas, asi que el renderizado
     # estatico es un intercambio razonable -- ver tambien _tabla_estatica.
-    col1.table(_tabla_estatica(resumen_estado))
+    contenedor.table(_tabla_estatica(resumen_estado))
 
     resumen_tipo = (
         df.groupby("tipo_compra", as_index=False)
@@ -1302,53 +1973,102 @@ def render_tablas_resumen(df: pd.DataFrame):
         .rename(columns={"tipo_compra": "Tipo de Compra", "Presupuesto_Total": "Presupuesto Total"})
         .sort_values("Presupuesto Total", ascending=False)
     )
-    resumen_tipo["Presupuesto Total"] = resumen_tipo["Presupuesto Total"].map(formatear_moneda_ec)
-    col2.caption("Por Tipo de Compra (inferido del Objeto del Proceso)")
-    col2.table(_tabla_estatica(resumen_tipo))
+    resumen_tipo = _formatear_tabla_resumen(resumen_tipo, enteros=("Procesos",), montos=("Presupuesto Total",))
+    contenedor.caption("Por Tipo de Compra (inferido del Objeto del Proceso)")
+    contenedor.table(_tabla_estatica(resumen_tipo))
 
 
 def render_metricas_resumen(registros: list[dict], mostrar_monto_adjudicado: bool = False):
     """Tarjetas de resumen sobre los resultados actualmente filtrados.
 
     `mostrar_monto_adjudicado` (default False, mismo criterio que
-    render_tabla_con_color -- solo Municipalidad de Guayaquil) cambia como
-    se calcula "Valor Adjudicado Total": con el campo real
-    `monto_adjudicado` (leido de la pagina de detalle de cada proceso
-    durante el scraping, ver scripts/scrape_portal.py) en vez del proxy
-    historico -- suma del Presupuesto Referencial de los procesos cuyo
-    estado empieza por "Adjudicad...", de cuando no existia ningun campo
-    de valor final adjudicado en el esquema. Ese proxy se mantiene para la
-    pestaña general "Procesos" (todas las entidades): `monto_adjudicado`
-    hoy solo se completa de forma confiable para Guayaquil."""
+    render_tabla_con_color -- solo Municipalidad de Guayaquil) separa DOS
+    metricas distintas por nombre, no las unifica: con el campo True usa
+    el Monto Adjudicado real (`monto_adjudicado`, leido de la pagina de
+    detalle de cada proceso durante el scraping, ver
+    scripts/scrape_portal.py) y la tarjeta se llama "Valor Adjudicado
+    Total"; con False (pestaña general "Procesos", todas las entidades,
+    donde `monto_adjudicado` hoy no se completa de forma confiable) usa
+    el Presupuesto Referencial de los mismos 5 estados que
+    ESTADOS_VALOR_ADJUDICADO (ver render_kpis_dashboard) y la tarjeta se
+    llama "Presupuesto en Contratación" -- para no hacer pasar un
+    presupuesto por un valor adjudicado real."""
     presupuesto_total = sum(r.get("presupuesto_referencial") or 0 for r in registros)
 
     if mostrar_monto_adjudicado:
-        valor_adjudicado_total = sum(r.get("monto_adjudicado") or 0 for r in registros)
+        registros_valor_adjudicado = registros
+        campo_valor_adjudicado = "monto_adjudicado"
+        etiqueta_valor_adjudicado = "Valor Adjudicado Total"
         ayuda_valor_adjudicado = (
             "Suma del Monto Adjudicado real de cada proceso (leído de su página de "
             "detalle en el portal durante la importación)."
         )
     else:
-        valor_adjudicado_total = sum(
-            r.get("presupuesto_referencial") or 0
+        registros_valor_adjudicado = [
+            r
             for r in registros
-            if r.get("estado", "").strip().lower().startswith("adjudicad")
-        )
+            if _normalizar_texto_provincia(r.get("estado", "")).lower() in ESTADOS_VALOR_ADJUDICADO
+        ]
+        campo_valor_adjudicado = "presupuesto_referencial"
+        etiqueta_valor_adjudicado = "Presupuesto en Contratación"
         ayuda_valor_adjudicado = (
-            "Suma del Presupuesto Referencial de los procesos con estado "
-            "Adjudicada/Adjudicado. No hay un campo separado de valor final "
-            "adjudicado en los datos disponibles."
+            "Presupuesto Referencial (no el monto adjudicado real) de los procesos en "
+            "estado Adjudicada, Adjudicado - Registro de Contratos, Ejecución de "
+            "Contrato, Finalizada o En Recepción."
         )
+    valor_adjudicado_total = sum(r.get(campo_valor_adjudicado) or 0 for r in registros_valor_adjudicado)
 
-    col1, col2, col3 = st.columns(3)
-    render_kpi_card(col1, "Número de Procesos", formatear_numero_ec(len(registros)))
-    render_kpi_card(col2, "Presupuesto Total", formatear_moneda_ec(presupuesto_total))
-    render_kpi_card(
-        col3,
-        "Valor Adjudicado Total",
-        formatear_moneda_ec(valor_adjudicado_total),
-        ayuda=ayuda_valor_adjudicado,
+    # Sparkline + badge de variación de los dos KPIs monetarios (ver
+    # render_kpi_card_tendencia) -- misma logica que render_kpis_dashboard,
+    # a partir de la lista de registros (esta funcion no arma un DataFrame
+    # con "anio_mes" como si hace preparar_dataframe).
+
+    if mostrar_monto_adjudicado:
+        col1, col2, col3, col4 = st.columns(4)
+    else:
+        col1, col2, col3 = st.columns(3)
+    _render_trio_tendencia(
+        (col1, col2, col3),
+        df_base=_df_con_anio_mes(registros),
+        df_valor=_df_con_anio_mes(registros_valor_adjudicado),
+        campo_valor=campo_valor_adjudicado,
+        total_procesos=len(registros),
+        total_presupuesto=presupuesto_total,
+        total_valor=valor_adjudicado_total,
+        etiqueta_procesos="Número de Procesos",
+        etiqueta_presupuesto="Presupuesto Total",
+        etiqueta_valor=etiqueta_valor_adjudicado,
+        ayuda_valor=ayuda_valor_adjudicado,
     )
+
+    if mostrar_monto_adjudicado:
+        # "% de Ahorro General": mismos 5 estados que ESTADOS_VALOR_ADJUDICADO
+        # (ver render_kpis_dashboard), normalizados sin tildes/mayusculas
+        # con un set (no contains) para que "Ejecución de Contrato" calce
+        # igual que "ejecucion de contrato".
+        registros_ahorro = [
+            r
+            for r in registros
+            if _normalizar_texto_provincia(r.get("estado", "")).lower() in ESTADOS_VALOR_ADJUDICADO
+        ]
+        suma_adjudicado_ahorro = sum(r.get("monto_adjudicado") or 0 for r in registros_ahorro)
+        suma_presupuesto_ahorro = sum(r.get("presupuesto_referencial") or 0 for r in registros_ahorro)
+        # Signo invertido respecto a la resta literal (adjudicado/presupuesto - 1):
+        # un ahorro (adjudicado menor al presupuesto) debe verse positivo.
+        porcentaje_ahorro_general = (
+            (1 - suma_adjudicado_ahorro / suma_presupuesto_ahorro) * 100 if suma_presupuesto_ahorro else None
+        )
+        ayuda_ahorro = (
+            "1 - (Suma del Monto Adjudicado / Suma del Presupuesto Referencial sin IVA), "
+            "sobre los procesos en estado Adjudicada, Adjudicado - Registro de Contratos, "
+            "Ejecución de Contrato, Finalizada o En Recepción."
+        )
+        if porcentaje_ahorro_general is not None:
+            _inyectar_estilos_kpi_tendencia()
+            with col4, st.container(key="kpi_tendencia_ahorro_general"):
+                st.markdown(_tarjeta_ahorro_html(porcentaje_ahorro_general, ayuda_ahorro), unsafe_allow_html=True)
+        else:
+            render_kpi_card(col4, "% de Ahorro General", "N/A", ayuda=ayuda_ahorro)
 
 
 def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool = False):
@@ -1469,7 +2189,11 @@ def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool
         ),
         "Entidad Contratante": st.column_config.TextColumn("Entidad Contratante", width="medium"),
         "Estado del Proceso": st.column_config.TextColumn("Estado del Proceso", width="medium"),
-        "Explicación (Desierta)": st.column_config.TextColumn("Explicación (Desierta)", width="medium"),
+        "Explicación (Desierta)": st.column_config.TextColumn(
+            "Explicación (Desierta)",
+            width="large",
+            help="Explicación en lenguaje simple de por qué el proceso quedó desierto.",
+        ),
         "Objeto del Proceso": st.column_config.TextColumn("Objeto del Proceso", width="medium"),
         "Presupuesto Referencial (sin IVA)": st.column_config.TextColumn(
             "Presupuesto Referencial (sin IVA)", width="medium"
@@ -1477,7 +2201,7 @@ def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool
         "Monto Adjudicado": st.column_config.TextColumn("Monto Adjudicado", width="medium"),
         "% de Ahorro": st.column_config.TextColumn("% de Ahorro", width="small"),
         "Fecha de Publicación": st.column_config.DateColumn(
-            "Fecha de Publicación", format="YYYY-MM-DD"
+            "Fecha de Publicación", format="DD/MM/YYYY"
         ),
     }
 
@@ -1488,7 +2212,7 @@ def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool
     st.dataframe(
         df_visible,
         column_config=column_config,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=520,
     )
@@ -1500,144 +2224,64 @@ def render_tabla_con_color(registros: list[dict], mostrar_monto_adjudicado: bool
         mime="text/csv",
     )
 
-
-def _opciones_lote_id(registros: list[dict]) -> dict[str, str]:
-    """Etiqueta legible -> lote_id real, derivada de los registros ya
-    cargados (no hay un endpoint dedicado de lotes en la API). El lote_id
-    crudo es un timestamp ISO ("2026-07-28T11:07:02"): aca se convierte a
-    una fecha/hora legible en español y se le suma la palabra clave y el
-    numero de procesos de ese lote, para no forzar al usuario a copiar/
-    pegar el timestamp a mano. Ordenado del lote mas reciente al mas
-    antiguo."""
-    info_por_lote: dict[str, dict] = {}
-    for registro in registros:
-        lote = registro.get("lote_id")
-        if not lote:
-            continue
-        info = info_por_lote.setdefault(lote, {"palabra_clave": registro.get("palabra_clave") or "", "n": 0})
-        info["n"] += 1
-
-    opciones = {}
-    for lote in sorted(info_por_lote, reverse=True):
-        info = info_por_lote[lote]
-        try:
-            fecha_legible = datetime.fromisoformat(lote).strftime("%d/%m/%Y %H:%M")
-        except ValueError:
-            fecha_legible = lote
-        palabra_clave = info["palabra_clave"] or "sin palabra clave"
-        etiqueta = f"{fecha_legible} — {palabra_clave} ({info['n']} procesos)"
-        opciones[etiqueta] = lote
-    return opciones
-
-
-SIN_LOTE_ESPECIFICO = "(Ninguno — usar todo el rango de fechas)"
-
-
-def render_generador_reportes():
-    """Seccion 'Generación de Reportes Automáticos': arma el payload y
-    llama a POST /api/generar-reporte (src/api_reportes.py), que devuelve
-    el .docx generado por scripts/report_generator.py."""
-    st.subheader(":material/description: Generación de Reportes Automáticos")
-    st.caption(
-        "Genera un informe Word (.docx) con las capturas de pantalla y la "
-        "tabla de procesos de una o varias palabras clave."
-    )
-
-    if "reporte_docx_bytes" not in st.session_state:
-        st.session_state.reporte_docx_bytes = None
-
-    claves_filtro_reportes = [
-        "reportes_palabras_clave",
-        "reportes_fecha_inicio",
-        "reportes_fecha_fin",
-        "reportes_lote_id",
-    ]
-    if st.button(":material/filter_alt_off: Limpiar filtros", key="reportes_limpiar_filtros"):
-        for clave in claves_filtro_reportes:
-            st.session_state.pop(clave, None)
-        st.rerun()
-
-    with st.form("form_generar_reporte"):
-        palabras_clave_texto = st.text_input(
-            "Palabras clave (separadas por comas)",
-            placeholder="Ej: luminarias, repotenciacion",
-            key="reportes_palabras_clave",
-        )
-        col_inicio, col_fin = st.columns(2)
-        fecha_inicio = col_inicio.date_input("Fecha inicio", value=None, key="reportes_fecha_inicio")
-        fecha_fin = col_fin.date_input("Fecha fin", value=None, key="reportes_fecha_fin")
-
-        # "Lote ID" (el timestamp crudo de una ejecucion de scraping/
-        # importacion) es un dato de debugging, no algo que un usuario
-        # normal deba escribir a mano: se esconde en un expander colapsado
-        # y se elige por un selectbox con etiquetas legibles (fecha +
-        # palabra clave + cantidad de procesos), no el timestamp crudo.
-        with st.expander("Opciones avanzadas", expanded=False):
-            opciones_lote = _opciones_lote_id(obtener_contrataciones())
-            etiqueta_lote_sel = st.selectbox(
-                "Lote de carga específico (opcional)",
-                [SIN_LOTE_ESPECIFICO] + list(opciones_lote.keys()),
-                key="reportes_lote_id",
-                help=(
-                    "Si se indica, acota el reporte a una única ejecución de "
-                    "scraping/importación en vez de todo el rango de fechas."
-                ),
+    # Visor de detalle para procesos "Desierta": st.dataframe no envuelve
+    # texto multilinea dentro de la celda (solo trunca con "…", visible
+    # completo recien al pasar el cursor/hacer clic), asi que para un
+    # texto largo como "Explicación (Desierta)" esto es la forma robusta
+    # de leerlo completo -- ademas de junto a su fuente real
+    # (motivo_estado_raw, el texto oficial del portal). Mismo gate que la
+    # columna misma (mostrar_monto_adjudicado -- ver docstring de esta
+    # funcion): solo tiene sentido en la vista de Municipalidad de
+    # Guayaquil, donde motivo_estado_raw/explicacion_estado se completan.
+    if mostrar_monto_adjudicado:
+        desiertas = df[df["estado"].str.startswith("Desierta", na=False)] if "estado" in df.columns else df.iloc[0:0]
+        if not desiertas.empty:
+            st.markdown("**Ver explicación completa de un proceso Desierto**")
+            codigo_elegido = st.selectbox(
+                "Proceso", desiertas["codigo"], key="detalle_desierta_codigo", label_visibility="collapsed"
             )
-        enviado = st.form_submit_button(":material/edit_document: Generar Reporte Word", type="primary", use_container_width=True)
+            fila = desiertas[desiertas["codigo"] == codigo_elegido].iloc[0]
+            st.markdown(f"**Motivo oficial (portal):** {fila.get('motivo_estado_raw') or '—'}")
+            st.info(f"**Explicación:** {fila.get('explicacion_estado') or '—'}")
 
-    if enviado:
-        palabras_clave = [p.strip() for p in palabras_clave_texto.split(",") if p.strip()]
-        if not palabras_clave:
-            st.warning("Ingresa al menos una palabra clave.")
-        elif not fecha_inicio or not fecha_fin:
-            st.warning("Selecciona la fecha de inicio y la fecha de fin.")
-        else:
-            payload = {
-                "palabras_clave": palabras_clave,
-                "fecha_inicio": fecha_inicio.isoformat(),
-                "fecha_fin": fecha_fin.isoformat(),
-            }
-            if etiqueta_lote_sel != SIN_LOTE_ESPECIFICO:
-                payload["lote_id"] = opciones_lote[etiqueta_lote_sel]
 
-            with st.spinner("Generando reporte..."):
-                response = api_request(
-                    "POST", "/api/generar-reporte", json=payload, timeout=60
-                )
+def _insignia_participacion(cantidad: int, total: int) -> str | None:
+    """% de participacion de `cantidad` sobre `total` (1 decimal, ej.
+    '32,4 % del total'), para mostrar como insignia separada del valor principal en
+    la tarjeta -- ver render_contadores y el parametro `insignia` de
+    render_kpi_card/_tarjeta_kpi_html. None (sin insignia) si total es 0
+    (filtro sin resultados): mostrarla implicaria una division por
+    cero."""
+    if total <= 0:
+        return None
+    return f"{formatear_numero_ec(cantidad / total * 100, 1)} % del total"
 
-            if response is not None:
-                if response.status_code == 200:
-                    st.session_state.reporte_docx_bytes = response.content
-                    st.success("Reporte generado correctamente.")
-                elif response.status_code == 404:
-                    st.session_state.reporte_docx_bytes = None
-                    st.warning(
-                        response.json().get(
-                            "detail",
-                            "No se encontraron procesos para los filtros indicados.",
-                        )
-                    )
-                elif response.status_code == 422:
-                    st.session_state.reporte_docx_bytes = None
-                    errores = response.json().get("detail", [])
-                    mensaje = "; ".join(
-                        f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in errores
-                    )
-                    st.error(f"Datos inválidos: {mensaje}")
-                else:
-                    st.session_state.reporte_docx_bytes = None
-                    st.error(f"Error al generar el reporte: {response.status_code}")
 
-    if st.session_state.reporte_docx_bytes:
-        st.download_button(
-            label=":material/download: Descargar Reporte_SERCOP.docx",
-            data=st.session_state.reporte_docx_bytes,
-            file_name="Reporte_SERCOP.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
+def _render_tarjeta_estado(columna, estado_categoria: str, conteos: dict, total: int) -> None:
+    nombre_completo = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
+    # Etiqueta abreviada solo en la tarjeta (ej. "En ejecución"); el color
+    # sale del nombre completo, no del texto mostrado.
+    etiqueta_mostrar = ETIQUETA_TARJETA_ESTADO.get(nombre_completo, nombre_completo)
+    icono, _color = ICONOS_ESTADO.get(estado_categoria, (None, None))
+    cantidad = conteos[estado_categoria]
+    render_kpi_card(
+        columna,
+        etiqueta_mostrar,
+        formatear_numero_ec(cantidad),
+        icono=icono,
+        modificador=_clase_kpi_estado(nombre_completo),
+        insignia=_insignia_participacion(cantidad, total),
+    )
 
 
 def render_contadores(registros_totales: list[dict]):
+    """Revelacion progresiva: por defecto solo Total + ESTADOS_DESTACADOS (4
+    tarjetas), el resto de categorias queda dentro de un expander -- antes
+    se mostraban las ~12 categorias de una sola vez. Cada tarjeta de
+    estado (principales y las del expander) muestra ademas, como insignia
+    separada debajo del numero, su % de participacion sobre `total` --
+    ver _insignia_participacion. "Total" queda sin insignia (siempre
+    seria 100%, no aporta informacion)."""
     total = len(registros_totales)
     st.subheader("Contador de contrataciones")
 
@@ -1653,21 +2297,28 @@ def render_contadores(registros_totales: list[dict]):
     # resultado"): se agrupan aqui para que el desglose siempre sume el Total.
     conteos["Otros"] = total - sum(conteos.values())
 
-    etiquetas = ESTADOS + ["Otros"]
     cols = st.columns(4)
     # "Total" es el agregado, no un estado individual -- sin icono a
     # proposito (ver ICONOS_ESTADO).
-    render_kpi_card(cols[0], "Total", formatear_numero_ec(total))
-    for i, estado_categoria in enumerate(etiquetas, start=1):
-        etiqueta_mostrar = NOMBRES_ESTADO_COMPLETOS.get(estado_categoria, estado_categoria)
-        icono, color_icono = ICONOS_ESTADO.get(estado_categoria, (None, None))
-        render_kpi_card(
-            cols[i % 4],
-            etiqueta_mostrar,
-            formatear_numero_ec(conteos[estado_categoria]),
-            icono=icono,
-            color_icono=color_icono,
-        )
+    render_kpi_card(cols[0], "Total", formatear_numero_ec(total), pie="procesos registrados")
+    for i, estado_categoria in enumerate(ESTADOS_DESTACADOS, start=1):
+        _render_tarjeta_estado(cols[i], estado_categoria, conteos, total)
+
+    etiquetas_resto = [e for e in ESTADOS if e not in ESTADOS_DESTACADOS] + ["Otros"]
+    with st.expander("Ver todos los estados"):
+        cols_resto = st.columns(4)
+        for i, estado_categoria in enumerate(etiquetas_resto):
+            _render_tarjeta_estado(cols_resto[i % 4], estado_categoria, conteos, total)
+
+
+# Claves de session_state que reflejan datos de `contrataciones` fuera de
+# la cache de obtener_contrataciones (que ya se limpia aparte, ver
+# render_vaciar_base_datos): el filtro de clic sobre el grafico de estados
+# del Dashboard (render_dashboard/_render_detalles_dashboard) y los
+# resultados de busqueda de Procesos. Sin popear estas, tras un reset
+# completo el Dashboard podria seguir "filtrado" por un estado que ya no
+# tiene ningun proceso.
+CLAVES_SESSION_RESET_COMPLETO = ["filtro_estado_click", "grafico_estado_clic"]
 
 
 def render_vaciar_base_datos():
@@ -1680,43 +2331,131 @@ def render_vaciar_base_datos():
     # Contenedor con borde rojo (CSS scoped via st.container(key=...), que
     # Streamlit expone como la clase ".st-key-<key>") para que la zona de
     # peligro sea inconfundible a simple vista frente al resto de la UI
-    # (neutra) y frente a botones de accion normal (naranja, type="primary"
+    # (neutra) y frente a botones de accion normal (azul, type="primary"
     # sin este contenedor). El boton real de borrado solo aparece
-    # habilitado tras el checkbox de confirmacion.
+    # habilitado tras el checkbox + la palabra de confirmacion.
     with st.container(key="zona_peligro_vaciar_bd", border=True):
         if not st.session_state.confirmar_vaciado:
-            st.caption("Elimina **todos** los procesos de contratación de forma permanente.")
-            if st.button(":material/delete_forever: Vaciar Base de Datos", use_container_width=True):
+            # HTML propio y estatico (sin datos dinamicos): texto oscuro, no el gris tenue de st.caption.
+            st.markdown(
+                '<div class="aviso-peligro">Reset completo: elimina <strong>todos</strong> los procesos de contratación '
+                "importados, los reportes (.docx) generados en la pestaña Reportes y, si lo marcás, la carpeta de "
+                "capturas. <strong>De forma permanente.</strong></div>",
+                unsafe_allow_html=True,
+            )
+            # type="primary" + el CSS de abajo = boton ROJO (peligro), inconfundible frente a las acciones normales.
+            if st.button(
+                ":material/delete_forever: Borrar todos los procesos importados", type="primary", width="stretch"
+            ):
                 st.session_state.confirmar_vaciado = True
                 st.rerun()
         else:
             st.error(
-                "Esto eliminará **todos** los procesos de contratación de la base "
-                "de datos de forma permanente. Esta acción no se puede deshacer.",
+                "Esto eliminará **todos** los procesos de contratación importados y "
+                "todos los reportes (.docx) ya generados, de forma permanente. Antes "
+                "de borrar se guarda un respaldo automático en `respaldos/`, pero "
+                "esta acción no se puede deshacer desde la propia app.",
                 icon="⚠️",
             )
-            confirmado = st.checkbox("Sí, entiendo y quiero vaciar la base de datos por completo")
+
+            # Respaldo CSV descargable ANTES de la confirmacion final -- capa
+            # extra sobre el respaldo automático que hace el servidor (ver
+            # src/reset.py::_respaldar) en /respaldos, para tener tambien una
+            # copia local inmediata de los procesos.
+            registros_respaldo = obtener_contrataciones()
+            if registros_respaldo:
+                st.download_button(
+                    ":material/download: Descargar respaldo (CSV) antes de borrar",
+                    pd.DataFrame(registros_respaldo).to_csv(index=False).encode("utf-8-sig"),
+                    f"respaldo_procesos_{date.today().isoformat()}.csv",
+                    "text/csv",
+                    width="stretch",
+                )
+
+            borrar_capturas = st.checkbox(
+                "También borrar la carpeta de capturas (capturas/) -- son costosas "
+                "de regenerar, hay que volver a resolver el CAPTCHA del portal"
+            )
+            confirmado = st.checkbox("Entiendo que se borrará todo")
+            texto_borrar = st.text_input('Escribe BORRAR (en mayúsculas) para confirmar')
+            # Re-autenticacion: aunque haya sesion activa, la accion destructiva
+            # exige la clave de nuevo en este momento (queda en el log de auditoria).
+            clave_reautenticacion = st.text_input(
+                "Vuelve a escribir tu clave para confirmar", type="password", max_chars=200
+            )
+
+            puede_confirmar = confirmado and texto_borrar.strip() == "BORRAR" and bool(clave_reautenticacion)
 
             col_confirmar, col_cancelar = st.columns(2)
             if col_confirmar.button(
-                ":material/delete_forever: Confirmar vaciado definitivo",
+                ":material/delete_forever: Confirmar borrado definitivo",
                 type="primary",
-                disabled=not confirmado,
-                use_container_width=True,
+                disabled=not puede_confirmar,
+                width="stretch",
             ):
-                with st.spinner("Vaciando la base de datos..."):
-                    response = api_request("DELETE", "/api/todos")
+                if not confirmar_con_clave("reset_completo", clave_reautenticacion):
+                    return
+                with st.spinner("Borrando los procesos y reportes importados..."):
+                    response = reset_completo(borrar_capturas=borrar_capturas)
                 if response is None:
                     return
-                if response.status_code == 204:
+                if response.status_code == 200:
+                    resumen = response.json()
                     st.session_state.confirmar_vaciado = False
                     st.session_state.resultados = None
-                    st.session_state.mensaje_vaciado = ":material/check_circle: Base de datos vaciada por completo."
+                    for clave in CLAVES_SESSION_RESET_COMPLETO:
+                        st.session_state.pop(clave, None)
+                    st.session_state.mensaje_vaciado = (
+                        ":material/check_circle: "
+                        f"{resumen['procesos_eliminados']} procesos, "
+                        f"{resumen['reportes_eliminados']} registros de reportes y "
+                        f"{resumen['capturas_eliminadas']} archivos eliminados; "
+                        "Reporte_SERCOP.docx reiniciado (no hay un archivo fijo en "
+                        "disco -- el próximo se genera desde cero en la pestaña "
+                        f"Reportes). Respaldo guardado en `{resumen['respaldo_dir']}`"
+                        + (
+                            f" y subido a Cloud Storage (`{resumen['respaldo_remoto']}`)."
+                            if resumen.get("respaldo_remoto")
+                            else "."
+                        )
+                    )
+                    # obtener_contrataciones() esta cacheada 10 min (ver
+                    # services/sercop.py): sin este .clear(), el Dashboard
+                    # seguiria mostrando los procesos ya borrados hasta que
+                    # expire el TTL. st.cache_data.clear() de mas (todas las
+                    # cachadas de la app, incluidas las de Especificaciones
+                    # Técnicas que no dependen de esto) para cumplir el pedido
+                    # al pie de la letra -- no tiene costo real, solo hace que
+                    # esas otras se vuelvan a calcular en el proximo acceso.
+                    obtener_contrataciones.clear()
+                    st.cache_data.clear()
                     st.rerun()
+                elif response.status_code == 423:
+                    # Archivo bloqueado (Word abierto sobre un .docx de
+                    # salidas/reportes/, ver src/reset.py::ArchivoBloqueadoError):
+                    # la BD NO se toco cuando esto pasa, asi que dejamos
+                    # confirmar_vaciado en True para que el usuario pueda
+                    # cerrar el archivo y reintentar sin repetir el checkbox/BORRAR.
+                    mensaje_bloqueo = "El archivo está bloqueado por otro programa. Ciérralo e inténtalo de nuevo."
+                    try:
+                        detalle = response.json().get("detail")
+                    except (ValueError, AttributeError):
+                        detalle = None
+                    if isinstance(detalle, str) and detalle.strip():
+                        mensaje_bloqueo = limpiar_texto_libre(detalle, max_len=300)
+                    st.error(mensaje_bloqueo)
+                elif response.status_code == 503:
+                    # Cloud Run: el respaldo no pudo subirse a Cloud Storage y el
+                    # servidor NO borro nada (fail-closed, ver src/reset.py).
+                    st.error(
+                        "No se pudo guardar el respaldo en Cloud Storage, así que no se borró nada. "
+                        "Inténtalo de nuevo; si persiste, revisa los permisos del bucket."
+                    )
                 else:
-                    st.error(f"Error al vaciar la base de datos: {response.status_code}")
+                    logger.error("Fallo el reset completo: HTTP %s", response.status_code)
+                    st.error("No se pudieron borrar los procesos. Inténtalo de nuevo; si persiste, revisa el log del servidor.")
 
-            if col_cancelar.button("Cancelar", use_container_width=True):
+            if col_cancelar.button("Cancelar", width="stretch"):
                 st.session_state.confirmar_vaciado = False
                 st.rerun()
 
@@ -1731,9 +2470,19 @@ def render_vaciar_base_datos():
             border-color: {COLOR_PELIGRO} !important;
             color: #FFFFFF !important;
         }}
+        .st-key-zona_peligro_vaciar_bd .aviso-peligro {{
+            color: #7f1d1d;  /* ~9:1 sobre blanco (el gris de st.caption daba ~3:1) */
+            font-size: 0.9rem;
+            line-height: 1.5;
+            margin-bottom: 0.75rem;
+        }}
+        .st-key-zona_peligro_vaciar_bd button[kind="primary"]:focus-visible {{
+            outline: 3px solid #f5b5b5;
+            outline-offset: 2px;
+        }}
         .st-key-zona_peligro_vaciar_bd button[kind="primary"]:hover {{
-            background-color: #B91C1C !important;
-            border-color: #B91C1C !important;
+            background-color: #a62f2f !important;  /* COLOR_PELIGRO, mas oscuro para :hover */
+            border-color: #a62f2f !important;
         }}
         </style>
         """,
@@ -1790,6 +2539,96 @@ def _inyectar_precarga_fuente_iconos() -> None:
     )
 
 
+def _inyectar_estilos_complementarios() -> None:
+    """CSS que estilos_sercop.py (aplicar_estilos, la fuente de verdad del
+    aspecto) NO cubre. Todo lo que ese archivo ya define -- tarjetas KPI,
+    selectbox, botones, expander, alertas, pestañas, tablas, sidebar -- se
+    quito de aca para no duplicar ni contradecirlo (antes: bloque
+    neumorfista). Queda:
+    - animacion de entrada de las tarjetas KPI (fill-mode `backwards`, no
+      `both`: con `both` el transform final de la animacion pisaria el
+      hover translateY de estilos_sercop.py),
+    - campos de texto/fecha con el mismo aspecto que sus selectbox,
+    - min-height y estado deshabilitado de los botones,
+    - spinner de carga (pildora con pulso suave),
+    - colapso de los contenedores invisibles de Streamlit que solo llevan
+      <style> o un iframe de altura 0 (cada uno reservaba ~1rem de gap
+      vertical y sumaban un hueco sobre el titulo de la pagina),
+    - prefers-reduced-motion.
+    Se inyecta ANTES de aplicar_estilos() (ver main) para que este gane en
+    la cascada. Variables (--card, --line-strong, --r-md, --accent...) vienen
+    de estilos_sercop.py."""
+    st.markdown(
+        f"""
+        <style>
+        .sercop-kpi-card {{
+            animation: sercop-entrada 0.3s ease-out backwards;
+        }}
+        @keyframes sercop-entrada {{
+            from {{ opacity: 0; transform: translateY(6px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+
+        /* Campos de texto/fecha: los estiliza estilos_sercop.py (ver alli). */
+
+        [data-testid="stMain"] .stButton > button,
+        [data-testid="stMain"] .stDownloadButton > button {{
+            min-height: 2.5rem;
+        }}
+        [data-testid="stMain"] .stButton > button:disabled {{
+            opacity: 0.55;
+        }}
+
+        [data-testid="stSpinner"] {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.5rem 1rem;
+            border-radius: 999px;
+            background-color: var(--card);
+            border: 1px solid var(--line);
+            color: {COLOR_NEUTRO_TEXTO_SUAVE};
+            animation: sercop-pulso 1.6s ease-in-out infinite;
+        }}
+        @keyframes sercop-pulso {{
+            0%, 100% {{ opacity: 1; }}
+            50% {{ opacity: 0.6; }}
+        }}
+
+        /* Hueco sobre el titulo: contenedores que solo llevan CSS/iframe
+        invisible salen del flujo (position:absolute, NO display:none: el
+        iframe de altura 0 sigue ejecutando su script). */
+        [data-testid="stElementContainer"]:has(> [data-testid="stMarkdown"] [data-testid="stMarkdownContainer"] > style:only-child),
+        [data-testid="stElementContainer"]:has(> [data-testid="stMarkdown"] [data-testid="stMarkdownContainer"] > link:only-child),
+        [data-testid="stElementContainer"]:has(iframe[height="0"]),
+        /* Streamlit 1.67 renderiza st.iframe (antes components.html) como <iframe data-testid="stIFrame">
+        sin atributo height: en esta app TODOS los ejecutar_html_invisible son de altura 0
+        (traduccion y revelado del sidebar). Si algun dia se agrega uno visible,
+        este selector hay que acotarlo. */
+        [data-testid="stElementContainer"]:has(> iframe[data-testid="stIFrame"]),
+        /* Streamlit >= ~1.6x envuelve cada elemento en un stLayoutWrapper que
+        sigue en el flujo (y suma su gap) aunque su hijo salga de el. */
+        [data-testid="stLayoutWrapper"]:has(> [data-testid="stElementContainer"] [data-testid="stMarkdownContainer"] > style:only-child),
+        [data-testid="stLayoutWrapper"]:has(> [data-testid="stElementContainer"] [data-testid="stMarkdownContainer"] > link:only-child),
+        [data-testid="stLayoutWrapper"]:has(> [data-testid="stElementContainer"] iframe[height="0"]) {{
+            position: absolute;
+            height: 0;
+            margin: 0;
+            overflow: hidden;
+        }}
+
+        @media (prefers-reduced-motion: reduce) {{
+            .sercop-kpi-card,
+            [data-testid="stSpinner"] {{
+                animation: none;
+            }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _inyectar_estilos_sidebar() -> None:
     """CSS del panel lateral de navegacion: fondo oscuro, texto claro y
     el item activo resaltado (boton `type="primary"`, con acento de color
@@ -1799,9 +2638,9 @@ def _inyectar_estilos_sidebar() -> None:
     st.markdown(
         f"""
         <style>
-        [data-testid="stSidebar"] {{
-            background-color: {COLOR_SIDEBAR_FONDO};
-        }}
+        /* Fondo del sidebar, radio/borde/peso de los botones, hover y estado
+        activo: los define estilos_sercop.py (aplicar_estilos) -- no se
+        repiten aca. */
         [data-testid="stSidebar"] * {{
             color: {COLOR_SIDEBAR_TEXTO};
         }}
@@ -1822,66 +2661,31 @@ def _inyectar_estilos_sidebar() -> None:
             font-size: 1.3rem;
         }}
         .sercop-nav-label {{
-            font-size: 0.72rem;
             font-weight: 700;
-            letter-spacing: 0.09em;
             color: {COLOR_SIDEBAR_TEXTO} !important;
             text-transform: uppercase;
             border-bottom: 2px solid {COLOR_SIDEBAR_ACENTO};
             padding-bottom: 0.6rem;
             margin-bottom: 0.85rem;
         }}
-        [data-testid="stSidebar"] .stButton > button {{
+        [data-testid="stSidebar"] .stButton > button,
+        [data-testid="stSidebar"] .stLinkButton > a {{
             background-color: transparent;
-            border: none;
-            border-left: 3px solid transparent;
-            border-radius: 4px;
             text-align: left;
-            justify-content: flex-start;
             color: {COLOR_SIDEBAR_TEXTO} !important;
-            font-weight: 600;
-            letter-spacing: 0.02em;
             padding: 0.55rem 0.8rem;
             margin-bottom: 0.15rem;
-            box-shadow: none;
             width: 100%;
         }}
-        [data-testid="stSidebar"] .stButton > button:hover {{
-            background-color: rgba(255, 255, 255, 0.08);
+        [data-testid="stSidebar"] .stButton > button:hover,
+        [data-testid="stSidebar"] .stLinkButton > a:hover {{
             color: {COLOR_SIDEBAR_TEXTO_ACTIVO} !important;
         }}
-        [data-testid="stSidebar"] .stButton > button:focus:not(:active) {{
-            box-shadow: none;
-        }}
         [data-testid="stSidebar"] .stButton > button[kind="primary"] {{
-            background-color: rgba(255, 255, 255, 0.10);
-            border-left: 3px solid {COLOR_SIDEBAR_ACENTO};
             color: {COLOR_SIDEBAR_TEXTO_ACTIVO} !important;
         }}
         [data-testid="stSidebar"] hr {{
             border-color: rgba(255, 255, 255, 0.12);
-        }}
-        /* Item "Municipalidad de Guayaquil": logo institucional (fuera del
-        boton, en su propia columna) + boton, en vez de un icono Material
-        inline. padding-left en el contenedor replica el inset de 0.8rem
-        que los demas items tienen por el padding propio del boton, para
-        que el logo arranque a la misma distancia del borde que sus
-        iconos. padding-left reducido en ESTE boton evita que el gap de
-        las columnas se sume al padding del boton y separe demasiado el
-        logo del texto. */
-        .st-key-nav_municipalidad_guayaquil {{
-            padding-left: 0.8rem;
-            margin-bottom: 0.15rem;
-        }}
-        .st-key-nav_municipalidad_guayaquil [data-testid="stHorizontalBlock"] {{
-            align-items: center;
-        }}
-        .st-key-nav_municipalidad_guayaquil [data-testid="stColumn"]:last-child {{
-            margin-left: -1rem;
-        }}
-        .st-key-nav_municipalidad_guayaquil .stButton > button {{
-            padding-left: 0;
-            margin-bottom: 0;
         }}
         /* Mitiga el flash de texto crudo del nombre del icono (ej.
         "travel_explore") pegado a la etiqueta del boton en la carga
@@ -1940,26 +2744,7 @@ def _revelar_sidebar_cuando_cargue_fuente_iconos() -> None:
     muy viejos) -- la red de seguridad puramente CSS de
     _inyectar_estilos_sidebar cubre, ademas, el caso de que este script ni
     siquiera llegue a ejecutarse."""
-    components.html(
-        """
-        <script>
-        (function () {
-            function revelar() {
-                try {
-                    var el = window.parent.document.querySelector('[data-testid="stSidebarUserContent"]');
-                    if (el) { el.style.opacity = '1'; }
-                } catch (e) { /* nada mas que hacer desde aca */ }
-            }
-            try {
-                window.parent.document.fonts.ready.then(revelar);
-            } catch (e) {
-                revelar();
-            }
-        })();
-        </script>
-        """,
-        height=0,
-    )
+    ejecutar_script_invisible(SCRIPT_REVELAR_SIDEBAR)
 
 
 def render_navegacion_sidebar() -> None:
@@ -1972,33 +2757,25 @@ def render_navegacion_sidebar() -> None:
             activo = st.session_state.pagina_activa == nombre
             tipo_boton = "primary" if activo else "secondary"
 
-            if nombre == "Municipalidad de Guayaquil":
-                # Logo institucional real (600x210, apaisado) en vez de un
-                # emoji: se muestra a la izquierda del boton con una
-                # altura fija (LOGO_MUNICIPALIDAD_ALTO_PX) y el ancho
-                # calculado a partir de esa misma relacion de aspecto
-                # (st.image solo acepta fijar el ancho -- ver
-                # LOGO_MUNICIPALIDAD_ANCHO_PX), para que no se vea
-                # distorsionado. El container con key permite que
-                # _inyectar_estilos_sidebar (.st-key-nav_municipalidad_
-                # guayaquil) alinee el inset izquierdo y el padding del
-                # boton con los demas items del menu.
-                with st.container(key="nav_municipalidad_guayaquil"):
-                    col_icono, col_boton = st.columns([0.6, 4], gap="small", vertical_alignment="center")
-                    with col_icono:
-                        st.image(str(LOGO_MUNICIPALIDAD_PATH), width=LOGO_MUNICIPALIDAD_ANCHO_PX)
-                    with col_boton:
-                        if st.button(
-                            nombre.upper(), key=f"nav_{nombre}", use_container_width=True, type=tipo_boton,
-                        ):
-                            st.session_state.pagina_activa = nombre
-                            st.rerun()
+            if nombre == "Reportes":
+                # "Generación de Reportes Automáticos" es una pagina de
+                # Streamlit aparte (ver URL_PAGINA_REPORTES/pages/Reportes.py),
+                # no una vista de esta misma pagina: este item no cambia
+                # pagina_activa, abre esa URL relativa en una pestaña nueva
+                # (st.link_button abre en pestaña nueva por defecto). El
+                # estilo se iguala al resto de botones via CSS
+                # (.stLinkButton > a, ver _inyectar_estilos_sidebar).
+                st.link_button(
+                    f"{icono}  {nombre.upper()}",
+                    url=URL_PAGINA_REPORTES,
+                    width="stretch",
+                )
                 continue
 
             if st.button(
                 f"{icono}  {nombre.upper()}",
                 key=f"nav_{nombre}",
-                use_container_width=True,
+                width="stretch",
                 type=tipo_boton,
             ):
                 st.session_state.pagina_activa = nombre
@@ -2060,7 +2837,9 @@ def _iniciar_importacion_sercop(sin_monto_adjudicado: bool = False) -> None:
         # eso es lo que hacia que, intermitentemente, un clic en "Importar
         # desde Portal SERCOP" no cambiara de pagina.
         st.session_state.sercop_import_proceso = None
-        st.session_state.sercop_import_error_lanzamiento = str(exc)
+        # Seguridad: el detalle (rutas, mensajes del SO) va al log, no a la UI.
+        logger.exception("No se pudo lanzar la importacion SERCOP: %s", exc)
+        st.session_state.sercop_import_error_lanzamiento = "revisa que el entorno de Python esté disponible e inténtalo de nuevo."
         return
     st.session_state.sercop_import_error_lanzamiento = None
     st.session_state.sercop_import_proceso = proceso
@@ -2118,19 +2897,20 @@ def render_importacion_sercop_sidebar() -> None:
     with st.sidebar:
         st.divider()
         st.caption("IMPORTACIÓN SERCOP")
-        sin_monto_adjudicado = st.checkbox(
-            "Omitir Monto de Adjudicación (más rápido)",
-            key="sercop_sin_monto_adjudicado",
-            help=(
-                "Salta la visita al detalle de cada proceso -- la fase mas lenta de la "
-                "importacion -- a cambio de no traer el Monto de Adjudicacion."
-            ),
-        )
+        with st.expander(":material/settings: Opciones avanzadas"):
+            sin_monto_adjudicado = st.checkbox(
+                "Carga rápida (sin monto de adjudicación)",
+                key="sercop_sin_monto_adjudicado",
+                help=(
+                    "Salta la visita al detalle de cada proceso -- la fase mas lenta de la "
+                    "importacion -- a cambio de no traer el Monto de Adjudicacion."
+                ),
+            )
         activo = st.session_state.pagina_activa == PAGINA_IMPORTACION_SERCOP
         if st.button(
-            ":material/travel_explore: Importar desde Portal SERCOP",
+            ":material/refresh: Actualizar contrataciones",
             key="sercop_importar_boton",
-            use_container_width=True,
+            width="stretch",
             type="primary" if activo else "secondary",
         ):
             _iniciar_importacion_sercop(sin_monto_adjudicado=sin_monto_adjudicado)
@@ -2161,7 +2941,7 @@ def render_pagina_importacion_sercop() -> None:
         else:
             st.info(
                 "Todavía no se ha iniciado ninguna importación en esta sesión. Usa el botón "
-                "'Importar desde Portal SERCOP' del menú lateral, o el botón de abajo, para empezar."
+                "'Actualizar contrataciones' del menú lateral, o el botón de abajo, para empezar."
             )
         if st.button(":material/play_arrow: Iniciar importación", key="sercop_import_iniciar_pagina"):
             _iniciar_importacion_sercop(
@@ -2192,12 +2972,12 @@ def render_pagina_importacion_sercop() -> None:
         col_actualizar, col_detener = st.columns(2)
         with col_actualizar:
             if st.button(
-                ":material/refresh: Actualizar estado", key="sercop_import_actualizar", use_container_width=True
+                ":material/refresh: Actualizar estado", key="sercop_import_actualizar", width="stretch"
             ):
                 st.rerun()
         with col_detener:
             if st.button(
-                ":material/stop_circle: Detener proceso", key="sercop_import_detener", use_container_width=True
+                ":material/stop_circle: Detener proceso", key="sercop_import_detener", width="stretch"
             ):
                 # Marcar la cancelacion ANTES de terminar el proceso: es lo
                 # que le permite a esta misma vista, en el siguiente rerun,
@@ -2244,6 +3024,11 @@ def render_pagina_importacion_sercop() -> None:
                 f"{_formatear_duracion_es(transcurrido_s)}: {importados} registro(s) insertado(s) en "
                 f"{paginas} página(s) de resultados."
             )
+            # obtener_contrataciones() esta cacheada 10 min (ver
+            # services/sercop.py): sin este .clear(), el Dashboard/Procesos
+            # seguirian mostrando los datos previos a la importacion hasta
+            # que expire el TTL.
+            obtener_contrataciones.clear()
         else:
             st.warning(
                 ":material/info: La importación terminó sin errores, pero no se insertó ningún "
@@ -2284,53 +3069,105 @@ def render_pagina_importacion_sercop() -> None:
         st.rerun()
 
 
-def render_pagina_dashboard(registros_totales: list[dict]) -> None:
-    """Revelacion progresiva: por defecto solo se ven los contadores y los
-    3 KPIs principales (Procesos, Presupuesto, Adjudicado); el resto del
-    detalle (evolucion mensual, provincia, mapa, treemap, tablas resumen)
-    queda agrupado en pestañas, para no abrumar con todo el dashboard de
-    una sola vez."""
-    render_contadores(registros_totales)
+def _render_detalles_dashboard(df_filtrado: pd.DataFrame) -> None:
+    """Bloque "detalles" de render_dashboard: los 8 graficos/tablas de
+    detalle (incluido el grafico mensual, dentro del grupo "Tiempo") se
+    agrupan en 3 pestañas tematicas (Resúmenes/Territorio/Tiempo) en vez de
+    8 pestañas sueltas al mismo nivel -- cada grupo abre sus propias
+    sub-pestañas anidadas (revelacion progresiva)."""
+    grupo_resumenes, grupo_territorio, grupo_tiempo = st.tabs(
+        [":material/receipt_long: Resúmenes", ":material/public: Territorio", ":material/schedule: Tiempo"]
+    )
+
+    with grupo_resumenes:
+        tab_resumen, tab_presupuesto, tab_items, tab_comparativa = st.tabs(
+            [
+                ":material/receipt_long: Por estado y tipo de compra",
+                ":material/payments: Presupuesto por Tipo (Treemap)",
+                ":material/inventory_2: Presupuesto por Ítem (Especificaciones Técnicas)",
+                ":material/leaderboard: Comparativa (ranking)",
+            ]
+        )
+        with tab_resumen:
+            render_tablas_resumen(df_filtrado)
+        with tab_presupuesto:
+            render_treemap_presupuesto_tipo(df_filtrado)
+        with tab_items:
+            render_treemap_items_especificaciones_tecnicas(
+                st.session_state.get("especificaciones_tecnicas_items_df", _dataframe_items_especificaciones_tecnicas_vacio())
+            )
+        with tab_comparativa:
+            render_grafico_comparativo(df_filtrado)
+
+    with grupo_territorio:
+        tab_provincia, tab_treemap = st.tabs(
+            [
+                ":material/location_on: Detalle por provincia",
+                ":material/account_tree: Provincia → Estado",
+            ]
+        )
+        with tab_provincia:
+            render_grafico_provincia(df_filtrado)
+            render_mapa_provincias(df_filtrado)
+        with tab_treemap:
+            render_treemap_provincia_estado(df_filtrado)
+
+    with grupo_tiempo:
+        tab_mensual, tab_gantt = st.tabs(
+            [
+                ":material/calendar_month: Detalle por mes",
+                ":material/timeline: Cronograma de Procesos (Gantt)",
+            ]
+        )
+        with tab_mensual:
+            render_grafico_mensual(df_filtrado)
+        with tab_gantt:
+            render_gantt_procesos(df_filtrado)
+
+
+def render_dashboard(registros_totales: list[dict], titulo: str, key_prefix: str = "") -> None:
+    """Dashboard reutilizable: titulo -> contador de estados -> filtros
+    (Año/Mes/Provincia/Entidad Contratante) -> fila de KPIs -> detalles en
+    pestañas (ver _render_detalles_dashboard). Ninguna logica de
+    agregacion vive aca, solo orquesta el render sobre lo que le pasen.
+
+    Hasta P0-2 del plan de mejoras existia un segundo caller ("Dashboard
+    Municipio de Guayaquil", un item de menu aparte que pre-filtraba los
+    registros a esa entidad antes de llamar aca) -- se elimino porque el
+    filtro de Entidad Contratante agregado a render_filtros_dashboard logra
+    la misma vista sin duplicar pagina ni logica de menu. `key_prefix`
+    queda igual por si en el futuro vuelve a haber mas de un caller (ver
+    render_filtros_dashboard, que lo usa para no compartir keys de
+    session_state entre instancias).
+
+    El contador de estados se ve primero (antes de los selectores de
+    filtro, que van debajo del divider), pero DEBE reflejar el filtro de
+    Año/Mes/Provincia/Entidad igual que la fila de KPIs y el detalle -- por
+    eso se reserva su lugar con `st.container()` (contenedor_contadores) y
+    recien se llena mas abajo, ya con `df_filtrado` en mano: Streamlit
+    inserta el contenido de un container en la posicion donde se creo el
+    container, no donde se llena, asi que el orden visual no cambia."""
+    st.header(titulo)
+    contenedor_contadores = st.container()
     st.divider()
-    st.header(":material/analytics: Dashboard Analítico")
+
     df_totales = preparar_dataframe(registros_totales)
-    df_filtrado = render_filtros_dashboard(df_totales)
+    df_filtrado = render_filtros_dashboard(df_totales, key_prefix=key_prefix)
+
+    with contenedor_contadores:
+        render_contadores(df_filtrado.to_dict("records"))
+
     render_kpis_dashboard(df_filtrado)
 
-    (
-        tab_mensual, tab_provincia, tab_treemap, tab_resumen, tab_presupuesto,
-        tab_items, tab_gantt, tab_comparativa,
-    ) = st.tabs(
-        [
-            ":material/calendar_month: Ver detalle por mes",
-            ":material/location_on: Ver detalle por provincia",
-            ":material/account_tree: Ver Provincia → Estado",
-            ":material/receipt_long: Ver resumen por estado y tipo de compra",
-            ":material/payments: Presupuesto por Tipo (Treemap)",
-            ":material/inventory_2: Presupuesto por Ítem (Especificaciones Técnicas)",
-            ":material/timeline: Cronograma de Procesos (Gantt)",
-            ":material/leaderboard: Comparativa (ranking)",
-        ]
+    _render_detalles_dashboard(df_filtrado)
+
+
+def render_pagina_dashboard(registros_totales: list[dict]) -> None:
+    render_dashboard(
+        registros_totales,
+        titulo=":material/analytics: Dashboard Analítico",
+        key_prefix="global_",
     )
-    with tab_mensual:
-        render_grafico_mensual(df_filtrado)
-    with tab_provincia:
-        render_grafico_provincia(df_filtrado)
-        render_mapa_provincias(df_filtrado)
-    with tab_treemap:
-        render_treemap_provincia_estado(df_filtrado)
-    with tab_resumen:
-        render_tablas_resumen(df_filtrado)
-    with tab_presupuesto:
-        render_treemap_presupuesto_tipo(df_filtrado)
-    with tab_items:
-        render_treemap_items_especificaciones_tecnicas(
-            st.session_state.get("especificaciones_tecnicas_items_df", _dataframe_items_especificaciones_tecnicas_vacio())
-        )
-    with tab_gantt:
-        render_gantt_procesos(df_filtrado)
-    with tab_comparativa:
-        render_grafico_comparativo(df_filtrado)
 
 
 CLAVES_FILTRO_PROCESOS = [
@@ -2348,17 +3185,41 @@ def render_pagina_procesos(registros_totales: list[dict]) -> None:
     with col_estado:
         estado_filtro = st.selectbox("Estado del Proceso", ["(Todos)"] + ESTADOS, key="procesos_estado")
     with col_inicio:
-        fecha_inicio = st.date_input("Fecha inicio", value=None, key="procesos_fecha_inicio")
+        fecha_inicio = st.date_input(
+            "Fecha inicio", value=None, key="procesos_fecha_inicio", format=FORMATO_FECHA_UI
+        )
     with col_fin:
-        fecha_fin = st.date_input("Fecha fin", value=None, key="procesos_fecha_fin")
+        fecha_fin = st.date_input("Fecha fin", value=None, key="procesos_fecha_fin", format=FORMATO_FECHA_UI)
     with col_palabra:
         palabra_clave_filtro = st.text_input(
-            "Palabra clave", placeholder="Ej: luminarias", key="procesos_palabra_clave"
+            "Palabra clave",
+            placeholder="Ej: luminarias",
+            key="procesos_palabra_clave",
+            max_chars=MAX_LARGO_PALABRA_CLAVE,
+            help="Se ignoran tildes y mayúsculas. Máximo 100 caracteres.",
         )
+    # Seguridad: el texto se sanea antes de salir hacia la API (Unicode NFC,
+    # sin caracteres de control/ancho cero, espacios colapsados). Se conservan
+    # ñ y tildes. Ver scripts/formato_ec.py::limpiar_texto_libre.
+    palabra_clave_filtro = limpiar_texto_libre(palabra_clave_filtro, max_len=MAX_LARGO_PALABRA_CLAVE)
+
+    rango_fechas_invalido = bool(fecha_inicio and fecha_fin and fecha_inicio > fecha_fin)
+    if rango_fechas_invalido:
+        st.warning(":material/event_busy: La fecha de inicio no puede ser posterior a la fecha fin.")
 
     col_buscar, col_limpiar, _ = st.columns([1, 1, 4])
-    buscar = col_buscar.button(":material/search: Buscar", type="primary", use_container_width=True)
-    limpiar = col_limpiar.button(":material/filter_alt_off: Limpiar filtros", use_container_width=True)
+    buscar = col_buscar.button(
+        ":material/search: Buscar",
+        type="primary",
+        width="stretch",
+        disabled=rango_fechas_invalido,
+    )
+    with col_limpiar:
+        boton_limpiar_filtros(
+            CLAVES_FILTRO_PROCESOS,
+            key="procesos_limpiar_filtros",
+            on_clear=lambda: st.session_state.update(resultados=None),
+        )
 
     if buscar:
         with st.spinner("Buscando procesos..."):
@@ -2368,11 +3229,6 @@ def render_pagina_procesos(registros_totales: list[dict]) -> None:
                 fecha_fin=fecha_fin,
                 palabra_clave=palabra_clave_filtro or None,
             )
-    if limpiar:
-        st.session_state.resultados = None
-        for clave in CLAVES_FILTRO_PROCESOS:
-            st.session_state.pop(clave, None)
-        st.rerun()
 
     st.divider()
     registros_mostrar = (
@@ -2382,11 +3238,6 @@ def render_pagina_procesos(registros_totales: list[dict]) -> None:
     )
     render_metricas_resumen(registros_mostrar)
     render_tabla_con_color(registros_mostrar)
-
-
-def render_pagina_reportes() -> None:
-    st.header(":material/description: Reportes")
-    render_generador_reportes()
 
 
 def filtrar_por_entidad(registros: list[dict], entidad: str) -> list[dict]:
@@ -2399,1945 +3250,24 @@ def filtrar_por_entidad(registros: list[dict], entidad: str) -> list[dict]:
     return [r for r in registros if _normalizar_texto_provincia(r.get("entidad_contratante")) == clave]
 
 
+def _anios_disponibles(registros: list[dict]) -> list[str]:
+    """Años presentes en fecha_publicacion (primeros 4 caracteres), sin
+    duplicados y ordenados del mas reciente al mas antiguo."""
+    anios = {(r.get("fecha_publicacion") or "")[:4] for r in registros if (r.get("fecha_publicacion") or "")[:4]}
+    return sorted(anios, reverse=True)
+
+
+def _filtrar_por_anio(registros: list[dict], anio: str | None) -> list[dict]:
+    """Filtra por año de fecha_publicacion. anio=None devuelve todo."""
+    if anio is None:
+        return registros
+    return [r for r in registros if (r.get("fecha_publicacion") or "")[:4] == anio]
+
+
 def _slug_nombre_archivo(texto: str) -> str:
     clave = _normalizar_texto_provincia(texto)  # sin tildes, mayusculas
     slug = re.sub(r"[^A-Za-z0-9]+", "_", clave).strip("_")
     return slug[:80] or "SinTitulo"
-
-
-COLUMNAS_ITEMS_ESPECIFICACIONES_TECNICAS = [
-    "Ítem",
-    "Tipo",
-    "Descripción",
-    "Unidad de Medida",
-    "Cantidad Solicitada",
-    "Valor Unitario",
-    "Valor Total",
-    "Descripción CPC",
-    "Número CPC",
-]
-
-
-CATALOGO_CPC_PATH = Path(__file__).resolve().parent / "data" / "cpc_n9.csv"
-
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def _cargar_catalogo_cpc() -> dict[str, str]:
-    """Catalogo oficial 'Listado de CPC N9' (SERCOP, ~30.000 codigos):
-    codigo -> descripcion. Se carga UNA sola vez cada 24h (cache_data con
-    ttl=86400 -- el CSV es un catalogo fijo, no cambia entre reruns) y
-    se expone como dict, no como DataFrame, para que la busqueda del
-    autocompletado sea O(1) por codigo en vez de recorrer/filtrar
-    30.000 filas en cada guardado. show_spinner=False porque se llama
-    dentro del boton "Guardar Ítems", a mitad de la seccion "Ítems y
-    Presupuesto" ya renderizada -- un spinner ahi se veria como un salto
-    visual, no como una carga inicial de pagina."""
-    df = pd.read_csv(CATALOGO_CPC_PATH, dtype=str)
-    return dict(zip(df["codigo_cpc"].str.strip(), df["descripcion_cpc"].str.strip()))
-
-
-COLUMNAS_VISIBLES_ITEMS_ESPECIFICACIONES_TECNICAS = [
-    "Ítem",
-    "Tipo",
-    "Descripción",
-    "Unidad de Medida",
-    "Cantidad Solicitada",
-    "Valor Unitario",
-    "Valor Total",
-    "Descripción CPC",
-    "Número CPC",
-]
-
-
-def _asignar_fila_ids_especificaciones_tecnicas(df: pd.DataFrame) -> pd.DataFrame:
-    """Asigna un '_fila_id' unico y estable (via un contador en
-    session_state) a toda fila que todavia no lo tenga -- en la practica,
-    las filas nuevas que el usuario acaba de agregar en el data_editor.
-    Este id persiste entre guardados y es la clave real para reconocer
-    "la misma fila" de un guardado al siguiente: la POSICION (indice) no
-    sirve para eso, porque num_rows="dynamic" permite borrar una fila de
-    la mitad de la tabla, lo que corre de posicion a todas las filas
-    siguientes sin que hayan cambiado en nada."""
-    df = df.reset_index(drop=True).copy()
-    if "_fila_id" not in df.columns:
-        df["_fila_id"] = pd.array([pd.NA] * len(df), dtype="Int64")
-    for indice in df.index[df["_fila_id"].isna()]:
-        st.session_state.especificaciones_tecnicas_siguiente_fila_id += 1
-        df.at[indice, "_fila_id"] = st.session_state.especificaciones_tecnicas_siguiente_fila_id
-    return df
-
-
-def _autocompletar_descripcion_cpc(
-    df_nuevo: pd.DataFrame, df_anterior: pd.DataFrame, catalogo: dict[str, str]
-) -> tuple[pd.DataFrame, list[str]]:
-    """Autocompleta 'Descripción CPC' fila por fila cuando el 'Número CPC'
-    de ESA fila (identificada por su '_fila_id' estable, no por su
-    posicion -- ver _asignar_fila_ids_especificaciones_tecnicas) cambio respecto al guardado
-    anterior, y el codigo se encuentra en el catalogo oficial. Si el
-    codigo no cambio, se respeta lo que el usuario haya dejado en
-    'Descripción CPC' (no se sobreescribe). Si el codigo cambio pero NO
-    esta en el catalogo, tampoco se sobreescribe -- se reporta como no
-    encontrado para mostrar una advertencia. df_nuevo debe venir ya
-    procesado por _asignar_fila_ids_especificaciones_tecnicas (toda fila, incluidas las
-    nuevas, ya tiene un '_fila_id')."""
-    df_nuevo = df_nuevo.reset_index(drop=True).copy()
-    codigo_previo_por_fila_id: dict[int, str] = {}
-    if "_fila_id" in df_anterior.columns and "Número CPC" in df_anterior.columns:
-        for _, fila in df_anterior.iterrows():
-            fila_id = fila.get("_fila_id")
-            if pd.notna(fila_id):
-                codigo_previo_por_fila_id[int(fila_id)] = str(fila.get("Número CPC") or "").strip()
-
-    no_encontrados = []
-    for indice, fila in df_nuevo.iterrows():
-        codigo_nuevo = str(fila.get("Número CPC") or "").strip()
-        if not codigo_nuevo:
-            continue
-        fila_id = fila.get("_fila_id")
-        codigo_previo = codigo_previo_por_fila_id.get(int(fila_id), "") if pd.notna(fila_id) else ""
-        if codigo_nuevo == codigo_previo:
-            continue
-        if codigo_nuevo in catalogo:
-            df_nuevo.at[indice, "Descripción CPC"] = catalogo[codigo_nuevo]
-        else:
-            no_encontrados.append(codigo_nuevo)
-    return df_nuevo, no_encontrados
-
-
-def _dataframe_items_especificaciones_tecnicas_vacio() -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "Ítem": pd.Series(dtype="Int64"),
-            "Tipo": pd.Series(dtype="str"),
-            "Descripción": pd.Series(dtype="str"),
-            "Unidad de Medida": pd.Series(dtype="str"),
-            "Cantidad Solicitada": pd.Series(dtype="float"),
-            "Valor Unitario": pd.Series(dtype="float"),
-            "Valor Total": pd.Series(dtype="float"),
-            "Descripción CPC": pd.Series(dtype="str"),
-            "Número CPC": pd.Series(dtype="str"),
-            "_fila_id": pd.Series(dtype="Int64"),
-        }
-    )
-
-
-def _dataframe_cpc_especificaciones_tecnicas_vacio() -> pd.DataFrame:
-    return pd.DataFrame({"Código CPC": pd.Series(dtype="str"), "Descripción del CPC": pd.Series(dtype="str")})
-
-
-@st.cache_data(show_spinner=False)
-def _recalcular_items_especificaciones_tecnicas(df: pd.DataFrame) -> pd.DataFrame:
-    """Recalcula Item # (posicion) y Valor Total = Cantidad Solicitada *
-    Valor Unitario tras cada edicion -- ninguna de las dos columnas es
-    editable directamente por el usuario (ver column_config en
-    render_formularios_y_registro). "Tipo" tambien se rellena con "Bien"
-    por defecto para filas nuevas (el selector Bien/Servicio es POR
-    ITEM, via SelectboxColumn, no un unico selector global).
-
-    Cacheada (@st.cache_data): funcion pura (mismo df de entrada ->
-    mismo resultado) llamada varias veces por rerun (vista previa,
-    seccion "Ítems y Presupuesto", Word) sobre el mismo
-    session_state.especificaciones_tecnicas_items_df -- sin cache se
-    recalcularia identico varias veces por script run."""
-    df = df.reset_index(drop=True).copy()
-    df["Ítem"] = df.index + 1
-    if "Tipo" not in df.columns:
-        df["Tipo"] = "Bien"
-    df["Tipo"] = df["Tipo"].fillna("Bien")
-    cantidad = pd.to_numeric(df["Cantidad Solicitada"], errors="coerce").fillna(0)
-    valor_unitario = pd.to_numeric(df["Valor Unitario"], errors="coerce").fillna(0)
-    df["Valor Total"] = (cantidad * valor_unitario).round(2)
-    return df
-
-
-@st.cache_data(show_spinner=False)
-def _sumar_valor_total_items_especificaciones_tecnicas(df_items: pd.DataFrame) -> float:
-    """Suma la columna "Valor Total" (ya recalculada por
-    _recalcular_items_especificaciones_tecnicas) de todos los items de Especificaciones Técnicas. Es la unica
-    fuente de la Sumatoria Total Y del Presupuesto Referencial (bloqueado),
-    ambos mostrados en la seccion "Ítems y Presupuesto" -- ambos leen de
-    aqui para no poder desincronizarse.
-
-    Cacheada (@st.cache_data): funcion pura, misma razon que
-    _recalcular_items_especificaciones_tecnicas -- se llama varias veces por rerun
-    (Sumatoria Total, Presupuesto Referencial autocompletado, Word/Vista
-    Previa) sobre el mismo dataframe."""
-    if df_items.empty or "Valor Total" not in df_items.columns:
-        return 0.0
-    return float(df_items["Valor Total"].sum())
-
-
-def _formatear_numero_especificaciones_tecnicas(valor) -> str:
-    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
-        return ""
-    return formatear_numero_ec(valor)
-
-
-def _formatear_moneda_especificaciones_tecnicas(valor) -> str:
-    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
-        return ""
-    return formatear_numero_ec(valor, decimales=2)
-
-
-def _specs_vacias_especificaciones_tecnicas(tipo: str) -> dict:
-    if tipo == "Servicio":
-        return {
-            "procedimiento": "",
-            "herramientas_equipo": "",
-            "normas_aplicables": "",
-            "medicion": "",
-            "forma_pago": "",
-            "obligaciones": "",
-        }
-    return {"subtitulo_specs": "MODELO DE EJEMPLO", "descripcion_material": "", "parametros": []}
-
-
-def _recolectar_datos_especificaciones_tecnicas() -> dict:
-    """Arma el mismo diccionario `datos` que consume generar_especificaciones_tecnicas(), a
-    partir de TODO lo que el usuario ya cargo en session_state. Se usa
-    tanto para el boton de descarga en Word como para la Vista Previa,
-    para garantizar que ambos muestren exactamente lo mismo."""
-    df_items = _recalcular_items_especificaciones_tecnicas(st.session_state.especificaciones_tecnicas_items_df)
-    specs = st.session_state.especificaciones_tecnicas_specs
-    items_datos = []
-    for indice, fila in df_items.reset_index(drop=True).iterrows():
-        tipo_fila = fila.get("Tipo") or "Bien"
-        item = {
-            "tipo": tipo_fila,
-            "descripcion": str(fila.get("Descripción") or ""),
-            "unidad_medida": str(fila.get("Unidad de Medida") or ""),
-            "cantidad_solicitada": _formatear_numero_especificaciones_tecnicas(fila.get("Cantidad Solicitada")),
-            "valor_unitario": _formatear_moneda_especificaciones_tecnicas(fila.get("Valor Unitario")),
-            "valor_total": _formatear_moneda_especificaciones_tecnicas(fila.get("Valor Total")),
-            "descripcion_cpc": str(fila.get("Descripción CPC") or ""),
-            "numero_cpc": str(fila.get("Número CPC") or ""),
-        }
-        spec = specs[indice] if indice < len(specs) else _specs_vacias_especificaciones_tecnicas(tipo_fila)
-        item.update(spec)
-        items_datos.append(item)
-
-    df_cpc = st.session_state.especificaciones_tecnicas_cpc_df
-    requerimientos_cpc = [
-        {"cpc": str(fila.get("Código CPC") or ""), "descripcion": str(fila.get("Descripción del CPC") or "")}
-        for _, fila in df_cpc.iterrows()
-    ]
-
-    return {
-        "objeto_contratacion": st.session_state.get("especificaciones_tecnicas_objeto_contratacion", ""),
-        "items": items_datos,
-        # No se lee de session_state["especificaciones_tecnicas_presupuesto"]: ese campo ahora
-        # es de solo lectura y se autocompleta con esta misma suma (ver
-        # seccion "Ítems y Presupuesto"), pero calcularlo aqui de nuevo
-        # evita depender de que esa seccion ya se haya renderizado en esta
-        # sesion -- el Word/Vista Previa siempre reflejan la suma actual
-        # de los items, se haya visitado esa seccion o no.
-        "presupuesto_referencial": formatear_moneda_ec(_sumar_valor_total_items_especificaciones_tecnicas(df_items)),
-        "requerimientos_cpc": requerimientos_cpc,
-        "codigo_cpc_mayor_peso": st.session_state.get("especificaciones_tecnicas_codigo_cpc_mayor_peso", ""),
-        "alcance": st.session_state.get("especificaciones_tecnicas_alcance", ""),
-        "plazo_ejecucion": st.session_state.get("especificaciones_tecnicas_plazo", ""),
-        "personal_tecnico_principal": st.session_state.get("especificaciones_tecnicas_personal_tecnico_principal", ""),
-        "personal_tecnico_auxiliar": st.session_state.get("especificaciones_tecnicas_personal_tecnico_auxiliar", ""),
-        "equipo_trabajo": st.session_state.get("especificaciones_tecnicas_equipo_trabajo", ""),
-        "recursos": st.session_state.get("especificaciones_tecnicas_recursos", ""),
-        "forma_condiciones_pago": st.session_state.get("especificaciones_tecnicas_forma_pago", ""),
-        "lugar_direccion": st.session_state.get("especificaciones_tecnicas_lugar", ""),
-        "obligaciones_entidad": st.session_state.get("especificaciones_tecnicas_obligaciones_entidad", ""),
-        "obligaciones_contratista": st.session_state.get("especificaciones_tecnicas_obligaciones_contratista", ""),
-        "garantias_tecnicas": st.session_state.get("especificaciones_tecnicas_garantias_tecnicas", ""),
-        "monto_garantia_responsabilidad_civil": _formatear_moneda_especificaciones_tecnicas(
-            st.session_state.get("especificaciones_tecnicas_monto_garantia_rc")
-        ),
-        "vigencia_oferta_dias": _formatear_numero_especificaciones_tecnicas(st.session_state.get("especificaciones_tecnicas_vigencia_oferta")),
-        "tipo_adjudicacion": st.session_state.get("especificaciones_tecnicas_tipo_adjudicacion", ""),
-        "analisis_estrategia_html": st.session_state.get("especificaciones_tecnicas_analisis_estrategia_html", ""),
-        "administrador_nombre": st.session_state.get("especificaciones_tecnicas_admin_nombre", ""),
-        "administrador_cargo": st.session_state.get("especificaciones_tecnicas_admin_cargo", ""),
-        "administrador_cedula": st.session_state.get("especificaciones_tecnicas_admin_cedula", ""),
-        "tecnico_no_interviene_nombre": st.session_state.get("especificaciones_tecnicas_tecnico_nombre", ""),
-        "tecnico_no_interviene_cargo": st.session_state.get("especificaciones_tecnicas_tecnico_cargo", ""),
-        "tecnico_no_interviene_correo": st.session_state.get("especificaciones_tecnicas_tecnico_correo", ""),
-        "direccion_contacto": st.session_state.get("especificaciones_tecnicas_direccion_contacto", ""),
-        "telefono_contacto": st.session_state.get("especificaciones_tecnicas_telefono_contacto", ""),
-        "proceso_contratacion_aplicar": st.session_state.get("especificaciones_tecnicas_proceso_aplicar", ""),
-        "pct_experiencia_general": _formatear_numero_especificaciones_tecnicas(st.session_state.get("especificaciones_tecnicas_pct_general")),
-        "pct_experiencia_especifica": _formatear_numero_especificaciones_tecnicas(st.session_state.get("especificaciones_tecnicas_pct_especifica")),
-        "titulo_profesional_personal_tecnico": st.session_state.get("especificaciones_tecnicas_titulo_profesional", ""),
-        "equipo_trabajo_recursos_evaluar": st.session_state.get("especificaciones_tecnicas_equipo_evaluar", ""),
-        "certificado_proveedor_exclusivo": st.session_state.get("especificaciones_tecnicas_certificado_proveedor", "No"),
-        "patrimonio_aplica": st.session_state.get("especificaciones_tecnicas_patrimonio_aplica", "No"),
-        "evaluacion_estrategia_adquisicion": st.session_state.get("especificaciones_tecnicas_evaluacion_estrategia", ""),
-        "otros_parametros_evaluacion": st.session_state.get("especificaciones_tecnicas_otros_parametros", ""),
-        "fecha_documento": st.session_state.get("especificaciones_tecnicas_fecha", ""),
-        "firmas": {
-            "elaborado": {
-                "nombre": st.session_state.get("especificaciones_tecnicas_firma_elaborado_nombre", ""),
-                "cargo": st.session_state.get("especificaciones_tecnicas_firma_elaborado_cargo", ""),
-                "firmado_por": st.session_state.get("especificaciones_tecnicas_firma_elaborado_firmado", ""),
-            },
-            "revisado": {
-                "nombre": st.session_state.get("especificaciones_tecnicas_firma_revisado_nombre", ""),
-                "cargo": st.session_state.get("especificaciones_tecnicas_firma_revisado_cargo", ""),
-                "firmado_por": st.session_state.get("especificaciones_tecnicas_firma_revisado_firmado", ""),
-            },
-            "aprobado": {
-                "nombre": st.session_state.get("especificaciones_tecnicas_firma_aprobado_nombre") or FIRMA_APROBADO_POR_DEFECTO_NOMBRE,
-                "cargo": st.session_state.get("especificaciones_tecnicas_firma_aprobado_cargo") or FIRMA_APROBADO_POR_DEFECTO_CARGO,
-                "firmado_por": st.session_state.get("especificaciones_tecnicas_firma_aprobado_firmado", ""),
-            },
-        },
-    }
-
-
-# --- Vista previa HTML (pestaña 5): UNA sola tabla continua con los
-# mismos bordes azul marino institucionales (COLOR_BORDE_TABLA_ITEMS) y
-# la misma estructura fila por fila que la tabla continua real de
-# scripts/especificaciones_tecnicas_generator.py -- confirmado contra el .docx del modelo
-# oficial de referencia (solo "REQUERIMIENTOS ADICIONALES OBLIGATORIOS" y
-# "PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN" son titulos de ancho completo
-# reales; todo lo demas es una fila de campo etiqueta+valor). Reutiliza
-# los mismos textos fijos que el generador para que la previsualizacion y
-# el .docx final coincidan siempre. FECHA y FIRMAS DE RESPONSABILIDAD no
-# existen en el modelo de referencia y por eso se muestran aparte, fuera
-# de la tabla continua, igual que en el generador. ---
-_VACIO = '<span style="background:#fff59d; padding:0 2px;">&nbsp;</span>'
-_BORDE = f"1px solid #{COLOR_BORDE_TABLA_ITEMS}"
-
-
-def _html_valor_o_vacio(valor: str) -> str:
-    return html.escape(valor) if valor else _VACIO
-
-
-_PATRON_ETIQUETAS_PELIGROSAS = re.compile(
-    r"<\s*(script|style|iframe|object|embed)\b.*?>.*?<\s*/\s*\1\s*>", re.IGNORECASE | re.DOTALL
-)
-
-
-def _sanitizar_html_enriquecido(html_enriquecido: str) -> str:
-    """El HTML del editor TinyMCE (pestaña 'Análisis para definir la
-    estrategia de adquisición') se inserta con unsafe_allow_html=True en
-    la Vista Previa -- se quitan aquí, por precaución, las etiquetas que
-    podrían ejecutar código o cargar contenido externo, aunque TinyMCE ya
-    no las genera desde su propia interfaz."""
-    return _PATRON_ETIQUETAS_PELIGROSAS.sub("", html_enriquecido)
-
-
-def _html_fila_campo(etiqueta: str, valor: str) -> str:
-    """Fila de campo editable por el usuario: etiqueta centrada (~33%
-    del ancho, misma proporcion que en el .docx) + valor resaltado en
-    amarillo si esta vacio."""
-    return (
-        "<tr>"
-        f'<td style="border:{_BORDE}; padding:5px 8px; width:33%; text-align:center; vertical-align:middle;">'
-        f"{html.escape(etiqueta)}</td>"
-        f'<td style="border:{_BORDE}; padding:5px 8px; text-align:justify; vertical-align:middle;">'
-        f"{_html_valor_o_vacio(valor)}</td>"
-        "</tr>"
-    )
-
-
-def _html_fila_campo_fijo(etiqueta: str, contenido_html: str) -> str:
-    """Como _html_fila_campo, pero el valor es contenido fijo ya armado
-    en HTML (texto institucional, listas, subtablas), sin resaltado."""
-    return (
-        "<tr>"
-        f'<td style="border:{_BORDE}; padding:5px 8px; width:33%; text-align:center; vertical-align:middle;">'
-        f"{html.escape(etiqueta)}</td>"
-        f'<td style="border:{_BORDE}; padding:5px 8px; text-align:justify; vertical-align:top;">'
-        f"{contenido_html}</td>"
-        "</tr>"
-    )
-
-
-def _html_titulo_ancho(texto: str) -> str:
-    """Uno de los 2 unicos titulos de seccion de ancho completo reales
-    del modelo: centrado, negrita, sin relleno de color."""
-    return (
-        '<tr><td colspan="2" style='
-        f'"border:{_BORDE}; padding:6px 8px; text-align:center; font-weight:bold; font-size:16px;">'
-        f"{html.escape(texto)}</td></tr>"
-    )
-
-
-def _html_fila_ancho_parrafo(contenido_html: str) -> str:
-    """Fila de ancho completo sin etiqueta (parrafo introductorio suelto,
-    o una subtabla como la lista de CPC)."""
-    return f'<tr><td colspan="2" style="border:{_BORDE}; padding:5px 8px;">{contenido_html}</td></tr>'
-
-
-def _html_parrafos(texto: str) -> str:
-    return "".join(
-        f'<p style="margin:3px 0; text-align:justify;">{html.escape(linea)}</p>' for linea in texto.split("\n")
-    )
-
-
-def _html_lista_numerada(items: list[str]) -> str:
-    """Cursiva, igual que el modelo real (atribuciones del administrador)."""
-    return "".join(
-        f'<p style="margin:2px 0; text-align:justify; font-size:12px; font-style:italic;">'
-        f"{numero}. {html.escape(texto)}</p>"
-        for numero, texto in enumerate(items, start=1)
-    )
-
-
-def _html_lista_vinetas(items: list[str]) -> str:
-    """Cursiva, igual que el modelo real (obligaciones adicionales)."""
-    return "".join(
-        f'<p style="margin:2px 0; text-align:justify; font-size:12px; font-style:italic;">'
-        f"● {html.escape(texto)}</p>"
-        for texto in items
-    )
-
-
-def _html_tabla(encabezados: list[str], filas: list[list[str]]) -> str:
-    ths = "".join(
-        f'<th style="border:{_BORDE}; padding:3px; background:#f2f2f2; font-size:11px;">{html.escape(h)}</th>'
-        for h in encabezados
-    )
-    trs = "".join(
-        "<tr>"
-        + "".join(f'<td style="border:{_BORDE}; padding:3px; font-size:11px;">{html.escape(str(v))}</td>' for v in fila)
-        + "</tr>"
-        for fila in filas
-    )
-    return f'<table style="width:100%; border-collapse:collapse; margin:4px 0;"><tr>{ths}</tr>{trs}</table>'
-
-
-def _html_filas_item(numero: int, item: dict) -> str:
-    """Filas (no tabla aparte) de un item: encabezado de 8 columnas, fila
-    de datos, fila divisora PARAMETROS/ESPECIFICACIONES TECNICAS, fila de
-    especificaciones y una fila vacia de separacion -- se insertan
-    directamente en la tabla continua, igual que en el modelo real."""
-    encabezados = [
-        "ITEM", "DESCRIPCIÓN", "Unidad de Medida", "Cantidad Solicitada",
-        "Valor Unitario", "Valor Total", "Descripción del CPC", "NÚMERO DE CPC",
-    ]
-    valores = [
-        str(numero), item.get("descripcion", ""), item.get("unidad_medida", ""),
-        item.get("cantidad_solicitada", ""), item.get("valor_unitario", ""),
-        item.get("valor_total", ""), item.get("descripcion_cpc", ""), item.get("numero_cpc", ""),
-    ]
-    fila_encabezado = "".join(
-        f'<th style="border:{_BORDE}; padding:2px; background:#f2f2f2; font-size:10px;">{html.escape(h)}</th>'
-        for h in encabezados
-    )
-    fila_datos = "".join(
-        f'<td style="border:{_BORDE}; padding:2px; font-size:10px; text-align:center;">'
-        f'{_html_valor_o_vacio(str(v)) if not v else html.escape(str(v))}</td>'
-        for v in valores
-    )
-
-    if item.get("tipo") == "Servicio":
-        etiqueta_label = "DESCRIPCIÓN<br>SERVICIO"
-        bloques = []
-        for etiqueta, clave in (
-            ("PROCEDIMIENTO (Desmontaje/Montaje)", "procedimiento"),
-            ("HERRAMIENTAS/EQUIPO", "herramientas_equipo"),
-            ("NORMAS", "normas_aplicables"),
-            ("MEDICIÓN", "medicion"),
-            ("FORMA DE PAGO", "forma_pago"),
-            ("OBLIGACIONES", "obligaciones"),
-        ):
-            bloques.append(
-                f'<p style="margin:2px 0; font-size:11px;"><b>{etiqueta}:</b> '
-                f'{_html_valor_o_vacio(item.get(clave, ""))}</p>'
-            )
-        contenido_specs = "".join(bloques)
-    else:
-        etiqueta_label = "DESCRIPCIÓN<br>MATERIAL"
-        subtitulo = item.get("subtitulo_specs") or "MODELO DE EJEMPLO"
-        contenido_specs = (
-            f'<p style="margin:2px 0;"><span style="background:#8BC34A; padding:0 2px;">'
-            f'{html.escape(subtitulo)}</span></p>'
-        )
-        if item.get("descripcion_material"):
-            contenido_specs += f'<p style="margin:2px 0; font-size:11px;">{html.escape(item["descripcion_material"])}</p>'
-        parametros = item.get("parametros") or []
-        if parametros:
-            filas_parametros = "".join(
-                f'<tr><td style="border:{_BORDE}; padding:2px; font-weight:bold; font-size:10px;">'
-                f'{html.escape(p.get("nombre",""))}</td>'
-                f'<td style="border:{_BORDE}; padding:2px; font-size:10px;">{html.escape(p.get("valor",""))}</td></tr>'
-                for p in parametros
-            )
-            contenido_specs += f'<table style="width:100%; border-collapse:collapse;">{filas_parametros}</table>'
-
-    return (
-        f"<tr>{fila_encabezado}</tr>"
-        f"<tr>{fila_datos}</tr>"
-        "<tr>"
-        f'<td style="border:{_BORDE}; padding:3px; font-weight:bold; text-align:center; font-size:11px;">PARÁMETROS</td>'
-        f'<td colspan="7" style="border:{_BORDE}; padding:3px; font-weight:bold; text-align:center; font-size:11px;">'
-        "ESPECIFICACIONES TÉCNICAS</td>"
-        "</tr>"
-        "<tr>"
-        f'<td style="border:{_BORDE}; padding:3px; font-weight:bold; text-align:center; font-size:11px;">{etiqueta_label}</td>'
-        f'<td colspan="7" style="border:{_BORDE}; padding:5px; vertical-align:top;">{contenido_specs}</td>'
-        "</tr>"
-        f'<tr><td colspan="8" style="border:{_BORDE}; padding:8px;"></td></tr>'
-    )
-
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def _imagenes_especificaciones_tecnicas_base64() -> tuple[str, str]:
-    """Encabezado/pie institucionales: archivos de imagen fijos en disco
-    (IMAGEN_ENCABEZADO/IMAGEN_PIE_PAGINA), mismo criterio de ttl=86400 que
-    _cargar_catalogo_cpc y cargar_geojson_provincias. show_spinner=False
-    porque se llama dentro de la pestaña "Generación y Vista Previa"."""
-    return (
-        base64.b64encode(IMAGEN_ENCABEZADO.read_bytes()).decode(),
-        base64.b64encode(IMAGEN_PIE_PAGINA.read_bytes()).decode(),
-    )
-
-
-def _render_vista_previa_especificaciones_tecnicas(datos: dict) -> None:
-    encabezado_b64, pie_b64 = _imagenes_especificaciones_tecnicas_base64()
-
-    partes = [
-        '<div style="background:white; color:#111; padding:20px; border:1px solid #ccc; '
-        'font-family: Arial, sans-serif; max-height:75vh; overflow-y:auto;">',
-        f'<img src="data:image/jpeg;base64,{encabezado_b64}" style="width:100%; margin-bottom:10px;">',
-        '<table style="width:100%; border-collapse:collapse; text-align:center; font-weight:bold; margin-bottom:14px;">',
-        f'<tr><td style="border:{_BORDE}; padding:6px;">{html.escape(TITULO_PROCESO_FIJO)}</td></tr>',
-        f'<tr><td style="border:{_BORDE}; padding:6px;">{html.escape(COORDINACION_FIJA)}</td></tr>',
-        f'<tr><td style="border:{_BORDE}; padding:8px; background:#fff59d;">'
-        f'{_html_valor_o_vacio(datos.get("objeto_contratacion", ""))}</td></tr>',
-        "</table>",
-        '<table style="width:100%; border-collapse:collapse; font-size:12px;">',
-    ]
-
-    items = datos.get("items", [])
-    if not items:
-        partes.append(
-            '<tr><td colspan="2" style="padding:6px; color:#999;">'
-            '(sin ítems agregados todavía en la sección "Ítems y Presupuesto")</td></tr>'
-        )
-    for numero, item in enumerate(items, start=1):
-        partes.append(_html_filas_item(numero, item))
-
-    partes.append(_html_fila_campo("PRESUPUESTO REFERENCIAL", datos.get("presupuesto_referencial", "")))
-
-    partes.append(_html_titulo_ancho("REQUERIMIENTOS ADICIONALES OBLIGATORIOS"))
-    requerimientos = datos.get("requerimientos_cpc") or [{"cpc": "", "descripcion": ""}]
-    partes.append(
-        _html_fila_ancho_parrafo(
-            _html_tabla(
-                ["CPC", "DESCRIPCIÓN DEL CPC"],
-                [[r.get("cpc") or "", r.get("descripcion") or ""] for r in requerimientos],
-            )
-        )
-    )
-
-    partes.append(
-        _html_fila_campo(
-            "CÓDIGO CPC (DETALLAR EL CÓDIGO Y LA DESCRIPCIÓN DEL DE MAYOR PESO ECONÓMICO DE LA CONTRATACIÓN)",
-            datos.get("codigo_cpc_mayor_peso", ""),
-        )
-    )
-    partes.append(_html_fila_campo("ALCANCE", datos.get("alcance", "")))
-    partes.append(
-        _html_fila_campo("PLAZO DE EJECUCIÓN: PARCIALES Y/O TOTAL (EN DÍAS)", datos.get("plazo_ejecucion", ""))
-    )
-
-    partes.append(_html_fila_campo("1.- PERSONAL TÉCNICO PRINCIPAL", datos.get("personal_tecnico_principal", "")))
-    partes.append(
-        _html_fila_campo(
-            "2.- PERSONAL TÉCNICO AUXILIAR O SECUNDARIO", datos.get("personal_tecnico_auxiliar", "")
-        )
-    )
-    partes.append(_html_fila_campo("3.- EQUIPO DE TRABAJO", datos.get("equipo_trabajo", "")))
-    partes.append(_html_fila_campo("4.- RECURSOS", datos.get("recursos", "")))
-
-    partes.append(_html_fila_campo("FORMA Y CONDICIONES DE PAGO", datos.get("forma_condiciones_pago", "")))
-    partes.append(
-        _html_fila_campo("LUGAR Y DIRECCIÓN DE ENTREGA/EJECUCIÓN", datos.get("lugar_direccion", ""))
-    )
-
-    partes.append(_html_fila_campo_fijo("MULTAS", _html_parrafos(TEXTO_MULTAS)))
-
-    partes.append(
-        _html_fila_campo("i) OBLIGACIONES DE LA ENTIDAD CONTRATANTE", datos.get("obligaciones_entidad", ""))
-    )
-    partes.append(
-        _html_fila_campo("ii) OBLIGACIONES DE LA CONTRATISTA", datos.get("obligaciones_contratista", ""))
-    )
-
-    partes.append(
-        _html_fila_campo("GARANTÍAS TÉCNICAS, EN EL CASO DE QUE APLIQUE", datos.get("garantias_tecnicas", ""))
-    )
-
-    texto_responsabilidad_civil = TEXTO_GARANTIA_RESPONSABILIDAD_CIVIL_PLANTILLA.format(
-        objeto=datos.get("objeto_contratacion", "") or "",
-        monto=datos.get("monto_garantia_responsabilidad_civil", "") or "",
-    )
-    partes.append(
-        _html_fila_campo_fijo(
-            "GARANTÍAS ADICIONALES, EN EL CASO DE QUE APLIQUE",
-            _html_parrafos(TEXTO_GARANTIA_FIEL_CUMPLIMIENTO)
-            + _html_parrafos(TEXTO_GARANTIA_BUEN_USO_ANTICIPO)
-            + _html_parrafos(texto_responsabilidad_civil),
-        )
-    )
-
-    partes.append(
-        _html_fila_campo_fijo(
-            "VIGENCIA DE LA OFERTA",
-            _html_parrafos(
-                TEXTO_VIGENCIA_OFERTA_PLANTILLA.format(dias=datos.get("vigencia_oferta_dias", "") or "")
-            ),
-        )
-    )
-    partes.append(_html_fila_campo_fijo("REAJUSTE DE PRECIOS", _html_parrafos(TEXTO_REAJUSTE_PRECIOS)))
-    partes.append(_html_fila_campo("TIPO DE ADJUDICACIÓN", datos.get("tipo_adjudicacion", "")))
-
-    contenido_administrador = _html_parrafos(
-        TEXTO_ADMINISTRADOR_INTRO_PLANTILLA.format(
-            nombre=datos.get("administrador_nombre", "") or "",
-            cedula=datos.get("administrador_cedula", "") or "",
-            cargo=datos.get("administrador_cargo", "") or "",
-        )
-    )
-    contenido_administrador += _html_lista_numerada(TEXTO_ATRIBUCIONES_ADMINISTRADOR)
-    contenido_administrador += _html_parrafos(TEXTO_ADMINISTRADOR_OBLIGACIONES_INTRO)
-    contenido_administrador += _html_lista_vinetas(TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES)
-    contenido_administrador += _html_parrafos(TEXTO_ADMINISTRADOR_CIERRE)
-    partes.append(_html_fila_campo_fijo("ADMINISTRADOR DEL CONTRATO", contenido_administrador))
-
-    contenido_tecnico = "".join(
-        f'<p style="margin:2px 0; font-size:11px;"><b>{etiqueta}:</b> {_html_valor_o_vacio(valor)}</p>'
-        for etiqueta, valor in (
-            ("Funcionario", datos.get("tecnico_no_interviene_nombre", "")),
-            ("Cargo", datos.get("tecnico_no_interviene_cargo", "")),
-            ("Mail", datos.get("tecnico_no_interviene_correo", "")),
-            ("Dirección", datos.get("direccion_contacto", "")),
-            ("Teléfono", datos.get("telefono_contacto", "")),
-        )
-    )
-    partes.append(_html_fila_campo_fijo("TÉCNICO QUE NO INTERVIENE EN LA CONTRATACIÓN", contenido_tecnico))
-
-    contenido_estrategia = _html_parrafos(TEXTO_ANALISIS_ESTRATEGIA_FIJO)
-    html_analisis = (datos.get("analisis_estrategia_html", "") or "").strip()
-    contenido_estrategia += '<p style="margin:4px 0 2px; font-size:11px;"><b>Análisis específico de la contratación:</b></p>'
-    contenido_estrategia += (
-        f'<div style="font-size:11px;">{_sanitizar_html_enriquecido(html_analisis)}</div>'
-        if html_analisis
-        else f'<p style="font-size:11px;">{_VACIO}</p>'
-    )
-    partes.append(_html_fila_campo_fijo("ANÁLISIS PARA DEFINIR LA ESTRATÉGIA DE ADQUISICIÓN", contenido_estrategia))
-    partes.append(
-        _html_fila_campo("PROCESO DE CONTRATACIÓN A APLICAR", datos.get("proceso_contratacion_aplicar", ""))
-    )
-
-    partes.append(_html_titulo_ancho("PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN"))
-    partes.append(_html_fila_ancho_parrafo(_html_parrafos(TEXTO_PARAMETROS_EVALUACION_INTRO)))
-
-    partes.append(
-        _html_fila_campo_fijo(
-            "EXPERIENCIA GENERAL DEL OFERENTE",
-            _html_parrafos(
-                TEXTO_EXPERIENCIA_GENERAL_PLANTILLA.format(
-                    pct_general=datos.get("pct_experiencia_general", "") or ""
-                )
-            ),
-        )
-    )
-    partes.append(
-        _html_fila_campo_fijo(
-            "EXPERIENCIA ESPECÍFICA DEL OFERENTE",
-            _html_parrafos(
-                TEXTO_EXPERIENCIA_ESPECIFICA_PLANTILLA.format(
-                    pct_especifica=datos.get("pct_experiencia_especifica", "") or ""
-                )
-            ),
-        )
-    )
-    partes.append(
-        _html_fila_campo_fijo(
-            "FORMACIÓN DEL PERSONAL TÉCNICO",
-            _html_parrafos(
-                TEXTO_FORMACION_PERSONAL_TECNICO_PLANTILLA.format(
-                    titulo_profesional=datos.get("titulo_profesional_personal_tecnico", "") or ""
-                )
-            ),
-        )
-    )
-    partes.append(
-        _html_fila_campo_fijo(
-            "EXPERIENCIA DEL PERSONAL TÉCNICO", _html_parrafos(TEXTO_EXPERIENCIA_PERSONAL_TECNICO)
-        )
-    )
-    partes.append(
-        _html_fila_campo(
-            "EQUIPO DE TRABAJO/RECURSOS A EVALUAR", datos.get("equipo_trabajo_recursos_evaluar", "")
-        )
-    )
-
-    contenido_certificado = _html_parrafos(TEXTO_CERTIFICADO_PROVEEDOR_EXCLUSIVO_INTRO)
-    contenido_certificado += (
-        f'<p style="margin:4px 0 2px; font-size:11px;"><b>¿Aplica?:</b> '
-        f'{_html_valor_o_vacio(datos.get("certificado_proveedor_exclusivo", "No"))}</p>'
-    )
-    partes.append(_html_fila_campo_fijo("CERTIFICADO DE PROVEEDOR EXCLUSIVO O AUTORIZADO", contenido_certificado))
-
-    patrimonio_aplica = datos.get("patrimonio_aplica", "No")
-    contenido_patrimonio = (
-        f'<p style="margin:2px 0; font-size:11px;"><b>¿Aplica?:</b> {_html_valor_o_vacio(patrimonio_aplica)}</p>'
-    )
-    if patrimonio_aplica == "Sí":
-        contenido_patrimonio += _html_parrafos(TEXTO_PATRIMONIO_INTRO)
-        contenido_patrimonio += '<p style="margin:4px 0 2px; font-weight:bold;">Bienes y/o Servicios</p>'
-        contenido_patrimonio += _html_tabla(TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_BIENES_SERVICIOS)
-        contenido_patrimonio += '<p style="margin:4px 0 2px; font-weight:bold;">Obras</p>'
-        contenido_patrimonio += _html_tabla(TABLA_PATRIMONIO_ENCABEZADO, TABLA_PATRIMONIO_OBRAS)
-    partes.append(_html_fila_campo_fijo("PATRIMONIO", contenido_patrimonio))
-
-    partes.append(
-        _html_fila_campo_fijo(
-            "TIEMPO DE EXISTENCIA LEGAL DE PERSONAS JURÍDICAS", _html_parrafos(TEXTO_TIEMPO_EXISTENCIA_LEGAL)
-        )
-    )
-
-    contenido_checklist = _html_parrafos(TEXTO_CHECKLIST_INTRO)
-    contenido_checklist += _html_tabla(
-        TABLA_CHECKLIST_ENCABEZADO, [[c, "", "", ""] for c in TABLA_CHECKLIST_CRITERIOS_FIJOS]
-    )
-    partes.append(
-        _html_fila_campo_fijo("METODOLOGÍA DE EVALUACIÓN DE OFERTA (CUMPLE/NO CUMPLE)", contenido_checklist)
-    )
-
-    partes.append(
-        _html_fila_campo(
-            "EVALUACIÓN DEL ANÁLISIS DE ESTRATEGIA DE ADQUISICIÓN (MEJOR VALOR POR DINERO)",
-            datos.get("evaluacion_estrategia_adquisicion", ""),
-        )
-    )
-    partes.append(
-        _html_fila_campo(
-            "OTROS PARÁMETROS DE EVALUACIÓN Y CALIFICACIÓN", datos.get("otros_parametros_evaluacion", "")
-        )
-    )
-
-    contenido_puntaje = _html_parrafos(TEXTO_PUNTAJE_INTRO)
-    contenido_puntaje += _html_tabla(TABLA_PUNTAJE_ENCABEZADO, TABLA_PUNTAJE_FIJA)
-    partes.append(_html_fila_campo_fijo("METODOLOGÍA DE EVALUACIÓN DE OFERTA POR PUNTAJE", contenido_puntaje))
-
-    partes.append("</table>")
-
-    # FECHA y FIRMAS DE RESPONSABILIDAD no existen en el modelo de
-    # referencia -- se muestran aparte, fuera de la tabla continua, igual
-    # que en el .docx (ver scripts/especificaciones_tecnicas_generator.py).
-    partes.append(
-        f'<p style="margin:14px 0 4px;"><b>FECHA:</b> {_html_valor_o_vacio(datos.get("fecha_documento", ""))}</p>'
-    )
-    firmas = datos.get("firmas", {})
-    partes.append('<p style="margin:10px 0 4px; font-weight:bold;">FIRMAS DE RESPONSABILIDAD:</p>')
-    filas_firmas = []
-    for clave, etiqueta in (("elaborado", "Elaborado por"), ("revisado", "Revisado por"), ("aprobado", "Aprobado por")):
-        d = firmas.get(clave, {})
-        filas_firmas.append(
-            [etiqueta, d.get("nombre") or "", d.get("cargo") or "", d.get("firmado_por") or ""]
-        )
-    partes.append(_html_tabla(["", "Nombre", "Cargo", "Firmado por"], filas_firmas))
-
-    partes.append(f'<img src="data:image/jpeg;base64,{pie_b64}" style="width:100%; margin-top:14px;">')
-    partes.append("</div>")
-
-    st.markdown("".join(partes), unsafe_allow_html=True)
-
-
-# Claves de los ~44 widgets "simples" (text_input/text_area/number_input/
-# selectbox) de las secciones "Formulario y Parámetros" y "Generación y
-# Vista Previa" que solo usan `key=` sin `value=` propio.
-# Streamlit borra la entrada de session_state de un widget con key en
-# cualquier rerun en el que ese widget NO se instancie (ver docs: "widget
-# state will be lost if the widget is removed from the app"), y aqui eso
-# pasa cada vez que el usuario cambia de seccion de Especificaciones Técnicas (las
-# secciones son ramas `elif` condicionales, no todas se ejecutan en cada
-# rerun) o de pagina del sidebar: el campo se ve vacio al volver aunque
-# el usuario ya lo habia llenado. Los widgets de items (data_editor) y
-# especificaciones tecnicas (value=spec.get(...) desde la lista
-# persistente especificaciones_tecnicas_specs) ya son inmunes a esto porque no dependen
-# unicamente del key -- este mismo patron (un valor guardado aparte,
-# reinyectado en el widget) es el que se replica aqui para el resto.
-_ESPECIFICACIONES_TECNICAS_CAMPOS_SIMPLES_PERSISTENTES = [
-    "especificaciones_tecnicas_tab_activa",
-    "especificaciones_tecnicas_objeto_contratacion",
-    # "especificaciones_tecnicas_presupuesto" NO esta aqui a proposito: ya no es un valor que
-    # el usuario escriba (esta `disabled=True`) sino que se recalcula y se
-    # reasigna en cada rerun de la seccion "Ítems y Presupuesto" desde
-    # _sumar_valor_total_items_especificaciones_tecnicas -- no necesita este respaldo porque
-    # nunca depende de lo que Streamlit haya borrado o no.
-    "especificaciones_tecnicas_codigo_cpc_mayor_peso",
-    "especificaciones_tecnicas_alcance",
-    "especificaciones_tecnicas_plazo",
-    "especificaciones_tecnicas_personal_tecnico_principal",
-    "especificaciones_tecnicas_personal_tecnico_auxiliar",
-    "especificaciones_tecnicas_equipo_trabajo",
-    "especificaciones_tecnicas_recursos",
-    "especificaciones_tecnicas_forma_pago",
-    "especificaciones_tecnicas_lugar",
-    "especificaciones_tecnicas_obligaciones_entidad",
-    "especificaciones_tecnicas_obligaciones_contratista",
-    "especificaciones_tecnicas_garantias_tecnicas",
-    "especificaciones_tecnicas_monto_garantia_rc",
-    "especificaciones_tecnicas_vigencia_oferta",
-    "especificaciones_tecnicas_tipo_adjudicacion",
-    "especificaciones_tecnicas_admin_nombre",
-    "especificaciones_tecnicas_admin_cargo",
-    "especificaciones_tecnicas_admin_cedula",
-    "especificaciones_tecnicas_tecnico_nombre",
-    "especificaciones_tecnicas_tecnico_cargo",
-    "especificaciones_tecnicas_tecnico_correo",
-    "especificaciones_tecnicas_direccion_contacto",
-    "especificaciones_tecnicas_telefono_contacto",
-    "especificaciones_tecnicas_proceso_aplicar",
-    "especificaciones_tecnicas_pct_general",
-    "especificaciones_tecnicas_pct_especifica",
-    "especificaciones_tecnicas_titulo_profesional",
-    "especificaciones_tecnicas_equipo_evaluar",
-    "especificaciones_tecnicas_certificado_proveedor",
-    "especificaciones_tecnicas_patrimonio_aplica",
-    "especificaciones_tecnicas_evaluacion_estrategia",
-    "especificaciones_tecnicas_analisis_estrategia_html",
-    "especificaciones_tecnicas_otros_parametros",
-    "especificaciones_tecnicas_fecha",
-    "especificaciones_tecnicas_firma_elaborado_nombre",
-    "especificaciones_tecnicas_firma_elaborado_cargo",
-    "especificaciones_tecnicas_firma_elaborado_firmado",
-    "especificaciones_tecnicas_firma_revisado_nombre",
-    "especificaciones_tecnicas_firma_revisado_cargo",
-    "especificaciones_tecnicas_firma_revisado_firmado",
-    "especificaciones_tecnicas_firma_aprobado_nombre",
-    "especificaciones_tecnicas_firma_aprobado_cargo",
-    "especificaciones_tecnicas_firma_aprobado_firmado",
-]
-
-
-def _restaurar_campos_simples_especificaciones_tecnicas() -> None:
-    """Repone en session_state, ANTES de crear ningun widget, los campos
-    que Streamlit haya borrado por no haberse instanciado en el rerun
-    anterior (otra sub-pestaña o otra pagina del sidebar), usando la
-    ultima copia guardada en el diccionario sombra."""
-    sombra = st.session_state.setdefault("_especificaciones_tecnicas_sombra", {})
-    for clave in _ESPECIFICACIONES_TECNICAS_CAMPOS_SIMPLES_PERSISTENTES:
-        if clave not in st.session_state and clave in sombra:
-            st.session_state[clave] = sombra[clave]
-
-
-def _guardar_campos_simples_especificaciones_tecnicas() -> None:
-    """Copia al diccionario sombra el valor actual de cada campo que SI
-    se instancio en este rerun, para poder reponerlo la proxima vez que
-    Streamlit borre su entrada de session_state (ver
-    _restaurar_campos_simples_especificaciones_tecnicas)."""
-    sombra = st.session_state.setdefault("_especificaciones_tecnicas_sombra", {})
-    for clave in _ESPECIFICACIONES_TECNICAS_CAMPOS_SIMPLES_PERSISTENTES:
-        if clave in st.session_state:
-            sombra[clave] = st.session_state[clave]
-
-
-def _df_a_registros_json(df: pd.DataFrame) -> list[dict]:
-    """Convierte un DataFrame a una lista de dicts de tipos nativos de
-    Python (str/int/float/None), lista para json.dumps(allow_nan=False).
-    astype(object) ANTES de reemplazar NaN por None es necesario: sobre
-    una columna float64/Int64, asignar None con .where() se revierte solo
-    a NaN/pd.NA porque esos dtypes no pueden contener None -- solo una
-    columna "object" lo conserva tal cual."""
-    return df.astype(object).where(df.notna(), None).to_dict(orient="records")
-
-
-def _serializar_estado_especificaciones_tecnicas() -> dict:
-    """Junta TODO el estado persistente de Especificaciones Técnicas (los ~44 campos
-    simples de _ESPECIFICACIONES_TECNICAS_CAMPOS_SIMPLES_PERSISTENTES, la Estrategia de
-    Adquisicion en HTML, y los items/CPC/especificaciones tecnicas) en un
-    dict de tipos puros -- ni un DataFrame ni ningun objeto de Streamlit
-    -- listo para guardarse como datos_json de un borrador. Deliberadamente
-    NO incluye: "_especificaciones_tecnicas_sombra" (cache interno, se reconstruye solo),
-    "especificaciones_tecnicas_docx_bytes"/"especificaciones_tecnicas_docx_nombre" (el .docx se regenera al
-    vuelo, no hace falta guardar el binario) ni las claves de los
-    file_uploader por item (un widget nativo no admite pre-rellenarse)."""
-    estado: dict = {}
-    for clave in _ESPECIFICACIONES_TECNICAS_CAMPOS_SIMPLES_PERSISTENTES:
-        if clave in st.session_state:
-            estado[clave] = st.session_state[clave]
-    estado["especificaciones_tecnicas_analisis_estrategia_html"] = st.session_state.get("especificaciones_tecnicas_analisis_estrategia_html", "")
-    estado["especificaciones_tecnicas_items_df"] = _df_a_registros_json(st.session_state.especificaciones_tecnicas_items_df)
-    estado["especificaciones_tecnicas_cpc_df"] = _df_a_registros_json(st.session_state.especificaciones_tecnicas_cpc_df)
-    estado["especificaciones_tecnicas_specs"] = st.session_state.especificaciones_tecnicas_specs
-    estado["especificaciones_tecnicas_items_editor_version"] = st.session_state.especificaciones_tecnicas_items_editor_version
-    estado["especificaciones_tecnicas_siguiente_fila_id"] = st.session_state.especificaciones_tecnicas_siguiente_fila_id
-    estado["especificaciones_tecnicas_siguiente_param_id"] = st.session_state.especificaciones_tecnicas_siguiente_param_id
-    return estado
-
-
-def _restaurar_estado_especificaciones_tecnicas(estado: dict) -> None:
-    """Inversa de _serializar_estado_especificaciones_tecnicas: repone en session_state TODO
-    el estado guardado de un borrador. Los DataFrames se reconstruyen
-    desde sus registros (una lista vacia usa los constructores _vacio
-    para no perder las columnas esperadas -- pd.DataFrame([]) no tiene
-    columnas). especificaciones_tecnicas_items_editor_version se incrementa (no se copia tal
-    cual) para forzar un key nuevo en el data_editor de items y que el
-    grid se remonte limpio con el dataframe cargado, en vez de intentar
-    reconciliar un diff incremental sobre el grid que ya tenia montado
-    (mismo motivo que al guardar items, ver "Guardar Ítems")."""
-    for clave in _ESPECIFICACIONES_TECNICAS_CAMPOS_SIMPLES_PERSISTENTES:
-        if clave in estado:
-            st.session_state[clave] = estado[clave]
-    st.session_state["especificaciones_tecnicas_analisis_estrategia_html"] = estado.get("especificaciones_tecnicas_analisis_estrategia_html", "")
-
-    registros_items = estado.get("especificaciones_tecnicas_items_df") or []
-    st.session_state.especificaciones_tecnicas_items_df = (
-        pd.DataFrame(registros_items) if registros_items else _dataframe_items_especificaciones_tecnicas_vacio()
-    )
-    registros_cpc = estado.get("especificaciones_tecnicas_cpc_df") or []
-    st.session_state.especificaciones_tecnicas_cpc_df = (
-        pd.DataFrame(registros_cpc) if registros_cpc else _dataframe_cpc_especificaciones_tecnicas_vacio()
-    )
-    st.session_state.especificaciones_tecnicas_specs = estado.get("especificaciones_tecnicas_specs") or []
-    st.session_state.especificaciones_tecnicas_items_editor_version = st.session_state.get("especificaciones_tecnicas_items_editor_version", 0) + 1
-    st.session_state.especificaciones_tecnicas_siguiente_fila_id = estado.get("especificaciones_tecnicas_siguiente_fila_id", 0)
-    st.session_state.especificaciones_tecnicas_siguiente_param_id = estado.get("especificaciones_tecnicas_siguiente_param_id", 0)
-    # La sombra vieja puede tener valores de OTRA contratacion que ya no
-    # aplican; se descarta y _guardar_campos_simples_especificaciones_tecnicas la reconstruye
-    # con los valores recien cargados al final de este mismo rerun.
-    st.session_state.pop("_especificaciones_tecnicas_sombra", None)
-
-
-def _reiniciar_estado_especificaciones_tecnicas() -> None:
-    """Vacia todo el estado de Especificaciones Técnicas (usado por "Nueva contratación" y
-    tras "Eliminar contratación"), dejando el formulario como una sesion
-    recien abierta -- misma lista de claves que _restaurar_estado_especificaciones_tecnicas,
-    pero con los valores vacios de cada widget en vez de los de un
-    borrador."""
-    for clave in _ESPECIFICACIONES_TECNICAS_CAMPOS_SIMPLES_PERSISTENTES:
-        st.session_state.pop(clave, None)
-    st.session_state.pop("especificaciones_tecnicas_analisis_estrategia_html", None)
-    st.session_state.pop("_especificaciones_tecnicas_sombra", None)
-    st.session_state.pop("especificaciones_tecnicas_docx_bytes", None)
-    st.session_state.pop("especificaciones_tecnicas_docx_nombre", None)
-    st.session_state.especificaciones_tecnicas_items_df = _dataframe_items_especificaciones_tecnicas_vacio()
-    st.session_state.especificaciones_tecnicas_cpc_df = _dataframe_cpc_especificaciones_tecnicas_vacio()
-    st.session_state.especificaciones_tecnicas_specs = []
-    st.session_state.especificaciones_tecnicas_items_editor_version = st.session_state.get("especificaciones_tecnicas_items_editor_version", 0) + 1
-    st.session_state.especificaciones_tecnicas_siguiente_fila_id = 0
-    st.session_state.especificaciones_tecnicas_siguiente_param_id = 0
-    st.session_state.especificaciones_tecnicas_borrador_id = None
-    # NO se puede escribir directo a st.session_state["especificaciones_tecnicas_borrador_selector"]
-    # aqui: esta funcion se llama desde botones que se instancian DESPUES
-    # del selectbox en el mismo rerun, y Streamlit prohibe modificar la
-    # key de un widget ya instanciado en ese mismo rerun. En cambio, se
-    # deja esta "orden pendiente" en una key comun y corriente (no atada a
-    # ningun widget) que _render_panel_borradores_especificaciones_tecnicas aplica al
-    # selectbox, pero ANTES de crearlo, en el rerun siguiente -- si no se
-    # tocara nada, el selectbox conservaria la etiqueta de la contratacion
-    # anterior y la recargaria sola.
-    st.session_state["especificaciones_tecnicas_borrador_selector_pendiente"] = None
-
-
-def _render_panel_borradores_especificaciones_tecnicas() -> None:
-    """Panel de control (arriba del todo de "Formularios y Registro") para
-    guardar/cargar/eliminar contrataciones completas como filas de
-    borradores_contratacion (ver src/database.py), asi el trabajo
-    sobrevive a cerrar el navegador o reiniciar Streamlit -- hasta ahora
-    todo el formulario vivia solo en session_state.
-
-    El selectbox usa el id numerico del borrador como VALOR real del
-    widget (no el texto visible, vía format_func): la etiqueta incluye la
-    fecha de actualizacion, que cambia en cada guardado, y si esa fecha
-    fuera el valor del widget, tras guardar Streamlit podria encontrarse
-    con que el valor que tenia guardado en session_state ya no esta entre
-    las opciones actuales -- eso es un error duro en Streamlit, no un
-    detalle cosmetico. Con el id como valor eso no puede pasar: el mismo
-    id sigue siendo valido aunque su etiqueta visible cambie."""
-    if "especificaciones_tecnicas_borrador_id" not in st.session_state:
-        st.session_state.especificaciones_tecnicas_borrador_id = None
-
-    borradores = listar_borradores_especificaciones_tecnicas()
-    etiqueta_por_id = {None: "— Nueva contratación (sin guardar) —"}
-    for borrador in borradores:
-        etiqueta_por_id[borrador["id"]] = (
-            f"{borrador['nombre_contratacion']} (act. {borrador['fecha_actualizacion']})"
-        )
-    ids_disponibles = list(etiqueta_por_id.keys())
-
-    # Aplica una orden pendiente de otro boton (Guardar/Nueva/Eliminar, ver
-    # sus comentarios: ellos no pueden tocar la key del selectbox porque
-    # se instancian despues de el en su propio rerun) ANTES de crear el
-    # widget, que es el unico momento en que Streamlit permite fijar su
-    # valor. Sin una orden pendiente, si el id que el selectbox tenia
-    # guardado ya no existe entre las opciones actuales (primera carga, o
-    # el borrador se elimino desde otra sesion), se resetea a "Nueva
-    # contratación" para no reventar el selectbox con un valor invalido.
-    #
-    # OJO: nunca se asigna `None` explicitamente a session_state["especificaciones_tecnicas_borrador_selector"]
-    # (se hace `pop` en su lugar) -- se comprobo empiricamente que un
-    # st.selectbox recien creado (key todavia ausente de session_state)
-    # muestra el placeholder "Choose an option" en vez de la etiqueta
-    # mapeada de None ("Nueva contratación") si ese None se escribe a mano
-    # ANTES de que el widget exista por primera vez, aunque None sea una
-    # opcion valida de la lista. Dejando la key ausente en ese caso,
-    # Streamlit cae solo, correctamente, en su propio default (indice 0,
-    # que en `ids_disponibles` siempre es None) -- ese default SI se
-    # renderiza bien.
-    def _fijar_selector_borrador(id_objetivo: int | None) -> None:
-        if id_objetivo is None:
-            st.session_state.pop("especificaciones_tecnicas_borrador_selector", None)
-        else:
-            st.session_state["especificaciones_tecnicas_borrador_selector"] = id_objetivo
-
-    if "especificaciones_tecnicas_borrador_selector_pendiente" in st.session_state:
-        _fijar_selector_borrador(st.session_state.pop("especificaciones_tecnicas_borrador_selector_pendiente"))
-    elif (
-        "especificaciones_tecnicas_borrador_selector" not in st.session_state
-        or st.session_state.get("especificaciones_tecnicas_borrador_selector") not in ids_disponibles
-    ):
-        # "not in st.session_state" (ademas del chequeo de valor invalido
-        # de antes) porque este panel ahora es una seccion mas del menu
-        # lateral (ver _render_navegacion_especificaciones_tecnicas_sidebar): al navegar a
-        # otra seccion y volver, Streamlit borra este selectbox por no
-        # haberse instanciado mientras tanto -- y como None (la opcion
-        # "Nueva contratación") SIEMPRE es un valor valido de la lista,
-        # el chequeo anterior (que solo miraba "esta en ids_disponibles")
-        # no detectaba la key ausente y mostraba "Nueva contratación" aun
-        # con un borrador ya cargado.
-        _fijar_selector_borrador(
-            st.session_state.especificaciones_tecnicas_borrador_id if st.session_state.especificaciones_tecnicas_borrador_id in ids_disponibles else None
-        )
-
-    st.markdown("**:material/folder_open: Gestor de Contrataciones** (guardado persistente en la base de datos)")
-    col_selector, col_guardar, col_nuevo, col_eliminar = st.columns([3, 1, 1, 1])
-
-    id_seleccionado = col_selector.selectbox(
-        "Cargar contratación guardada",
-        ids_disponibles,
-        format_func=lambda id_: etiqueta_por_id.get(id_, "— Nueva contratación (sin guardar) —"),
-        key="especificaciones_tecnicas_borrador_selector",
-        label_visibility="collapsed",
-    )
-    # Cargar: solo cuando el usuario ACABA de elegir un id distinto al que
-    # ya esta activo (si fueran iguales, se re-cargaria en cada rerun
-    # posterior sin que el usuario haya vuelto a tocar el selector).
-    if id_seleccionado is not None and id_seleccionado != st.session_state.especificaciones_tecnicas_borrador_id:
-        borrador = obtener_borrador_especificaciones_tecnicas(id_seleccionado)
-        if borrador is not None:
-            try:
-                estado = json.loads(borrador["datos_json"])
-            except json.JSONDecodeError:
-                st.error("El borrador guardado tiene un JSON inválido y no se pudo cargar.")
-            else:
-                # No se aplica _restaurar_estado_especificaciones_tecnicas(estado) aqui mismo:
-                # este script termina en el rerun() de abajo sin llegar a
-                # instanciar ningun widget de ninguna pestaña (el despacho
-                # de pestañas viene mas abajo), y se comprobo
-                # empiricamente que Streamlit puede reinicializar esas
-                # keys "huerfanas" a su valor vacio de widget ANTES de que
-                # el rerun automatico vuelva a correr el script -- como la
-                # key sigue *presente* (vacia, no ausente), el respaldo de
-                # sombra en _restaurar_campos_simples_especificaciones_tecnicas no la detecta
-                # (esa funcion solo repone claves AUSENTES) y el campo se
-                # ve vacio pese a haberse cargado bien. La solucion real
-                # es no tocar session_state todavia: se deja el estado a
-                # aplicar en una key comun (no atada a ningun widget) y
-                # render_formularios_y_registro la aplica en su primerisima
-                # linea del rerun siguiente, antes de que exista chance de
-                # que cualquier widget la pise.
-                st.session_state["especificaciones_tecnicas_estado_pendiente_restaurar"] = estado
-                st.session_state.especificaciones_tecnicas_borrador_id = id_seleccionado
-                st.success(f"Contratación «{borrador['nombre_contratacion']}» cargada.")
-                st.rerun()
-
-    if col_guardar.button(":material/save: Guardar progreso", key="especificaciones_tecnicas_guardar_borrador", use_container_width=True):
-        nombre_contratacion = (st.session_state.get("especificaciones_tecnicas_objeto_contratacion") or "").strip()
-        if not nombre_contratacion:
-            st.error(
-                'Completa "Objeto de contratación" en la sección "Formulario y Parámetros" antes de guardar.'
-            )
-        else:
-            datos_json = json.dumps(_serializar_estado_especificaciones_tecnicas(), ensure_ascii=False, allow_nan=False)
-            resultado = guardar_borrador_especificaciones_tecnicas(
-                st.session_state.especificaciones_tecnicas_borrador_id, nombre_contratacion, datos_json
-            )
-            if resultado is not None:
-                st.session_state.especificaciones_tecnicas_borrador_id = resultado["id"]
-                # especificaciones_tecnicas_borrador_selector no se puede tocar aqui (el
-                # selectbox ya se instancio arriba en este mismo rerun) --
-                # se deja la orden pendiente para el proximo rerun, ver el
-                # comentario en _render_panel_borradores_especificaciones_tecnicas.
-                st.session_state["especificaciones_tecnicas_borrador_selector_pendiente"] = resultado["id"]
-                st.success(f"Progreso guardado como «{nombre_contratacion}».")
-                st.rerun()
-
-    if col_nuevo.button(":material/note_add: Nueva contratación", key="especificaciones_tecnicas_nueva_contratacion", use_container_width=True):
-        _reiniciar_estado_especificaciones_tecnicas()
-        st.success("Formulario en blanco: lista para una nueva contratación.")
-        st.rerun()
-
-    if "especificaciones_tecnicas_confirmar_eliminar_borrador" not in st.session_state:
-        st.session_state.especificaciones_tecnicas_confirmar_eliminar_borrador = False
-
-    if col_eliminar.button(
-        ":material/delete: Eliminar contratación",
-        key="especificaciones_tecnicas_eliminar_borrador",
-        use_container_width=True,
-        disabled=st.session_state.especificaciones_tecnicas_borrador_id is None,
-    ):
-        st.session_state.especificaciones_tecnicas_confirmar_eliminar_borrador = True
-        st.rerun()
-
-    if st.session_state.especificaciones_tecnicas_confirmar_eliminar_borrador:
-        # Misma logica de doble clic que "Vaciar la base de datos" en
-        # Configuracion: una eliminacion no se puede deshacer, asi que un
-        # solo clic accidental no debe bastar para perder una
-        # contratacion guardada. Fuera de las 4 columnas de arriba (no
-        # anida columnas dentro de columnas) para que la confirmacion se
-        # vea a todo lo ancho, no apretada en col_eliminar.
-        st.warning("¿Eliminar esta contratación guardada? No se puede deshacer.")
-        col_confirmar, col_cancelar = st.columns(2)
-        if col_confirmar.button("Sí, eliminar", key="especificaciones_tecnicas_confirmar_eliminar_borrador_btn", type="primary"):
-            borrador_id = st.session_state.especificaciones_tecnicas_borrador_id
-            st.session_state.especificaciones_tecnicas_confirmar_eliminar_borrador = False
-            if borrador_id is not None and eliminar_borrador_especificaciones_tecnicas(borrador_id):
-                _reiniciar_estado_especificaciones_tecnicas()
-                st.success("Contratación eliminada.")
-            st.rerun()
-        if col_cancelar.button("Cancelar", key="especificaciones_tecnicas_cancelar_eliminar_borrador_btn"):
-            st.session_state.especificaciones_tecnicas_confirmar_eliminar_borrador = False
-            st.rerun()
-
-    if st.session_state.especificaciones_tecnicas_borrador_id is not None:
-        st.caption(f"Editando la contratación guardada #{st.session_state.especificaciones_tecnicas_borrador_id}.")
-    else:
-        st.caption("Contratación nueva: aún no se ha guardado.")
-
-
-def _inyectar_estilos_especificaciones_tecnicas_cards() -> None:
-    """CSS liviano de "Formularios y Registro": botones redondeados,
-    sombra sutil sobre el wrapper nativo de st.container(border=True)
-    (look de tarjeta), el sub-menu lateral de secciones de Especificaciones Técnicas
-    distinguido de los 5 botones de pagina de arriba (ver
-    _render_navegacion_especificaciones_tecnicas_sidebar), y las metricas financieras
-    (Sumatoria Total, Presupuesto Referencial) resaltadas -- mismo patron
-    de st.container(key=...) -> ".st-key-<key>" ya usado en la zona de
-    peligro de render_vaciar_base_datos (linea ~1176)."""
-    st.markdown(
-        f"""
-        <style>
-        .stButton > button {{
-            border-radius: 10px;
-        }}
-        [data-testid="stVerticalBlockBorderWrapper"] {{
-            box-shadow: 0 1px 4px rgba(15, 23, 42, 0.10);
-        }}
-        .st-key-especificaciones_tecnicas_sidebar_subnav {{
-            border-left: 2px solid rgba(255, 255, 255, 0.15);
-            margin-left: 0.35rem;
-            padding-left: 0.5rem;
-        }}
-        .st-key-especificaciones_tecnicas_sidebar_subnav .stButton > button {{
-            font-size: 0.85rem;
-            font-weight: 500;
-            padding: 0.45rem 0.7rem;
-        }}
-        .st-key-especificaciones_tecnicas_metrica_sumatoria,
-        .st-key-especificaciones_tecnicas_metrica_presupuesto {{
-            border-color: {COLOR_SIDEBAR_ACENTO} !important;
-            background-color: #FFF7ED;
-        }}
-        .st-key-especificaciones_tecnicas_metrica_sumatoria [data-testid="stMetricValue"] {{
-            color: {COLOR_SIDEBAR_ACENTO};
-            font-size: 1.6rem;
-        }}
-        .st-key-especificaciones_tecnicas_metrica_presupuesto input {{
-            color: {COLOR_SIDEBAR_ACENTO} !important;
-            font-weight: 700;
-            font-size: 1.05rem;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _render_navegacion_especificaciones_tecnicas_sidebar(nombres_secciones: list[str]) -> None:
-    """Menu lateral de las secciones de Especificaciones Técnicas, anidado DENTRO del
-    sidebar principal (debajo de los 5 botones de pagina de
-    render_navegacion_sidebar, ver el st.divider()+st.caption() que lo
-    preceden) -- no reemplaza esa navegacion, la extiende solo mientras
-    se esta en "Municipalidad de Guayaquil". Mismo patron ya probado ahi:
-    un st.button por opcion (no st.tabs()/st.radio, ver el comentario en
-    render_formularios_y_registro sobre por que) que fija
-    especificaciones_tecnicas_tab_activa en session_state y dispara st.rerun(). Envuelto en
-    st.container(key="especificaciones_tecnicas_sidebar_subnav") para poder distinguirlo con
-    CSS propio (ver _inyectar_estilos_especificaciones_tecnicas_cards) sin tocar la regla
-    compartida que estiliza los botones de pagina de arriba."""
-    with st.sidebar:
-        st.divider()
-        st.caption("ESPECIFICACIONES TÉCNICAS")
-        with st.container(key="especificaciones_tecnicas_sidebar_subnav"):
-            for nombre in nombres_secciones:
-                activo = st.session_state.especificaciones_tecnicas_tab_activa == nombre
-                if st.button(
-                    nombre,
-                    key=f"especificaciones_tecnicas_nav_{nombre}",
-                    use_container_width=True,
-                    type="primary" if activo else "secondary",
-                ):
-                    st.session_state.especificaciones_tecnicas_tab_activa = nombre
-                    st.rerun()
-
-
-def render_formularios_y_registro() -> None:
-    """Subseccion "Formularios y Registro": genera el .docx (y la tabla
-    de items en Excel) de Especificaciones Tecnicas para los
-    Procesos de Bienes, replicando el formato exacto de un modelo Word
-    de referencia (ver scripts/especificaciones_tecnicas_generator.py). El encabezado fijo,
-    la tabla de items con calculo automatico y su tipo Bien/Servicio POR
-    ITEM, las especificaciones tecnicas condicionales, ~30 campos de
-    condiciones legales (organizados en expanders) y una vista previa en
-    vivo se organizan en 4 secciones navegables desde un menu lateral
-    (ver _render_navegacion_especificaciones_tecnicas_sidebar) para no ser un formulario
-    gigante."""
-    # Aplica un borrador recien elegido en el selectbox del panel de
-    # borradores ANTES que cualquier otra cosa en esta funcion, incluidos
-    # los defaults de mas abajo: es el primerisimo punto del rerun donde
-    # todavia no se instancio ningun widget de ninguna seccion, que es
-    # justamente lo que garantiza que Streamlit no le pise el valor
-    # despues (ver el comentario en _render_panel_borradores_especificaciones_tecnicas, rama
-    # "Cargar contratación guardada", sobre por que la restauracion no se
-    # puede hacer en el mismo rerun en que se detecta la seleccion).
-    if "especificaciones_tecnicas_estado_pendiente_restaurar" in st.session_state:
-        _restaurar_estado_especificaciones_tecnicas(st.session_state.pop("especificaciones_tecnicas_estado_pendiente_restaurar"))
-        # _guardar_campos_simples_especificaciones_tecnicas() AHORA MISMO, no al final de la
-        # funcion: los campos de una seccion que no sea la activa (la que
-        # se restauro junto con todo lo demas) no van a pasar por ningun
-        # widget en ESTE rerun, asi que van a quedar "huerfanos" otra vez
-        # de cara al proximo rerun -- la sombra es lo unico que los trae
-        # de vuelta (ver _restaurar_campos_simples_especificaciones_tecnicas), y si Streamlit
-        # interrumpe este rerun a medio camino porque el usuario ya
-        # disparo otra interaccion (ej. cambiar de seccion) antes de que
-        # este termine solo, un `_guardar_campos_simples_especificaciones_tecnicas()` al
-        # final de la funcion nunca llegaria a ejecutarse. Guardando la
-        # sombra aqui, en la primera linea posible, esto ya quedo hecho
-        # pase lo que pase con el resto del rerun.
-        _guardar_campos_simples_especificaciones_tecnicas()
-
-    _inyectar_estilos_especificaciones_tecnicas_cards()
-
-    st.subheader(":material/edit_note: Formularios y Registro")
-    st.caption(
-        "Genera el documento de Especificaciones Técnicas para los Procesos de Bienes, "
-        "con el mismo formato del modelo institucional."
-    )
-
-    if "especificaciones_tecnicas_items_df" not in st.session_state:
-        st.session_state.especificaciones_tecnicas_items_df = _dataframe_items_especificaciones_tecnicas_vacio()
-    if "especificaciones_tecnicas_items_editor_version" not in st.session_state:
-        st.session_state.especificaciones_tecnicas_items_editor_version = 0
-    if "especificaciones_tecnicas_siguiente_fila_id" not in st.session_state:
-        st.session_state.especificaciones_tecnicas_siguiente_fila_id = 0
-    if "especificaciones_tecnicas_cpc_df" not in st.session_state:
-        st.session_state.especificaciones_tecnicas_cpc_df = _dataframe_cpc_especificaciones_tecnicas_vacio()
-    if "especificaciones_tecnicas_specs" not in st.session_state:
-        st.session_state.especificaciones_tecnicas_specs = []
-    if "especificaciones_tecnicas_siguiente_param_id" not in st.session_state:
-        st.session_state.especificaciones_tecnicas_siguiente_param_id = 0
-
-    _restaurar_campos_simples_especificaciones_tecnicas()
-
-    # st.tabs() nativo no acepta key/session_state: su seccion activa se
-    # rastrea solo en el frontend, y se sabe que se resetea a la primera
-    # cuando el script hace st.rerun() manual (como los botones
-    # "Añadir/Quitar item"/"Añadir/Quitar parametro" mas abajo) en vez de
-    # un rerun nativo disparado por el propio widget editado. Un selector
-    # respaldado en session_state (mismo patron ya probado en
-    # render_navegacion_sidebar, reutilizado tal cual en
-    # _render_navegacion_especificaciones_tecnicas_sidebar) elimina ese reseteo de forma
-    # deterministica, sin depender de como Streamlit maneje cada rerun.
-    NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS = [
-        "Gestor de Borradores / Contrataciones",
-        "Formulario y Parámetros",
-        "Ítems y Presupuesto",
-        "Generación y Vista Previa",
-    ]
-    if "especificaciones_tecnicas_tab_activa" not in st.session_state:
-        st.session_state.especificaciones_tecnicas_tab_activa = NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[0]
-    elif st.session_state.especificaciones_tecnicas_tab_activa not in NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS:
-        # Puede pasar al cargar un borrador guardado ANTES de este cambio
-        # (tenia nombres de pestaña viejos, ej. "4. Condiciones Legales y
-        # Descarga") -- a diferencia del st.radio() de antes (que hubiera
-        # tirado un StreamlitAPIException, un error duro y visible ante
-        # un valor fuera de lista), el selector por botones no valida
-        # nada: un valor no reconocido simplemente no hace matchear
-        # ningun `elif` de mas abajo y deja la seccion en blanco sin
-        # ningun aviso. Se aterriza en "Formulario y Parámetros" (no en
-        # la primera de la lista) porque quien esta en este caso
-        # probablemente acaba de cargar un borrador viejo y quiere ver
-        # sus datos, no la pantalla de borradores.
-        st.session_state.especificaciones_tecnicas_tab_activa = NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[1]
-
-    _render_navegacion_especificaciones_tecnicas_sidebar(NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS)
-    tab_activa = st.session_state.especificaciones_tecnicas_tab_activa
-
-    if tab_activa == NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[0]:
-        with st.container(border=True):
-            _render_panel_borradores_especificaciones_tecnicas()
-
-    elif tab_activa == NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[1]:
-        with st.container(border=True):
-            st.markdown("**Encabezado fijo del documento**")
-            st.info(f"{TITULO_PROCESO_FIJO}\n\n{COORDINACION_FIJA}")
-            st.text_area(
-                'Objeto de contratación (se resalta en amarillo en el documento generado)',
-                placeholder="Ej: SUMINISTRO, INSTALACIÓN, MANTENIMIENTO PREVENTIVO Y REPOTENCIACIÓN DE...",
-                key="especificaciones_tecnicas_objeto_contratacion",
-            )
-
-        st.markdown("**Especificaciones Técnicas por Ítem**")
-        df_items = _recalcular_items_especificaciones_tecnicas(st.session_state.especificaciones_tecnicas_items_df)
-        cantidad_items = len(df_items)
-        specs = st.session_state.especificaciones_tecnicas_specs
-        tipos_por_fila = df_items["Tipo"].fillna("Bien").tolist() if cantidad_items else []
-
-        while len(specs) < cantidad_items:
-            specs.append(_specs_vacias_especificaciones_tecnicas(tipos_por_fila[len(specs)]))
-        del specs[cantidad_items:]
-        for indice, tipo_fila in enumerate(tipos_por_fila):
-            # si el usuario cambio el Tipo de ESE item en la seccion de
-            # Items, la spec ya cargada tiene la forma equivocada y hay
-            # que reiniciarla (no se puede mezclar, ej., parametros de
-            # Bien con campos de Servicio).
-            es_spec_de_servicio = "procedimiento" in specs[indice]
-            if es_spec_de_servicio != (tipo_fila == "Servicio"):
-                specs[indice] = _specs_vacias_especificaciones_tecnicas(tipo_fila)
-
-        if cantidad_items == 0:
-            st.info(
-                'Agrega ítems en la sección "Ítems y Presupuesto" para poder '
-                "describir sus especificaciones técnicas."
-            )
-        else:
-            for indice in range(cantidad_items):
-                tipo_item = tipos_por_fila[indice]
-                descripcion_item = df_items.iloc[indice]["Descripción"] or f"Ítem {indice + 1}"
-                with st.expander(
-                    f"Ítem {indice + 1} ({tipo_item}) — {descripcion_item}", expanded=(indice == 0)
-                ):
-                    spec = specs[indice]
-                    if tipo_item == "Bien":
-                        spec["descripcion_material"] = st.text_area(
-                            "Descripción de Material",
-                            value=spec.get("descripcion_material", ""),
-                            key=f"especificaciones_tecnicas_specs_material_{indice}",
-                        )
-                        spec["subtitulo_specs"] = st.text_input(
-                            'Subtítulo (equivalente a "Modelo de Ejemplo", se resalta en verde)',
-                            value=spec.get("subtitulo_specs", "MODELO DE EJEMPLO"),
-                            key=f"especificaciones_tecnicas_specs_subtitulo_{indice}",
-                        )
-                        st.caption(
-                            "Parámetros técnicos (ej. Parámetros de módulos, Gabinetes, Pantalla, etc.)"
-                        )
-                        parametros = spec.setdefault("parametros", [])
-                        for indice_param, parametro in enumerate(parametros):
-                            param_id = parametro["id"]
-                            col_nombre, col_valor, col_quitar = st.columns([2, 2, 1])
-                            etiquetas = "visible" if indice_param == 0 else "collapsed"
-                            parametro["nombre"] = col_nombre.text_input(
-                                "Parámetro",
-                                value=parametro.get("nombre", ""),
-                                key=f"especificaciones_tecnicas_specs_param_nombre_{indice}_{param_id}",
-                                label_visibility=etiquetas,
-                            )
-                            # text_area (no text_input): algunas descripciones tecnicas
-                            # traen listas en viñetas u otro texto multilinea, y un
-                            # text_input de una sola linea le borraria los saltos de
-                            # linea apenas el usuario/el archivo cargado los escribe.
-                            parametro["valor"] = col_valor.text_area(
-                                "Valor",
-                                value=parametro.get("valor", ""),
-                                key=f"especificaciones_tecnicas_specs_param_valor_{indice}_{param_id}",
-                                label_visibility=etiquetas,
-                                height=68,
-                            )
-                            if col_quitar.button(
-                                ":material/delete:", key=f"especificaciones_tecnicas_specs_param_quitar_{indice}_{param_id}"
-                            ):
-                                parametros.pop(indice_param)
-                                st.rerun()
-
-                        col_agregar, col_cargar_archivo = st.columns([1, 2])
-                        if col_agregar.button(":material/add: Añadir parámetro", key=f"especificaciones_tecnicas_specs_agregar_param_{indice}"):
-                            st.session_state.especificaciones_tecnicas_siguiente_param_id += 1
-                            parametros.append(
-                                {
-                                    "id": st.session_state.especificaciones_tecnicas_siguiente_param_id,
-                                    "nombre": "",
-                                    "valor": "",
-                                }
-                            )
-                            st.rerun()
-
-                        # Carga masiva: Excel/CSV/TXT con cualquier estructura de
-                        # columnas se anexa a `parametros` -- nunca lo reemplaza,
-                        # igual que el boton manual de arriba (ver
-                        # scripts/importador_parametros.py: camino rapido
-                        # determinístico para 2 columnas limpias, con escalada
-                        # automática a un normalizador vía IA para archivos con
-                        # celdas combinadas de Excel, columnas extra o texto
-                        # libre). La clave
-                        # `especificaciones_tecnicas_specs_param_archivo_procesado_{indice}` guarda el
-                        # file_id del ultimo archivo ya procesado para ESTE item:
-                        # sin ese control, como el archivo subido sigue "presente"
-                        # en el uploader en cada rerun posterior (Streamlit no lo
-                        # limpia solo), sus filas se volverian a anexar una y otra
-                        # vez en cualquier rerun futuro (ej. al tipear en otro campo).
-                        archivo_subido = col_cargar_archivo.file_uploader(
-                            ":material/attach_file: Cargar parámetros desde archivo (Excel/CSV/TXT, cualquier estructura)",
-                            type=["xlsx", "csv", "txt"],
-                            key=f"especificaciones_tecnicas_specs_param_uploader_{indice}",
-                        )
-                        clave_procesado = f"especificaciones_tecnicas_specs_param_archivo_procesado_{indice}"
-                        # Los errores del camino IA (red/timeout) son transitorios: a
-                        # diferencia de un error de archivo (permanente, se marca
-                        # `clave_procesado` para no reintentar solo), aquí NO se marca
-                        # `clave_procesado` -- pero tampoco se reintenta automáticamente
-                        # en cada rerun no relacionado (ej. al tipear en otro campo),
-                        # porque eso dispararía llamadas a la API repetidas y silenciosas.
-                        # En cambio se guarda el error y se ofrece un botón explícito de
-                        # "Reintentar" que dispara un solo intento más.
-                        clave_error_llm = f"especificaciones_tecnicas_specs_param_error_llm_{indice}"
-                        clave_reintentar = f"especificaciones_tecnicas_specs_param_reintentar_{indice}"
-                        if archivo_subido is None:
-                            st.session_state[clave_error_llm] = None
-                        else:
-                            debe_procesar = st.session_state.get(
-                                clave_procesado
-                            ) != archivo_subido.file_id or st.session_state.get(clave_reintentar, False)
-                            if debe_procesar:
-                                st.session_state[clave_reintentar] = False
-                                try:
-                                    with st.spinner("Procesando archivo..."):
-                                        resultado = importar_parametros(
-                                            archivo_subido.name, archivo_subido.getvalue()
-                                        )
-                                except ErrorLLMImportacionParametros as exc:
-                                    st.session_state[clave_error_llm] = str(exc)
-                                except ErrorImportacionParametros as exc:
-                                    st.session_state[clave_procesado] = archivo_subido.file_id
-                                    st.session_state[clave_error_llm] = None
-                                    st.error(f"No se pudo procesar «{archivo_subido.name}»: {exc}")
-                                else:
-                                    for nuevo in resultado.parametros:
-                                        st.session_state.especificaciones_tecnicas_siguiente_param_id += 1
-                                        parametros.append(
-                                            {
-                                                "id": st.session_state.especificaciones_tecnicas_siguiente_param_id,
-                                                "nombre": nuevo["nombre"],
-                                                "valor": nuevo["valor"],
-                                            }
-                                        )
-                                    st.session_state[clave_procesado] = archivo_subido.file_id
-                                    st.session_state[clave_error_llm] = None
-                                    camino_legible = "con ayuda de IA" if resultado.camino == "llm" else "directamente"
-                                    st.success(
-                                        f"Se agregaron {len(resultado.parametros)} parámetro(s) desde "
-                                        f"«{archivo_subido.name}» (procesado {camino_legible})."
-                                    )
-                                    if resultado.advertencia_integridad:
-                                        st.warning(resultado.advertencia_integridad)
-                                    if resultado.filas_descartadas:
-                                        # st.container (no st.expander): esta seccion ya esta
-                                        # dentro del expander "Item N" mas arriba, y Streamlit
-                                        # no permite anidar expanders (StreamlitAPIException).
-                                        with st.container(border=True):
-                                            st.caption(
-                                                f"{len(resultado.filas_descartadas)} fila(s) descartada(s) del archivo original:"
-                                            )
-                                            for descarte in resultado.filas_descartadas:
-                                                st.caption(f"«{descarte['fila']}» — {descarte['motivo']}")
-                                    st.rerun()
-
-                        if archivo_subido is not None and st.session_state.get(clave_error_llm):
-                            st.error(
-                                f"No se pudo procesar «{archivo_subido.name}» con ayuda de IA: "
-                                f"{st.session_state[clave_error_llm]}"
-                            )
-                            if col_cargar_archivo.button(
-                                ":material/refresh: Reintentar",
-                                key=f"especificaciones_tecnicas_specs_param_reintentar_btn_{indice}",
-                            ):
-                                st.session_state[clave_reintentar] = True
-                                st.rerun()
-                    else:
-                        spec["procedimiento"] = st.text_area(
-                            "Procedimiento (Desmontaje/Montaje)",
-                            value=spec.get("procedimiento", ""),
-                            key=f"especificaciones_tecnicas_specs_procedimiento_{indice}",
-                        )
-                        spec["herramientas_equipo"] = st.text_area(
-                            "Herramientas/Equipo",
-                            value=spec.get("herramientas_equipo", ""),
-                            key=f"especificaciones_tecnicas_specs_herramientas_{indice}",
-                        )
-                        spec["normas_aplicables"] = st.text_area(
-                            "Normas aplicables",
-                            value=spec.get("normas_aplicables", ""),
-                            key=f"especificaciones_tecnicas_specs_normas_{indice}",
-                        )
-                        spec["medicion"] = st.text_area(
-                            "Medición",
-                            value=spec.get("medicion", ""),
-                            key=f"especificaciones_tecnicas_specs_medicion_{indice}",
-                        )
-                        spec["forma_pago"] = st.text_area(
-                            "Forma de Pago",
-                            value=spec.get("forma_pago", ""),
-                            key=f"especificaciones_tecnicas_specs_forma_pago_{indice}",
-                        )
-                        spec["obligaciones"] = st.text_area(
-                            "Obligaciones",
-                            value=spec.get("obligaciones", ""),
-                            key=f"especificaciones_tecnicas_specs_obligaciones_{indice}",
-                        )
-
-    elif tab_activa == NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[2]:
-        with st.container(border=True):
-            st.markdown("**Ítems**")
-            st.caption(
-                'Cada ítem tiene su propio selector "Tipo" (Bien/Servicio): distintos ítems del '
-                'mismo proceso pueden ser de distinto tipo. La columna "Valor Total" se calcula '
-                'automáticamente (Cantidad Solicitada × Valor Unitario) y no es editable. Presiona '
-                '"Guardar Ítems" para aplicar los cambios.'
-            )
-
-            # Importar items desde archivo: fuera del st.form a proposito --
-            # un file_uploader dentro de un form no se procesa hasta el
-            # submit, y aca se necesita feedback inmediato (resumen,
-            # advertencias, boton de reintento) apenas se sube. Ver
-            # scripts/importador_items.py: camino rapido deterministico
-            # (deteccion de encabezado + fuzzy matching de columnas) con
-            # respaldo via IA para archivos sin estructura de columnas clara.
-            archivo_items_subido = st.file_uploader(
-                ":material/upload_file: Cargar ítems desde archivo (Excel/CSV/TXT) -- columnas "
-                "ÍTEM, DESCRIPCIÓN, UNIDAD, CANTIDAD, PRECIO UNITARIO y CPC (en cualquier orden, "
-                "con encabezados alterados, o sin estructura de columnas clara)",
-                type=["xlsx", "csv", "txt"],
-                key="especificaciones_tecnicas_items_uploader",
-            )
-            clave_procesado_items = "especificaciones_tecnicas_items_archivo_procesado"
-            # Mismo patron de dos niveles de error que el uploader de
-            # Parametros: un error permanente (archivo vacio/corrupto) marca
-            # el archivo como procesado y no reintenta solo; un error
-            # transitorio del camino IA (red/timeout) NO lo marca, pero
-            # tampoco reintenta automaticamente en cada rerun no relacionado
-            # -- se guarda el mensaje y se ofrece un boton explicito de
-            # "Reintentar" que dispara un solo intento mas.
-            clave_error_llm_items = "especificaciones_tecnicas_items_error_llm"
-            clave_reintentar_items = "especificaciones_tecnicas_items_reintentar"
-            if archivo_items_subido is None:
-                st.session_state[clave_error_llm_items] = None
-            else:
-                debe_procesar_items = st.session_state.get(
-                    clave_procesado_items
-                ) != archivo_items_subido.file_id or st.session_state.get(clave_reintentar_items, False)
-                if debe_procesar_items:
-                    st.session_state[clave_reintentar_items] = False
-                    try:
-                        with st.spinner("Procesando archivo de ítems..."):
-                            resultado_items = importar_items(
-                                archivo_items_subido.name,
-                                archivo_items_subido.getvalue(),
-                                catalogo_cpc=_cargar_catalogo_cpc(),
-                            )
-                    except ErrorLLMImportacionItems as exc:
-                        st.session_state[clave_error_llm_items] = str(exc)
-                    except ErrorImportacionItems as exc:
-                        st.session_state[clave_procesado_items] = archivo_items_subido.file_id
-                        st.session_state[clave_error_llm_items] = None
-                        st.error(f"No se pudo procesar «{archivo_items_subido.name}»: {exc}")
-                    else:
-                        # Mismos dtypes que _dataframe_items_especificaciones_tecnicas_vacio():
-                        # "Ítem" y "_fila_id" quedan en pd.NA (Int64), igual que una fila
-                        # agregada a mano con el boton "+" del editor -- la logica ya
-                        # existente (_asignar_fila_ids_especificaciones_tecnicas /
-                        # _recalcular_items_especificaciones_tecnicas) los completa en el
-                        # proximo "Guardar Ítems", sin que este importador toque esa parte.
-                        cantidad_filas_nuevas = len(resultado_items.filas)
-                        filas_nuevas = pd.DataFrame(
-                            {
-                                "Ítem": pd.array([pd.NA] * cantidad_filas_nuevas, dtype="Int64"),
-                                "Tipo": [f["tipo"] for f in resultado_items.filas],
-                                "Descripción": [f["descripcion"] for f in resultado_items.filas],
-                                "Unidad de Medida": [f["unidad_medida"] for f in resultado_items.filas],
-                                "Cantidad Solicitada": [f["cantidad_solicitada"] for f in resultado_items.filas],
-                                "Valor Unitario": [f["valor_unitario"] for f in resultado_items.filas],
-                                "Valor Total": [0.0] * cantidad_filas_nuevas,
-                                "Descripción CPC": [f["descripcion_cpc"] for f in resultado_items.filas],
-                                "Número CPC": [f["numero_cpc"] for f in resultado_items.filas],
-                                "_fila_id": pd.array([pd.NA] * cantidad_filas_nuevas, dtype="Int64"),
-                            }
-                        )
-                        st.session_state.especificaciones_tecnicas_items_df = pd.concat(
-                            [st.session_state.especificaciones_tecnicas_items_df, filas_nuevas], ignore_index=True
-                        )
-                        st.session_state.especificaciones_tecnicas_items_editor_version += 1
-                        st.session_state[clave_procesado_items] = archivo_items_subido.file_id
-                        st.session_state[clave_error_llm_items] = None
-                        camino_legible = "con ayuda de IA" if resultado_items.camino == "llm" else "directamente"
-                        st.success(
-                            f"Se agregaron {cantidad_filas_nuevas} ítem(s) desde "
-                            f"«{archivo_items_subido.name}» (procesado {camino_legible})."
-                        )
-                        if resultado_items.cpc_no_encontrados:
-                            codigos_unicos = ", ".join(sorted(set(resultado_items.cpc_no_encontrados)))
-                            st.warning(f"Código(s) CPC no encontrado(s) en el catálogo: {codigos_unicos}")
-                        if resultado_items.filas_con_error:
-                            # st.container (no st.expander): aunque esta seccion no esta
-                            # anidada en otro expander hoy, se usa el mismo patron ya
-                            # corregido en el importador de Parametros para no reintroducir
-                            # el StreamlitAPIException de expanders anidados si la UI se
-                            # reestructura mas adelante.
-                            with st.container(border=True):
-                                st.caption(f"{len(resultado_items.filas_con_error)} fila(s) con advertencias:")
-                                for error in resultado_items.filas_con_error:
-                                    st.caption(f"«{error['fila']}» — {error['motivo']}")
-                        st.rerun()
-
-            if archivo_items_subido is not None and st.session_state.get(clave_error_llm_items):
-                st.error(
-                    f"No se pudo procesar «{archivo_items_subido.name}» con ayuda de IA: "
-                    f"{st.session_state[clave_error_llm_items]}"
-                )
-                if st.button(":material/refresh: Reintentar", key="especificaciones_tecnicas_items_reintentar_btn"):
-                    st.session_state[clave_reintentar_items] = True
-                    st.rerun()
-
-            # La edicion vive dentro de un st.form: sin esto, CADA tecla/celda
-            # confirmada dispara un rerun completo de todo el script mientras
-            # el usuario sigue escribiendo, lo que puede chocar con el propio
-            # render en curso del data_editor y competir con el resto de la
-            # app por cada pulsacion. Dentro de un formulario, Streamlit NO
-            # reejecuta el script hasta que se presiona el boton de submit:
-            # todas las ediciones de celda se acumulan en el propio grid
-            # (estado del navegador) y se entregan de una sola vez.
-            #
-            # La columna "Ítem" es NumberColumn(disabled=True): el usuario no
-            # puede escribir en ella, asi que una fila nueva (num_rows are
-            # "dynamic") queda con ese valor en None hasta que se recalcula.
-            # Si esa fila con None se guarda tal cual en session_state y se
-            # vuelve a pasar como `data=` al MISMO key de data_editor, el
-            # dtype de la columna cambia de una corrida a otra (numpy "int"
-            # no admite None, así que pandas lo sube silenciosamente a
-            # float/object): el grid del frontend (glide-data-grid) recibe un
-            # esquema de columnas distinto al que ya tenia montado para ese
-            # key y su reconciliacion de React falla con "NotFoundError:
-            # Failed to execute 'removeChild'", tipicamente ocultando o
-            # perdiendo filas incompletas en el proceso. La solucion no es
-            # solo evitar recalcular -- es no reutilizar el mismo key con un
-            # dataframe de forma/dtype distinta: version = un key nuevo cada
-            # vez que se guarda, forzando un remount limpio del grid en vez
-            # de un diff incremental sobre un esquema que ya no coincide.
-            with st.form("especificaciones_tecnicas_form_items", clear_on_submit=False):
-                df_editado = st.data_editor(
-                    st.session_state.especificaciones_tecnicas_items_df,
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    key=f"especificaciones_tecnicas_data_editor_{st.session_state.especificaciones_tecnicas_items_editor_version}",
-                    column_order=COLUMNAS_VISIBLES_ITEMS_ESPECIFICACIONES_TECNICAS,
-                    column_config={
-                        "Ítem": st.column_config.NumberColumn("Ítem", disabled=True, default=0),
-                        "Tipo": st.column_config.SelectboxColumn(
-                            "Tipo", options=["Bien", "Servicio"], required=True, default="Bien"
-                        ),
-                        "Cantidad Solicitada": st.column_config.NumberColumn(
-                            "Cantidad Solicitada", min_value=0.0, step=1.0, default=0.0
-                        ),
-                        "Valor Unitario": st.column_config.NumberColumn(
-                            "Valor Unitario", min_value=0.0, format="%.2f", default=0.0
-                        ),
-                        "Valor Total": st.column_config.NumberColumn("Valor Total", disabled=True, format="%.2f"),
-                    },
-                )
-                guardar_items = st.form_submit_button(":material/save: Guardar Ítems", type="primary")
-
-            if guardar_items:
-                # Al guardar SI se recalcula (a diferencia de antes): "Ítem"
-                # y "Valor Total" quedan bien formados (sin None) antes de
-                # persistir a session_state, y el key con version bumped
-                # fuerza al grid a remontarse desde cero con ese dataframe ya
-                # limpio en el siguiente rerun -- no hay diff incremental que
-                # pueda desincronizarse. _asignar_fila_ids_especificaciones_tecnicas (identidad
-                # estable por fila) y el autocompletado de "Descripción CPC"
-                # corren ANTES de ese recalculo/remount, por la misma razon:
-                # nunca se reintroduce un dataframe a medio transformar en el
-                # mismo key.
-                df_con_ids = _asignar_fila_ids_especificaciones_tecnicas(df_editado)
-                df_autocompletado, cpc_no_encontrados = _autocompletar_descripcion_cpc(
-                    df_con_ids, st.session_state.especificaciones_tecnicas_items_df, _cargar_catalogo_cpc()
-                )
-                st.session_state.especificaciones_tecnicas_items_df = _recalcular_items_especificaciones_tecnicas(df_autocompletado)
-                st.session_state.especificaciones_tecnicas_items_editor_version += 1
-                if cpc_no_encontrados:
-                    codigos_unicos = ", ".join(sorted(set(cpc_no_encontrados)))
-                    st.warning(f"Código(s) CPC no encontrado(s) en el catálogo: {codigos_unicos}")
-                st.success("Ítems guardados.")
-                st.rerun()
-
-            # "_fila_id" es un detalle interno (identidad estable entre
-            # guardados, ver _asignar_fila_ids_especificaciones_tecnicas): se excluye de la
-            # vista de solo lectura y del Excel exportado, igual que ya se
-            # excluye del data_editor via column_order.
-            df_items_calculado = _recalcular_items_especificaciones_tecnicas(st.session_state.especificaciones_tecnicas_items_df)
-            df_items_visible = df_items_calculado.drop(columns=["_fila_id"], errors="ignore")
-            st.dataframe(
-                df_items_visible.style.format(
-                    {"Valor Unitario": formatear_moneda_ec, "Valor Total": formatear_moneda_ec}
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            # Sumatoria Total: misma fuente (_sumar_valor_total_items_especificaciones_tecnicas)
-            # que autocompleta el Presupuesto Referencial de mas abajo -- los
-            # dos numeros siempre coinciden porque ambos se calculan de este
-            # mismo dataframe. Contenedor con key propio para el resalte
-            # visual de metricas financieras (ver _inyectar_estilos_especificaciones_tecnicas_cards).
-            with st.container(key="especificaciones_tecnicas_metrica_sumatoria", border=True):
-                st.metric("Sumatoria Total", formatear_moneda_ec(_sumar_valor_total_items_especificaciones_tecnicas(df_items_visible)))
-
-            buffer_excel = io.BytesIO()
-            df_items_visible.to_excel(buffer_excel, index=False, engine="openpyxl")
-            st.download_button(
-                ":material/table_chart: Descargar Tabla de Ítems en Excel",
-                data=buffer_excel.getvalue(),
-                file_name="EspecificacionesTecnicas_items.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="especificaciones_tecnicas_descargar_excel",
-            )
-
-        with st.expander("Presupuesto y Alcance", expanded=True):
-            # Bloqueado y autocompletado con la Sumatoria Total de arriba
-            # (_sumar_valor_total_items_especificaciones_tecnicas): el usuario ya no puede
-            # escribir un presupuesto distinto al que resulta de sumar los
-            # items, para que ambos numeros nunca se desincronicen. Se
-            # recalcula del items_df en session_state en cada rerun de esta
-            # seccion, no de un valor guardado, asi que siempre refleja el
-            # estado actual de los items aunque se hayan editado despues de
-            # la ultima vez que se vio esta seccion.
-            st.session_state.especificaciones_tecnicas_presupuesto = _sumar_valor_total_items_especificaciones_tecnicas(
-                _recalcular_items_especificaciones_tecnicas(st.session_state.especificaciones_tecnicas_items_df)
-            )
-            with st.container(key="especificaciones_tecnicas_metrica_presupuesto"):
-                st.number_input(
-                    "Presupuesto Referencial (USD)",
-                    min_value=0.0,
-                    format="%.2f",
-                    key="especificaciones_tecnicas_presupuesto",
-                    disabled=True,
-                    help=(
-                        "Se autocompleta con la Sumatoria Total de los ítems y no se puede editar "
-                        "aquí. Se muestra en el documento con formato ecuatoriano, ej. "
-                        "$ 9.106.285,46."
-                    ),
-                )
-            st.markdown("**Requerimientos Adicionales Obligatorios**")
-            st.session_state.especificaciones_tecnicas_cpc_df = st.data_editor(
-                st.session_state.especificaciones_tecnicas_cpc_df,
-                num_rows="dynamic",
-                use_container_width=True,
-                key="especificaciones_tecnicas_cpc_editor",
-            )
-            st.text_input(
-                "Código CPC (detallar el código y la descripción del de mayor peso económico)",
-                key="especificaciones_tecnicas_codigo_cpc_mayor_peso",
-            )
-            st.text_area("Alcance", key="especificaciones_tecnicas_alcance")
-            st.text_input("Plazo de Ejecución: parcial y/o total (en días)", key="especificaciones_tecnicas_plazo")
-            st.markdown("**Personal Técnico/Equipo de Trabajo/Recursos según corresponda**")
-            st.text_area("1.- Personal Técnico Principal", key="especificaciones_tecnicas_personal_tecnico_principal")
-            st.text_area(
-                "2.- Personal Técnico Auxiliar o Secundario", key="especificaciones_tecnicas_personal_tecnico_auxiliar"
-            )
-            st.text_area("3.- Equipo de Trabajo", key="especificaciones_tecnicas_equipo_trabajo")
-            st.text_area("4.- Recursos", key="especificaciones_tecnicas_recursos")
-            st.text_area("Forma y condiciones de pago", key="especificaciones_tecnicas_forma_pago")
-            st.text_input("Lugar y dirección de entrega/ejecución", key="especificaciones_tecnicas_lugar")
-
-    elif tab_activa == NOMBRES_SECCIONES_ESPECIFICACIONES_TECNICAS[3]:
-        with st.expander("Obligaciones y Garantías"):
-            st.text_area("Obligaciones de la Entidad Contratante", key="especificaciones_tecnicas_obligaciones_entidad")
-            st.text_area("Obligaciones de la Contratista", key="especificaciones_tecnicas_obligaciones_contratista")
-            st.text_area(
-                "Garantías técnicas, en el caso de que aplique", key="especificaciones_tecnicas_garantias_tecnicas"
-            )
-            st.number_input(
-                "Monto USD de la Garantía de Responsabilidad Civil (mínimo USD 3.000)",
-                min_value=3000.0,
-                format="%.2f",
-                value=None,
-                key="especificaciones_tecnicas_monto_garantia_rc",
-            )
-            st.number_input(
-                "Vigencia de la oferta (días)", min_value=0, step=1, value=90, key="especificaciones_tecnicas_vigencia_oferta"
-            )
-            st.text_input("Tipo de adjudicación", key="especificaciones_tecnicas_tipo_adjudicacion")
-            st.caption(
-                "El documento incluye, con el texto fijo del modelo institucional: Multas (1 por "
-                "1000), Garantía de Fiel Cumplimiento y Garantía de Buen Uso de Anticipo, y "
-                "Reajuste de Precios."
-            )
-
-        with st.expander("Administrador y Contactos"):
-            st.markdown("**Administrador del Contrato**")
-            col1, col2, col3 = st.columns(3)
-            col1.text_input("Nombre del Administrador", key="especificaciones_tecnicas_admin_nombre")
-            col2.text_input("Cargo del Administrador", key="especificaciones_tecnicas_admin_cargo")
-            col3.text_input("Cédula del Administrador", key="especificaciones_tecnicas_admin_cedula")
-            st.caption(
-                f"El documento incluye, a continuación, la lista fija de "
-                f"{len(TEXTO_ATRIBUCIONES_ADMINISTRADOR)} atribuciones numeradas del Administrador del "
-                f"Contrato, más {len(TEXTO_ADMINISTRADOR_OBLIGACIONES_ADICIONALES)} obligaciones "
-                f"adicionales en viñetas y el párrafo de cierre sobre cambio de administrador."
-            )
-
-            st.markdown("**Técnico que no interviene en la contratación**")
-            col4, col5, col6 = st.columns(3)
-            col4.text_input("Nombre del Técnico", key="especificaciones_tecnicas_tecnico_nombre")
-            col5.text_input("Cargo del Técnico", key="especificaciones_tecnicas_tecnico_cargo")
-            col6.text_input("Correo del Técnico", key="especificaciones_tecnicas_tecnico_correo")
-
-            st.markdown("**Contacto**")
-            col7, col8 = st.columns(2)
-            col7.text_input("Dirección de contacto", key="especificaciones_tecnicas_direccion_contacto")
-            col8.text_input("Teléfono de contacto", key="especificaciones_tecnicas_telefono_contacto")
-
-            st.text_input("Proceso de contratación a aplicar", key="especificaciones_tecnicas_proceso_aplicar")
-            st.markdown("**Análisis para definir la estrategia de adquisición**")
-            st.caption(
-                "Editor de texto enriquecido: puedes pegar tablas e imágenes copiadas "
-                "directamente desde Excel o Word y se insertan en el documento manteniendo "
-                "su estructura. Requiere conexión a internet (el editor se carga desde cdnjs)."
-            )
-            # value=... se reusa como `default` (ver tinymce_editor): si esta
-            # seccion no se instancio en el rerun anterior, Streamlit
-            # borra el estado del widget con key="especificaciones_tecnicas_analisis_estrategia_editor"
-            # (mismo mecanismo que motivo _ESPECIFICACIONES_TECNICAS_CAMPOS_SIMPLES_PERSISTENTES,
-            # aplicado tambien a componentes custom con key), y el componente
-            # cae de vuelta a `default` -- por eso "especificaciones_tecnicas_analisis_estrategia_html"
-            # tambien esta en esa lista, aunque este widget no sea uno de los
-            # ~44 "simples": no quitar `value=` de aqui sin mantener ese respaldo.
-            st.session_state["especificaciones_tecnicas_analisis_estrategia_html"] = tinymce_editor(
-                value=st.session_state.get("especificaciones_tecnicas_analisis_estrategia_html", ""),
-                height=350,
-                key="especificaciones_tecnicas_analisis_estrategia_editor",
-            )
-
-        with st.expander("Evaluación y Calificación"):
-            col1, col2 = st.columns(2)
-            col1.number_input(
-                "% mínimo de experiencia general requerido",
-                min_value=0.0,
-                max_value=100.0,
-                value=None,
-                key="especificaciones_tecnicas_pct_general",
-            )
-            col2.number_input(
-                "% mínimo de experiencia específica requerido",
-                min_value=0.0,
-                max_value=100.0,
-                value=None,
-                key="especificaciones_tecnicas_pct_especifica",
-            )
-            st.text_input(
-                "Título profesional requerido para el personal técnico",
-                key="especificaciones_tecnicas_titulo_profesional",
-            )
-            st.text_area("Equipo de trabajo/recursos a evaluar", key="especificaciones_tecnicas_equipo_evaluar")
-            st.selectbox(
-                "Certificado de proveedor exclusivo o autorizado",
-                ["No", "Sí"],
-                key="especificaciones_tecnicas_certificado_proveedor",
-            )
-            st.selectbox("¿Aplica Patrimonio?", ["No", "Sí"], key="especificaciones_tecnicas_patrimonio_aplica")
-            if st.session_state.get("especificaciones_tecnicas_patrimonio_aplica") == "Sí":
-                st.caption(
-                    "Se incluirán en el documento las 2 tablas fijas de rangos de Patrimonio "
-                    "(Bienes y/o Servicios, y Obras)."
-                )
-            st.text_area(
-                "Evaluación del análisis de estrategia de adquisición",
-                key="especificaciones_tecnicas_evaluacion_estrategia",
-            )
-            st.text_area(
-                "Otros parámetros de evaluación y calificación", key="especificaciones_tecnicas_otros_parametros"
-            )
-            st.caption(
-                "El documento incluye, con texto y puntajes fijos del modelo institucional: la "
-                "tabla de checklist Cumple/No Cumple, y la metodología de evaluación por puntaje "
-                "(Experiencia General 10, Experiencia Específica 20, Experiencia del Personal "
-                "Técnico 10, Oferta Económica 50, Valor Agregado Ecuatoriano 10, Total 100)."
-            )
-
-        with st.expander("Fecha y Firmas"):
-            st.text_input("Fecha del documento", key="especificaciones_tecnicas_fecha")
-            st.markdown("**Firmas de responsabilidad**")
-            col_e1, col_e2, col_e3 = st.columns(3)
-            col_e1.text_input("Elaborado por — Nombre", key="especificaciones_tecnicas_firma_elaborado_nombre")
-            col_e2.text_input("Elaborado por — Cargo", key="especificaciones_tecnicas_firma_elaborado_cargo")
-            col_e3.text_input("Elaborado por — Firmado por", key="especificaciones_tecnicas_firma_elaborado_firmado")
-
-            col_r1, col_r2, col_r3 = st.columns(3)
-            col_r1.text_input("Revisado por — Nombre", key="especificaciones_tecnicas_firma_revisado_nombre")
-            col_r2.text_input("Revisado por — Cargo", key="especificaciones_tecnicas_firma_revisado_cargo")
-            col_r3.text_input("Revisado por — Firmado por", key="especificaciones_tecnicas_firma_revisado_firmado")
-
-            col_a1, col_a2, col_a3 = st.columns(3)
-            col_a1.text_input(
-                "Aprobado por — Nombre",
-                value=FIRMA_APROBADO_POR_DEFECTO_NOMBRE,
-                key="especificaciones_tecnicas_firma_aprobado_nombre",
-            )
-            col_a2.text_input(
-                "Aprobado por — Cargo",
-                value=FIRMA_APROBADO_POR_DEFECTO_CARGO,
-                key="especificaciones_tecnicas_firma_aprobado_cargo",
-            )
-            col_a3.text_input("Aprobado por — Firmado por", key="especificaciones_tecnicas_firma_aprobado_firmado")
-
-        st.divider()
-        if st.button(":material/description: Descargar Especificaciones Técnicas en Word", key="especificaciones_tecnicas_generar", type="primary"):
-            if st.session_state.especificaciones_tecnicas_items_df.empty:
-                st.warning(
-                    'Agrega al menos un ítem en la sección "Ítems y Presupuesto" '
-                    "antes de generar el documento."
-                )
-            else:
-                datos = _recolectar_datos_especificaciones_tecnicas()
-                nombre_archivo = f"EspecificacionesTecnicas_{_slug_nombre_archivo(datos['objeto_contratacion'] or 'documento')}.docx"
-                ruta_temporal = Path(tempfile.gettempdir()) / nombre_archivo
-                generar_especificaciones_tecnicas(datos, ruta_temporal)
-                st.session_state.especificaciones_tecnicas_docx_bytes = ruta_temporal.read_bytes()
-                st.session_state.especificaciones_tecnicas_docx_nombre = nombre_archivo
-                ruta_temporal.unlink(missing_ok=True)
-                st.success("Documento generado correctamente.")
-
-        if st.session_state.get("especificaciones_tecnicas_docx_bytes"):
-            st.download_button(
-                ":material/download: Descargar " + st.session_state.especificaciones_tecnicas_docx_nombre,
-                data=st.session_state.especificaciones_tecnicas_docx_bytes,
-                file_name=st.session_state.especificaciones_tecnicas_docx_nombre,
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                key="especificaciones_tecnicas_descargar_docx",
-            )
-
-        st.divider()
-        st.markdown("**Vista Previa**")
-        st.caption(
-            "Se actualiza automáticamente a medida que completas los datos en las otras "
-            "secciones. Los campos vacíos se muestran en blanco, resaltados en amarillo."
-        )
-        _render_vista_previa_especificaciones_tecnicas(_recolectar_datos_especificaciones_tecnicas())
-
-    _guardar_campos_simples_especificaciones_tecnicas()
 
 
 def _iniciar_actualizacion_montos_adjudicados() -> None:
@@ -4366,7 +3296,8 @@ def _iniciar_actualizacion_montos_adjudicados() -> None:
                 stderr=subprocess.STDOUT,
             )
     except OSError as exc:
-        st.session_state.actualizar_montos_error_lanzamiento = str(exc)
+        logger.exception("No se pudo lanzar la actualizacion de montos adjudicados: %s", exc)
+        st.session_state.actualizar_montos_error_lanzamiento = "revisa que el entorno de Python esté disponible e inténtalo de nuevo."
         return
     st.session_state.actualizar_montos_error_lanzamiento = None
     st.session_state.actualizar_montos_proceso = proceso
@@ -4425,6 +3356,11 @@ def render_actualizar_montos_adjudicados() -> None:
                 f":material/check_circle: {actualizados} proceso(s) actualizado(s) en "
                 f"{_formatear_duracion_es(transcurrido_s)}. {sin_adjudicar} sin adjudicar todavía."
             )
+            # obtener_contrataciones() esta cacheada 10 min (ver
+            # services/sercop.py): sin este .clear(), Municipalidad de
+            # Guayaquil (KPIs, tabla, gauge de ahorro) seguiria mostrando los
+            # montos adjudicados previos hasta que expire el TTL.
+            obtener_contrataciones.clear()
         else:
             st.info(
                 f":material/info: Ningún proceso nuevo para actualizar "
@@ -4443,18 +3379,84 @@ def render_actualizar_montos_adjudicados() -> None:
 
 def render_pagina_municipalidad_guayaquil(registros_totales: list[dict]) -> None:
     st.header(":material/location_city: Municipalidad de Guayaquil")
-    registros_municipio = filtrar_por_entidad(registros_totales, ENTIDAD_MUNICIPALIDAD_GUAYAQUIL)
-    if registros_municipio:
-        render_contadores(registros_municipio)
-        st.divider()
-        render_metricas_resumen(registros_municipio, mostrar_monto_adjudicado=True)
-        render_tabla_con_color(registros_municipio, mostrar_monto_adjudicado=True)
-        render_actualizar_montos_adjudicados()
-    else:
-        st.info(f'No se encontraron procesos para "{ENTIDAD_MUNICIPALIDAD_GUAYAQUIL}".')
 
-    st.divider()
-    render_formularios_y_registro()
+    # Antes, "Especificaciones Técnicas" (render_formularios_y_registro) iba
+    # pegado debajo de "Análisis" con un st.divider(), y su propia
+    # sub-navegacion de 4 secciones vivia inyectada en el sidebar (ver
+    # ui/especificaciones_tecnicas.py, ya eliminado de ahi). Pestañas de
+    # primer nivel en vez de eso: el sidebar queda igual en todas las
+    # paginas (mismo criterio que Reportes, ver ui/reportes.py) y las 4
+    # secciones de Especificaciones Técnicas pasan a ser sub-pestañas
+    # dentro de la segunda, sin cambiar nada de su logica interna (ver esa
+    # funcion para el detalle).
+    tab_analisis, tab_especificaciones_tecnicas = st.tabs(
+        [":material/query_stats: Análisis", ":material/edit_note: Especificaciones Técnicas"]
+    )
+
+    with tab_analisis:
+        registros_municipio = filtrar_por_entidad(registros_totales, ENTIDAD_MUNICIPALIDAD_GUAYAQUIL)
+        if registros_municipio:
+            col_anio, _ = st.columns([1, 3])
+            anios = _anios_disponibles(registros_municipio)
+            anio_sel = col_anio.selectbox("Año", ["(Todos)"] + anios, key="muni_gye_anio")
+            anio_filtro = None if anio_sel == "(Todos)" else anio_sel
+            registros_filtrados = _filtrar_por_anio(registros_municipio, anio_filtro)
+
+            st.caption(
+                f"Mostrando {len(registros_filtrados)} de {len(registros_municipio)} contrataciones · Año: {anio_sel}"
+            )
+
+            if registros_filtrados:
+                estado_clic = render_grafico_estado_clic(registros_filtrados)
+                if estado_clic and estado_clic != st.session_state.get("filtro_estado_click"):
+                    st.session_state.filtro_estado_click = estado_clic
+                    st.rerun()
+
+                st.divider()
+                # Usa registros_filtrados (solo filtro de Año), NO registros_finales
+                # (que ademas aplicaria el filtro de estado del clic): el pipeline
+                # existe para mostrar el pipeline COMPLETO de una sola vez, encadenarlo
+                # al clic lo colapsaria a una sola etapa, perdiendo el sentido.
+                render_grafico_pipeline(registros_filtrados)
+                st.divider()
+
+                estado_filtro = st.session_state.get("filtro_estado_click")
+                registros_finales = registros_filtrados
+                if estado_filtro:
+                    clave_estado_filtro = _normalizar_texto_provincia(estado_filtro)
+                    registros_finales = [
+                        r
+                        for r in registros_filtrados
+                        if _normalizar_texto_provincia(r.get("estado", "")) == clave_estado_filtro
+                    ]
+                    col_chip, _ = st.columns([1, 3])
+                    with col_chip:
+                        if st.button(f"Filtrado por estado: {estado_filtro} ✕", key="limpiar_filtro_estado_click"):
+                            st.session_state.pop("filtro_estado_click", None)
+                            # Tambien se limpia la seleccion propia del grafico (su
+                            # session_state por key): sin esto, el clic anterior
+                            # seguiria "activo" en el widget y este boton no
+                            # tendria efecto -- volveria a filtrar por el mismo
+                            # estado en el siguiente rerun (ver render_grafico_
+                            # estado_clic, que lee su propia seleccion cada vez).
+                            st.session_state.pop("grafico_estado_clic", None)
+                            st.rerun()
+
+                if registros_finales:
+                    render_contadores(registros_finales)
+                    st.divider()
+                    render_metricas_resumen(registros_finales, mostrar_monto_adjudicado=True)
+                    render_tabla_con_color(registros_finales, mostrar_monto_adjudicado=True)
+                    render_actualizar_montos_adjudicados()
+                else:
+                    st.info(f'No se encontraron procesos para el estado "{estado_filtro}".')
+            else:
+                st.info(f"No se encontraron procesos para el año {anio_sel}.")
+        else:
+            st.info(f'No se encontraron procesos para "{ENTIDAD_MUNICIPALIDAD_GUAYAQUIL}".')
+
+    with tab_especificaciones_tecnicas:
+        render_formularios_y_registro()
 
 
 def render_pagina_configuracion() -> None:
@@ -4462,10 +3464,34 @@ def render_pagina_configuracion() -> None:
     render_vaciar_base_datos()
 
 
+def _deshabilitar_traduccion_automatica() -> None:
+    """Evita que Google Translate (activado por el usuario en Chrome)
+    traduzca la pagina: los iconos de Material Symbols son ligaduras de
+    texto (Streamlit renderiza el nombre del icono, ej. "settings", y la
+    fuente lo dibuja como glifo) -- si el navegador los traduce ("ajustes"
+    en vez de "settings"), la fuente no tiene esa ligadura y el icono se ve
+    como texto crudo. El titulo/logo en español tambien queda mal
+    traducido de paso. `<meta name="google" content="notranslate">`
+    conviene ponerlo en <head>, pero Streamlit no lo expone -- se inserta
+    via `components.html` (accede a `window.parent.document`, confirmado
+    en un test aislado -- ver _revelar_sidebar_cuando_cargue_fuente_iconos;
+    un <script> insertado por st.markdown(unsafe_allow_html=True) NO se
+    ejecuta)."""
+    ejecutar_script_invisible(SCRIPT_NO_TRADUCIR)
+
+
 def main():
     st.set_page_config(page_title="SERCOP Analytics", layout="wide")
+    _deshabilitar_traduccion_automatica()
     _inyectar_precarga_fuente_iconos()
     _inyectar_estilos_sidebar()
+    _inyectar_estilos_complementarios()
+    # Ultimo CSS en inyectarse: estilos_sercop.py es la fuente de verdad del
+    # aspecto y debe ganar en la cascada sobre cualquier otro bloque de aca.
+    aplicar_estilos()
+    # Login en TODA la app: sin sesion valida no se renderiza nada mas
+    # (requerir_login hace st.stop()). Ver ui/autenticacion.py.
+    requerir_login()
     _revelar_sidebar_cuando_cargue_fuente_iconos()
 
     if "resultados" not in st.session_state:
@@ -4479,11 +3505,12 @@ def main():
 
     render_navegacion_sidebar()
 
-    # obtener_contrataciones() esta cacheada (ttl=60s), pero igual evitamos
-    # llamarla del todo en paginas que no la necesitan (Reportes solo pega a
-    # /api/generar-reporte, Configuración solo a /api/todos DELETE). El
-    # spinner solo se nota quando hay cache miss (round-trip real a la
-    # API); en cache hit es practicamente instantaneo.
+    # obtener_contrataciones() esta cacheada (ttl=600s), pero igual evitamos
+    # llamarla del todo en paginas que no la necesitan (Reportes vive en su
+    # propia pagina de Streamlit -- pages/Reportes.py -- , nunca pasa por
+    # pagina_activa; Configuración solo pega a /api/todos DELETE). El
+    # spinner solo se nota quando hay cache miss
+    # (round-trip real a la API); en cache hit es practicamente instantaneo.
     pagina = st.session_state.pagina_activa
     if pagina == "Dashboard":
         with st.spinner("Cargando datos del dashboard..."):
@@ -4493,8 +3520,6 @@ def main():
         with st.spinner("Cargando procesos..."):
             registros = obtener_contrataciones()
         render_pagina_procesos(registros)
-    elif pagina == "Reportes":
-        render_pagina_reportes()
     elif pagina == "Municipalidad de Guayaquil":
         with st.spinner("Cargando datos de la Municipalidad de Guayaquil..."):
             registros = obtener_contrataciones()

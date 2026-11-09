@@ -1,5 +1,6 @@
 """Tests del autocompletado de "Descripcion CPC" en la pestana "Items y
-Valores" del Especificaciones Técnicas (app_ui.py): al guardar, si el "Numero CPC" de una
+Valores" del Especificaciones Técnicas (ui/especificaciones_tecnicas.py,
+separado de app_ui.py en P0-1): al guardar, si el "Numero CPC" de una
 fila cambio respecto al guardado anterior y el codigo existe en el
 catalogo oficial (data/cpc_n9.csv, SERCOP), se autocompleta la
 descripcion; si no cambio o el codigo no existe, se respeta lo que el
@@ -14,7 +15,11 @@ comparaba por posicion y por eso sobreescribia mal la descripcion en ese
 escenario (test_borrar_fila_del_medio_no_reescribe_las_que_no_cambiaron)."""
 import pandas as pd
 
-from app_ui import _asignar_fila_ids_especificaciones_tecnicas, _autocompletar_descripcion_cpc, _cargar_catalogo_cpc
+from ui.especificaciones_tecnicas import (
+    _asignar_fila_ids_especificaciones_tecnicas,
+    _autocompletar_descripcion_cpc,
+    _cargar_catalogo_cpc,
+)
 
 
 def _df_items(filas: list[dict]) -> pd.DataFrame:

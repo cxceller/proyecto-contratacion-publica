@@ -9,10 +9,29 @@ locales POSIX), y en Linux/macOS depende de que el paquete de locales del
 SO este generado, lo que la app no puede garantizar en cualquier entorno
 donde corra. Una funcion propia es portable sin depender del SO.
 
-Punto de uso compartido entre el backend (scripts/report_generator.py,
-via src/api_reportes.py) y el frontend (app_ui.py), para que el
-panel de control, los formularios y los documentos Word generados
-siempre muestren los numeros con la misma convencion."""
+Punto de uso: el panel de control y los formularios de app_ui.py, y
+scripts/reportes_generator.py (columna "Presupuesto Referencial" del
+informe .docx de Reportes) -- todos comparten esta misma funcion, para
+que siempre muestren los numeros con la misma convencion."""
+import re
+import unicodedata
+
+_CARACTERES_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f​-‏ -‮⁠-⁤﻿]")
+_ESPACIOS_MULTIPLES = re.compile(r"\s+")
+
+
+def limpiar_texto_libre(texto, max_len: int = 200) -> str:
+    """Sanea un texto libre escrito por el usuario (filtros, palabra clave):
+    normaliza Unicode a NFC (conserva ñ y tildes -- no filtra por ASCII),
+    elimina caracteres de control y de ancho cero/direccionales (los pega el
+    portal o Excel al copiar), colapsa espacios/saltos de linea repetidos,
+    recorta bordes y limita la longitud. Devuelve "" si `texto` es None."""
+    if texto is None:
+        return ""
+    limpio = unicodedata.normalize("NFC", str(texto))
+    limpio = _CARACTERES_CONTROL.sub("", limpio)
+    limpio = _ESPACIOS_MULTIPLES.sub(" ", limpio).strip()
+    return limpio[:max_len].rstrip()
 
 
 def formatear_numero_ec(valor, decimales: int | None = None) -> str:
@@ -28,6 +47,10 @@ def formatear_numero_ec(valor, decimales: int | None = None) -> str:
     except (TypeError, ValueError):
         return str(valor)
     if numero != numero:  # NaN (funciona para float("nan") y np.nan)
+        return ""
+    if numero in (float("inf"), float("-inf")):
+        # int(inf) lanzaria OverflowError mas abajo: un valor infinito no es
+        # un monto/cantidad valido, se muestra vacio igual que NaN.
         return ""
 
     if decimales is None:
@@ -48,3 +71,37 @@ def formatear_moneda_ec(valor, decimales: int = 2, simbolo: str = "$") -> str:
     if not numero_formateado:
         return ""
     return f"{simbolo} {numero_formateado}"
+
+
+def formatear_porcentaje_ec(valor, decimales: int = 1) -> str:
+    """12.345 -> "12,3%" (valor ya en escala 0-100, coma decimal). Cadena
+    vacia si `valor` es None/""/NaN/infinito, igual que formatear_numero_ec."""
+    numero_formateado = formatear_numero_ec(valor, decimales)
+    if not numero_formateado:
+        return ""
+    return f"{numero_formateado}%"
+
+
+def formatear_moneda_compacta_ec(valor, simbolo: str = "$", decimales: int = 2) -> str:
+    """Monto corto para espacios angostos (badges): 12345678.9 -> "$ 12,35 M" (millones),
+    1234567890 -> "$ 1,23 mil M" (miles de millones), 45678 -> "$ 45,68 mil" (`decimales`=2 por
+    defecto; 242532054 con decimales=1 -> "$ 242,5 M"); por debajo de 1.000 el
+    monto completo. Cadena vacia si `valor` es None/""/NaN/infinito. El valor completo debe mostrarse
+    aparte (tooltip, cifra principal): esta forma redondea."""
+    if valor is None or valor == "":
+        return ""
+    try:
+        numero = float(valor)
+    except (TypeError, ValueError):
+        return str(valor)
+    if numero != numero or numero in (float("inf"), float("-inf")):
+        return ""
+    signo, absoluto = ("-" if numero < 0 else ""), abs(numero)
+    if absoluto >= 1e9:
+        return f"{signo}{simbolo} {formatear_numero_ec(absoluto / 1e9, decimales)} mil M"
+    if absoluto >= 1e6:
+        return f"{signo}{simbolo} {formatear_numero_ec(absoluto / 1e6, decimales)} M"
+    if absoluto >= 1e3:
+        return f"{signo}{simbolo} {formatear_numero_ec(absoluto / 1e3, decimales)} mil"
+    return f"{signo}{formatear_moneda_ec(absoluto)}"
+

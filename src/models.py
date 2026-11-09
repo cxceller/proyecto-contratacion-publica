@@ -123,3 +123,23 @@ class BorradorContratacionResumen(BaseModel):
 
 class BorradorContratacionOut(BorradorContratacionResumen):
     datos_json: str
+
+
+class ResetCompletoRequest(BaseModel):
+    borrar_capturas: bool = Field(
+        False,
+        description=(
+            "Si es True, tambien borra capturas/*.png (las capturas crudas del "
+            "scraping) ademas de contrataciones y los .docx generados en "
+            "salidas/reportes/. Por defecto False -- las capturas son costosas "
+            "de regenerar (requieren resolver el CAPTCHA de nuevo)."
+        ),
+    )
+
+
+class ResetCompletoResponse(BaseModel):
+    procesos_eliminados: int
+    reportes_eliminados: int
+    capturas_eliminadas: int
+    respaldo_dir: str
+    respaldo_remoto: str | None = None

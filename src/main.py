@@ -1,13 +1,14 @@
 """API REST de procesos de contratacion publica (FastAPI + SQLite)."""
+import os
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import date
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 
-from src import database
-from src.api_reportes import router as reportes_router
+from src import database, reset
 from src.auth import verificar_api_key
+from src.logging_config import configurar_logging
 from src.models import (
     BorradorContratacionOut,
     BorradorContratacionResumen,
@@ -15,6 +16,8 @@ from src.models import (
     ContratacionCreate,
     ContratacionOut,
     ContratacionUpdate,
+    ResetCompletoRequest,
+    ResetCompletoResponse,
 )
 
 
@@ -24,16 +27,30 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="API de Contratacion Publica", lifespan=lifespan)
-app.include_router(reportes_router)
+configurar_logging()
+
+def _es_produccion() -> bool:
+    """Cloud Run (K_SERVICE) o APP_ENV=production."""
+    return bool(os.environ.get("K_SERVICE")) or os.environ.get("APP_ENV", "").lower() == "production"
 
 
-@app.get("/api/todos", response_model=list[ContratacionOut])
+def _opciones_documentacion() -> dict:
+    """En produccion no se publica la documentacion interactiva ni el esquema
+    OpenAPI (/docs, /redoc, /openapi.json): no regalan el mapa de la API."""
+    if _es_produccion():
+        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    return {}
+
+
+app = FastAPI(title="API de Contratacion Publica", lifespan=lifespan, **_opciones_documentacion())
+
+
+@app.get("/api/todos", response_model=list[ContratacionOut], dependencies=[Depends(verificar_api_key)])
 def listar_contrataciones(
-    estado: str | None = None,
+    estado: str | None = Query(None, max_length=100),
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
-    palabra_clave: str | None = None,
+    palabra_clave: str | None = Query(None, max_length=200),
 ):
     rows = database.get_all_contrataciones(
         status=estado,
@@ -44,7 +61,9 @@ def listar_contrataciones(
     return [ContratacionOut(**row) for row in rows]
 
 
-@app.get("/api/todos/{contratacion_id}", response_model=ContratacionOut)
+@app.get(
+    "/api/todos/{contratacion_id}", response_model=ContratacionOut, dependencies=[Depends(verificar_api_key)]
+)
 def obtener_contratacion(contratacion_id: int):
     row = database.get_contratacion_by_id(contratacion_id)
     if row is None:
@@ -138,13 +157,43 @@ def eliminar_todas_las_contrataciones():
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@app.get("/api/borradores", response_model=list[BorradorContratacionResumen])
+_RESET_COMPLETO_POR_DEFECTO = ResetCompletoRequest()
+
+
+@app.post(
+    "/api/reset-completo",
+    response_model=ResetCompletoResponse,
+    dependencies=[Depends(verificar_api_key)],
+)
+def reset_completo(payload: ResetCompletoRequest = _RESET_COMPLETO_POR_DEFECTO):
+    """Zona de peligro > "Borrar todos los procesos importados"
+    (app_ui.py::render_vaciar_base_datos): a diferencia de DELETE /api/todos
+    (que solo vacia `contrataciones`), esto ademas respalda y borra los
+    .docx generados por Reportes (salidas/reportes/) y, si se pide,
+    capturas/. Ver src/reset.py para el orden exacto de operaciones."""
+    try:
+        return reset.ejecutar_reset_completo(borrar_capturas=payload.borrar_capturas)
+    except reset.ArchivoBloqueadoError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
+    except reset.RespaldoRemotoError as exc:
+        # Cloud Run: no se pudo subir el respaldo -> no se borro NADA.
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo guardar el respaldo en Cloud Storage; no se borró nada. Inténtalo de nuevo.",
+        ) from exc
+
+
+@app.get(
+    "/api/borradores", response_model=list[BorradorContratacionResumen], dependencies=[Depends(verificar_api_key)]
+)
 def listar_borradores():
     rows = database.get_all_borradores()
     return [BorradorContratacionResumen(**row) for row in rows]
 
 
-@app.get("/api/borradores/{borrador_id}", response_model=BorradorContratacionOut)
+@app.get(
+    "/api/borradores/{borrador_id}", response_model=BorradorContratacionOut, dependencies=[Depends(verificar_api_key)]
+)
 def obtener_borrador(borrador_id: int):
     row = database.get_borrador_by_id(borrador_id)
     if row is None:

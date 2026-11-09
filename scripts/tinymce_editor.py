@@ -1,13 +1,13 @@
 """Componente Streamlit propio (assets/tinymce_editor/index.html) que
-envuelve TinyMCE real (Community, LGPL-2.0, cargado desde cdnjs sin API
-key) como editor de texto enriquecido -- "streamlit-tinymce" no existe
+envuelve TinyMCE real (Community, LGPL-2.0, vendorizado en
+assets/tinymce_editor/vendor/ -- sin CDN ni API key) como editor de texto enriquecido -- "streamlit-tinymce" no existe
 como paquete de PyPI, asi que en vez de un pip install se construyo un
 componente estatico (protocolo crudo de Streamlit Components, sin
 build de Node) que carga TinyMCE con los plugins paste/table/image y
 paste_data_images=True, para poder pegar tablas e imagenes copiadas
 desde Excel/Word manteniendo su estructura.
 
-Requiere conexion a internet (el editor se carga desde cdnjs.com)."""
+No requiere internet: los archivos de TinyMCE 6.8.3 son locales (ver assets/tinymce_editor/vendor/README.md)."""
 from pathlib import Path
 
 import streamlit.components.v1 as components

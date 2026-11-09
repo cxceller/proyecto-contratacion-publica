@@ -1,10 +1,25 @@
 """Conexion a SQLite (sqlite3 estandar) e inicializacion de esquema."""
+import logging
+import os
 import sqlite3
 import unicodedata
 from pathlib import Path
 from typing import Any
 
-DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / "contrataciones.db")
+logger = logging.getLogger(__name__)
+
+# En Cloud Run (K_SERVICE lo setea la plataforma) /app queda de root -- COPY . .
+# corre antes de USER appuser en el Dockerfile -- y el proceso corre como
+# appuser sin permiso de escritura ahi, asi que el default pasa a /tmp (el
+# unico directorio garantizado escribible, pero efimero: se borra en cada
+# reinicio/redeploy del contenedor -- ver start.sh/scripts/descargar_snapshot_db.py
+# y la seccion Deployment de CLAUDE.md).
+_DEFAULT_DB_PATH = (
+    "/tmp/sercop.db"
+    if os.environ.get("K_SERVICE")
+    else str(Path(__file__).resolve().parent.parent / "data" / "contrataciones.db")
+)
+DB_PATH = os.environ.get("DB_PATH", _DEFAULT_DB_PATH)
 
 
 def _normalizar_para_busqueda(texto: str | None) -> str:
@@ -23,6 +38,9 @@ def _normalizar_para_busqueda(texto: str | None) -> str:
 
 
 def get_connection() -> sqlite3.Connection:
+    dirname = os.path.dirname(DB_PATH)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
     # timeout=10: si otra conexion (API, Streamlit, scripts de scraping/
     # importacion) tiene una escritura en curso, espera hasta 10s por el
     # lock en vez de fallar de inmediato con "database is locked".
@@ -42,7 +60,6 @@ def _columnas_existentes(conn: sqlite3.Connection) -> set[str]:
 
 
 def init_db() -> None:
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = get_connection()
     try:
         conn.execute(
@@ -76,8 +93,9 @@ def init_db() -> None:
             # Identifica todas las filas insertadas durante una misma
             # ejecucion de scrape_portal.py/import_csv.py (un "lote" o
             # busqueda), para poder reconstruir bloques de busqueda de forma
-            # confiable (ver scripts/report_generator.py) en vez de adivinar
-            # por saltos en el id.
+            # confiable (ver modulos/capturas.py en el proyecto "Estudio de
+            # Mercado SERCOP", tema_5/Estudio de mercado SERCOP) en vez de
+            # adivinar por saltos en el id.
             conn.execute("ALTER TABLE contrataciones ADD COLUMN lote_id TEXT")
         if "monto_adjudicado" not in columnas:
             # "Monto de Adjudicación ($)" real, leido de la seccion
@@ -106,6 +124,22 @@ def init_db() -> None:
             # pasar, pero NULL es la señal correcta de pendiente en
             # cualquier caso).
             conn.execute("ALTER TABLE contrataciones ADD COLUMN explicacion_estado TEXT")
+        if "monto_origen" not in columnas:
+            # Solo se completa para procesos que scripts/completar_montos_resolucion_pdf.py
+            # tuvo que resolver leyendo el PDF "Resolucion de Adjudicacion"
+            # (procesos "Adjudicada" sin contrato registrado todavia, que
+            # scripts/scrape_portal.py/actualizar_montos_adjudicados.py no
+            # pueden completar por no existir aun la pagina "Resumen de
+            # Contrato") -- NULL para el resto (el camino normal via HTML,
+            # la mayoria de los casos). Sirve de rastro de auditoria: un
+            # monto leido de un PDF paso por parseo de texto/regex, mas
+            # propenso a error que una tabla HTML estructurada.
+            conn.execute("ALTER TABLE contrataciones ADD COLUMN monto_origen TEXT")
+        if "monto_pdf_url" not in columnas:
+            # URL del PDF de donde se leyo monto_adjudicado cuando
+            # monto_origen = "resolucion_pdf" -- para poder verificar el
+            # dato contra la fuente sin tener que volver a buscarlo.
+            conn.execute("ALTER TABLE contrataciones ADD COLUMN monto_pdf_url TEXT")
 
         # Un mismo `codigo` de proceso reaparece en cada busqueda que se
         # solape con una anterior (el portal solo permite buscar 6 meses
@@ -119,7 +153,28 @@ def init_db() -> None:
         # quedan `codigo` duplicados sin limpiar (hay que deduplicar antes
         # de que esto se ejecute; no se hace aca automaticamente para no
         # borrar filas de produccion sin que alguien lo revise primero).
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_contrataciones_codigo_unico ON contrataciones(codigo)")
+        #
+        # Blindado en try/except: si una BD legada TODAVIA tiene `codigo`
+        # duplicados, este CREATE lanza sqlite3.IntegrityError -- sin este
+        # try/except, como init_db corre en el lifespan de FastAPI, eso
+        # tumba el arranque completo de la API con un traceback opaco en
+        # vez de dejar el problema (dedupe manual pendiente) documentado
+        # en el log y seguir sirviendo el resto de la app.
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_contrataciones_codigo_unico ON contrataciones(codigo)"
+            )
+        except sqlite3.IntegrityError:
+            duplicados = conn.execute(
+                "SELECT codigo, COUNT(*) AS cantidad FROM contrataciones GROUP BY codigo HAVING cantidad > 1"
+            ).fetchall()
+            logger.error(
+                "No se pudo crear idx_contrataciones_codigo_unico: hay codigo(s) duplicado(s) "
+                "en la base (%s). Dedupliquelos manualmente; hasta entonces, upsert_contratacion "
+                "(que depende de este indice para su ON CONFLICT) puede insertar filas repetidas "
+                "en vez de actualizar la existente.",
+                [row["codigo"] for row in duplicados],
+            )
 
         # estado, fecha_publicacion y palabra_clave son las columnas que
         # mas se usan para filtrar (dashboard, endpoint de reportes,
@@ -198,7 +253,7 @@ def insert_contratacion(data: dict[str, Any]) -> int:
         conn.close()
 
 
-def upsert_contratacion(data: dict[str, Any]) -> int:
+def upsert_contratacion(data: dict[str, Any], conn: sqlite3.Connection | None = None) -> int:
     """INSERT o, si ya existe una fila con el mismo `codigo`
     (idx_contrataciones_codigo_unico, ver init_db), UPDATE de esa fila en
     vez de insertar una copia nueva. Usado por importar_dataframe (scripts/
@@ -221,8 +276,17 @@ def upsert_contratacion(data: dict[str, Any]) -> int:
     aca a proposito -- no es parte de lo que trae el scraper, la completa
     aparte scripts/explicar_estado_desierta.py via update_contratacion, y
     un re-scrape no deberia borrarla.
+
+    `conn` (opcional): reutiliza una conexion ya abierta en vez de abrir y
+    cerrar una nueva -- pensado para scripts/import_csv.py::importar_dataframe,
+    que en otro caso pagaba una conexion (connect + PRAGMAs + close) POR
+    FILA del lote a importar (cientos por corrida). Sin `conn`, se comporta
+    exactamente igual que antes (abre y cierra su propia conexion), asi que
+    los demas callers (API, tests) no cambian.
     Devuelve el `id` de la fila (nueva o la ya existente que se actualizo)."""
-    conn = get_connection()
+    conn_propia = conn is None
+    if conn is None:
+        conn = get_connection()
     try:
         cursor = conn.execute(
             """
@@ -263,7 +327,34 @@ def upsert_contratacion(data: dict[str, Any]) -> int:
         conn.commit()
         return contratacion_id
     finally:
-        conn.close()
+        if conn_propia:
+            conn.close()
+
+
+def _escapar_like(texto: str) -> str:
+    """Escapa la barra invertida, `%` y `_` para usar `texto` como literal
+    dentro de un patron LIKE (las consultas deben llevar ESCAPE con barra
+    invertida, ver ESCAPE_LIKE). Sin esto, un `%` o `_` escrito por el
+    usuario actua como comodin."""
+    return texto.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+# Clausula SQL para los LIKE sobre texto escapado con _escapar_like.
+ESCAPE_LIKE = " ESCAPE '\\'"
+
+
+# Columnas que update_contratacion puede modificar (lista blanca: los nombres
+# de columna se interpolan en el SET, nunca deben venir de input libre).
+COLUMNAS_ACTUALIZABLES = frozenset(
+    {
+        "codigo", "entidad_contratante", "objeto_proceso", "estado", "provincia_canton",
+        "presupuesto_referencial", "fecha_publicacion", "palabra_clave", "url", "lote_id",
+        "monto_adjudicado", "motivo_estado_raw", "explicacion_estado", "monto_origen", "monto_pdf_url",
+    }
+)
+
+# Tope de palabras clave por reporte (cada una genera un LIKE).
+MAX_PALABRAS_CLAVE_REPORTE = 10
 
 
 def get_all_contrataciones(
@@ -279,8 +370,8 @@ def get_all_contrataciones(
         # Los valores de estado en el portal vienen truncados
         # (p.ej. "Adjudicado -", "Terminado U"), por lo que se
         # filtra por prefijo en lugar de igualdad exacta.
-        query += " AND estado LIKE ?"
-        params.append(f"{status}%")
+        query += " AND estado LIKE ?" + ESCAPE_LIKE
+        params.append(f"{_escapar_like(status)}%")
     if fecha_inicio:
         query += " AND fecha_publicacion >= ?"
         params.append(fecha_inicio)
@@ -291,8 +382,8 @@ def get_all_contrataciones(
         # normalizar(): insensible a mayusculas/minusculas Y a tildes (ver
         # `_normalizar_para_busqueda`), no solo al rango ASCII que cubre el
         # LIKE nativo de SQLite.
-        query += " AND normalizar(palabra_clave) LIKE normalizar(?)"
-        params.append(f"%{palabra_clave}%")
+        query += " AND normalizar(palabra_clave) LIKE normalizar(?)" + ESCAPE_LIKE
+        params.append(f"%{_escapar_like(palabra_clave)}%")
 
     query += " ORDER BY id DESC"
 
@@ -311,27 +402,26 @@ def get_contrataciones_para_reporte(
     lote_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Trae los procesos que coinciden con alguna de `palabras_clave`
-    (comparacion por substring, insensible a mayusculas/minusculas Y A
-    TILDES -- ver `_normalizar_para_busqueda` -- para tolerar variaciones
-    del dato crudo del portal) dentro del rango `fecha_inicio`/`fecha_fin`,
-    opcionalmente acotado a un `lote_id` (una ejecucion de scraping/
-    importacion puntual). `fecha_inicio`/`fecha_fin` deben venir en
-    formato ISO `YYYY-MM-DD` (asi los serializa `date.isoformat()` en
-    `src/api_reportes.py`, y asi se guarda `fecha_publicacion` en la
-    tabla -- ver `scripts/import_csv.py::parsear_fecha`); se envuelven
-    igual en `date(...)` de SQLite para que la comparacion `BETWEEN` no
-    dependa de que ambos lados traigan exactamente el mismo formato de
-    texto (p.ej. si algun valor trajera una hora pegada).
-    Pensada para alimentar `scripts/report_generator.py::generar_reporte`."""
+    (substring, insensible a mayusculas/minusculas y tildes via
+    `normalizar()`, igual que `get_all_contrataciones`) dentro de
+    [`fecha_inicio`, `fecha_fin`] (ISO YYYY-MM-DD), opcionalmente acotado a
+    un `lote_id`. Alimenta scripts/reportes_generator.py::generar_reporte
+    (disparado desde ui/reportes.py)."""
     if not palabras_clave:
         return []
 
-    condiciones_palabra = " OR ".join("normalizar(palabra_clave) LIKE normalizar(?)" for _ in palabras_clave)
+    if len(palabras_clave) > MAX_PALABRAS_CLAVE_REPORTE:
+        raise ValueError(f"Maximo {MAX_PALABRAS_CLAVE_REPORTE} palabras clave por reporte")
+
+    # Solo se interpolan los marcadores `?`/ESCAPE; los valores van parametrizados.
+    condiciones_palabra = " OR ".join(
+        "normalizar(palabra_clave) LIKE normalizar(?)" + ESCAPE_LIKE for _ in palabras_clave
+    )
     query = (
         f"SELECT * FROM contrataciones WHERE ({condiciones_palabra}) "
         "AND date(fecha_publicacion) BETWEEN date(?) AND date(?)"
     )
-    params: list[Any] = [f"%{p}%" for p in palabras_clave]
+    params: list[Any] = [f"%{_escapar_like(p)}%" for p in palabras_clave]
     params.extend([fecha_inicio, fecha_fin])
 
     if lote_id:
@@ -362,6 +452,10 @@ def get_contratacion_by_id(contratacion_id: int) -> dict[str, Any] | None:
 def update_contratacion(contratacion_id: int, fields: dict[str, Any]) -> bool:
     if not fields:
         return get_contratacion_by_id(contratacion_id) is not None
+
+    columnas_invalidas = set(fields) - COLUMNAS_ACTUALIZABLES
+    if columnas_invalidas:
+        raise ValueError(f"Columnas no actualizables: {sorted(columnas_invalidas)}")
 
     columns = ", ".join(f"{key} = ?" for key in fields)
     values = list(fields.values()) + [contratacion_id]

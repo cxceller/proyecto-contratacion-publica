@@ -1,6 +1,7 @@
-"""Autenticacion simple por API key para los endpoints que modifican datos
-(POST/PATCH/DELETE). Los GET quedan abiertos: el uso es de lectura interna
-(dashboard/reportes) y no exponen ninguna operacion destructiva.
+"""Autenticacion simple por API key para TODOS los endpoints de datos (lectura y
+escritura): los GET de /api/todos* y /api/borradores* tambien la exigen, porque los
+borradores contienen datos personales (nombres, cedulas). Solo /health-like rutas de
+documentacion (desactivadas en produccion) quedan fuera.
 
 Fail-closed: si la variable de entorno API_KEY no esta configurada, TODAS
 las solicitudes a los endpoints protegidos se rechazan (401) en vez de

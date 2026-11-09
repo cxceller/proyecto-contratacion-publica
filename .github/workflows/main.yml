@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
   test:
@@ -16,10 +18,18 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Run tests
         run: pytest -q
+
+      # Falla el build si una dependencia de EJECUCION (requirements.txt) tiene vulnerabilidades conocidas.
+      # Se instala aparte, en un venv con pip al dia, para no auditar las herramientas de desarrollo (pytest, ruff...).
+      - name: Audit runtime dependencies (pip-audit)
+        run: |
+          python -m venv --upgrade-deps "$RUNNER_TEMP/runtime"
+          "$RUNNER_TEMP/runtime/bin/pip" install --no-cache-dir -r requirements.txt
+          pip-audit --path "$RUNNER_TEMP"/runtime/lib/python3.11/site-packages --progress-spinner off
 
       - name: Lint (ruff)
         run: ruff check .

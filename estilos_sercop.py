@@ -1,0 +1,262 @@
+"""
+estilos_sercop.py — Capa visual premium para SERCOP Analytics (Streamlit)
+
+Uso (al inicio de app.py, después de st.set_page_config):
+
+    from estilos_sercop import aplicar_estilos
+    aplicar_estilos()
+
+Opcional — color semántico en las tarjetas KPI: añade una clase modificadora
+al generar cada tarjeta, por ejemplo:
+
+    <div class="sercop-kpi-card kpi--ok">       → Adjudicada / Finalizada
+    <div class="sercop-kpi-card kpi--info">     → Ejecución de Contrato
+    <div class="sercop-kpi-card kpi--danger">   → Desierta / Cancelado
+    <div class="sercop-kpi-card kpi--warn">     → Suspendido
+    <div class="sercop-kpi-card kpi--total">    → Total
+"""
+
+import streamlit as st
+
+CSS = r"""
+<style>
+/* IBM Plex Sans VENDORIZADA (static/fonts/, servida por Streamlit con server.enableStaticServing): sin peticiones a Google Fonts. */
+@font-face{ font-family:'IBM Plex Sans'; font-style:normal; font-weight:400; font-display:swap;
+  src:url('/app/static/fonts/ibm-plex-sans/ibm-plex-sans-latin-400-normal.woff2') format('woff2'); }
+@font-face{ font-family:'IBM Plex Sans'; font-style:normal; font-weight:500; font-display:swap;
+  src:url('/app/static/fonts/ibm-plex-sans/ibm-plex-sans-latin-500-normal.woff2') format('woff2'); }
+@font-face{ font-family:'IBM Plex Sans'; font-style:normal; font-weight:600; font-display:swap;
+  src:url('/app/static/fonts/ibm-plex-sans/ibm-plex-sans-latin-600-normal.woff2') format('woff2'); }
+@font-face{ font-family:'IBM Plex Sans'; font-style:normal; font-weight:700; font-display:swap;
+  src:url('/app/static/fonts/ibm-plex-sans/ibm-plex-sans-latin-700-normal.woff2') format('woff2'); }
+
+:root{
+  --ink-950:#0b1220; --ink-900:#111827; --ink-700:#334155; --ink-500:#64748b; --ink-400:#94a3b8;
+  --paper:#f6f7f9; --card:#ffffff; --line:rgba(15,23,42,.07); --line-strong:rgba(15,23,42,.12);
+  --accent:#1d4ed8; --accent-soft:rgba(29,78,216,.08);
+  --ok:#047857; --ok-soft:#ecfdf5; --info:#1d4ed8; --info-soft:#eff6ff;
+  --warn:#b45309; --warn-soft:#fffbeb; --danger:#be123c; --danger-soft:#fff1f2;
+  --r-lg:18px; --r-md:12px;
+  --shadow: 0 1px 2px rgba(15,23,42,.04), 0 8px 24px -12px rgba(15,23,42,.10);
+  --shadow-hover: 0 2px 4px rgba(15,23,42,.05), 0 18px 40px -16px rgba(15,23,42,.18);
+  --ease: cubic-bezier(.2,.7,.2,1);
+}
+
+/* ───────── Base ───────── */
+html, body, [data-testid="stApp"], [data-testid="stApp"] *:not(.material-icons):not([translate="no"]):not(.notranslate){
+  font-family:'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+[data-testid="stApp"]{ background:var(--paper); }
+[data-testid="stHeader"]{ background:transparent; }
+[data-testid="stDecoration"]{ display:none; }
+[data-testid="stMainBlockContainer"]{ padding-top:2.25rem !important; padding-bottom:4rem; max-width:1320px; }
+
+/* Jerarquía tipográfica */
+/* st.title / st.header → título de página; st.subheader → título de sección */
+[data-testid="stMain"] h1, [data-testid="stMain"] h2{ font-weight:700 !important; letter-spacing:-.035em; color:var(--ink-950); font-size:2.25rem !important; line-height:1.15 !important; }
+[data-testid="stMain"] h3{ font-weight:700 !important; letter-spacing:-.02em; color:var(--ink-900); font-size:1.15rem !important; margin-top:.5rem; }
+[data-testid="stMain"] h4{ font-weight:600 !important; color:var(--ink-700); font-size:.95rem !important; }
+[data-testid="stCaptionContainer"]{ color:var(--ink-500); }
+[data-testid="stMain"] hr{ border-color:var(--line) !important; margin:1.75rem 0 !important; }
+
+/* ───────── Sidebar ───────── */
+[data-testid="stSidebar"]{ background:linear-gradient(180deg,#0f172a 0%,#111a2e 100%); border-right:1px solid rgba(255,255,255,.04); }
+[data-testid="stSidebar"] .sercop-nav-label{ letter-spacing:.14em; font-size:.68rem !important; color:var(--ink-400) !important; }
+[data-testid="stSidebar"] [data-testid="stButton"] button,
+[data-testid="stSidebar"] [data-testid="stLinkButton"] a{
+  border-radius:var(--r-md) !important; border:1px solid transparent !important;
+  font-weight:500 !important; font-size:.86rem !important; letter-spacing:.03em; justify-content:flex-start !important;
+  transition:background .25s var(--ease), border-color .25s var(--ease), transform .25s var(--ease);
+}
+[data-testid="stSidebar"] [data-testid="stButton"] button > div,
+[data-testid="stSidebar"] [data-testid="stLinkButton"] a > div{ justify-content:flex-start !important; text-align:left !important; width:100%; }
+[data-testid="stSidebar"] [data-testid="stButton"] button p,
+[data-testid="stSidebar"] [data-testid="stLinkButton"] a p{ white-space:normal !important; text-overflow:clip !important; overflow:visible !important; text-align:left; }
+[data-testid="stSidebar"] [data-testid="stButton"] button:hover,
+[data-testid="stSidebar"] [data-testid="stLinkButton"] a:hover{
+  background:rgba(255,255,255,.06) !important; border-color:rgba(255,255,255,.06) !important; transform:translateX(2px);
+}
+/* Item activo del menú: fondo, barra de acento y texto blanco en negrita -- !important para que gane sobre
+   los estilos de hover/foco de Streamlit y se vea igual en TODAS las páginas (antes Dashboard parecía inactivo). */
+[data-testid="stSidebar"] [data-testid="stBaseButton-primary"]{
+  background:rgba(96,165,250,.22) !important; box-shadow:inset 3px 0 0 #60a5fa !important; color:#fff !important;
+  font-weight:700 !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] details{
+  border-radius:var(--r-md) !important; border-color:rgba(255,255,255,.08) !important; background:rgba(255,255,255,.02);
+}
+
+/* ───────── Tarjetas KPI (contador) ───────── */
+.sercop-kpi-card{
+  container-type:inline-size; /* la etiqueta solo se reduce cuando la tarjeta es realmente angosta (cqw) */
+  background:var(--card) !important; border:1px solid var(--line) !important; border-radius:var(--r-lg) !important;
+  box-shadow:var(--shadow) !important; padding:1.25rem 1.35rem !important; position:relative; overflow:hidden;
+  transition:transform .3s var(--ease), box-shadow .3s var(--ease), border-color .3s var(--ease);
+}
+.sercop-kpi-card:hover{ transform:translateY(-2px) scale(1.01); box-shadow:var(--shadow-hover) !important; border-color:var(--line-strong) !important; }
+.sercop-kpi-card > div:nth-child(1){
+  font-size:clamp(.75rem, 13cqw, .85rem) !important; font-weight:600 !important; color:var(--ink-500) !important; letter-spacing:.01em;
+  white-space:normal; overflow-wrap:anywhere; line-height:1.3; min-height:2.6em; display:flex; align-items:flex-start; gap:.35rem;
+}
+.sercop-kpi-card > div:nth-child(1) .notranslate{ color:var(--kpi-c, var(--ink-400)); font-size:1rem !important; }
+.sercop-kpi-card > div:nth-child(2){
+  font-size:2.35rem !important; font-weight:700 !important; letter-spacing:-.04em; color:var(--ink-950) !important;
+  font-variant-numeric:tabular-nums; line-height:1.1 !important; margin:.6rem 0 .35rem !important;
+}
+.sercop-kpi-card > div:nth-child(3) span{
+  display:inline-flex; align-items:center; padding:.2rem .55rem !important; border-radius:999px !important;
+  font-size:.72rem !important; font-weight:700 !important; font-variant-numeric:tabular-nums;
+  background:var(--kpi-soft, #f1f5f9) !important; color:var(--kpi-c, var(--ink-700)) !important;
+}
+.kpi--total { --kpi-c:var(--ink-900); --kpi-soft:#f1f5f9; }
+.kpi--ok    { --kpi-c:var(--ok);     --kpi-soft:var(--ok-soft); }
+.kpi--info  { --kpi-c:var(--info);   --kpi-soft:var(--info-soft); }
+.kpi--warn  { --kpi-c:var(--warn);   --kpi-soft:var(--warn-soft); }
+.kpi--danger{ --kpi-c:var(--danger); --kpi-soft:var(--danger-soft); }
+
+/* ───────── Contenedores con borde (tarjetas de presupuesto, etc.) ───────── */
+[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlockBorderWrapper"]{
+  border-radius:var(--r-lg) !important;
+}
+[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] [data-testid="stPlotlyChart"]):has(> [data-testid="stElementContainer"] [data-testid="stMarkdown"]),
+[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"][class*="st-key-kpi_tendencia_"]{
+  background:var(--card) !important; border:1px solid var(--line); border-radius:var(--r-lg); box-shadow:var(--shadow);
+  transition:transform .3s var(--ease), box-shadow .3s var(--ease);
+}
+[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] [data-testid="stPlotlyChart"]):has(> [data-testid="stElementContainer"] [data-testid="stMarkdown"]):hover,
+[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stVerticalBlock"][class*="st-key-kpi_tendencia_"]:hover{
+  transform:translateY(-2px); box-shadow:var(--shadow-hover);
+}
+/* Cifra principal de las tarjetas con tendencia: formato corto y GRANDE (hasta 2,35rem = el del contador).
+   Montos: NUNCA se truncan. El tamano sigue el ANCHO DE LA TARJETA (container query: la tarjeta de tendencia declara
+   `container-type:inline-size` en app_ui.py), no el de la ventana; el primer clamp es el respaldo sin cqw. */
+[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stMarkdownContainer"] > div:not(.sercop-kpi-card) > div:first-child + div{
+  font-variant-numeric:tabular-nums; letter-spacing:-.03em; font-weight:700 !important;
+  font-size:clamp(1.4rem, 2.6vw, 2.2rem) !important; font-size:clamp(1.5rem, 18cqw, 2.35rem) !important;
+  line-height:1.2 !important; white-space:nowrap; overflow:visible; text-overflow:clip;
+}
+/* Titulo de la tarjeta: hasta 2 lineas con altura fija (las tarjetas de una fila quedan alineadas), sin puntos suspensivos. */
+[data-testid="stMain"] [data-testid="stColumn"] [data-testid="stMarkdownContainer"] > div:not(.sercop-kpi-card) > div:first-child{
+  white-space:normal; overflow:visible; text-overflow:clip; line-height:1.3; min-height:2.6em;
+}
+
+/* ───────── Filtros ───────── */
+[data-testid="stWidgetLabel"] p{ font-size:.74rem !important; font-weight:600 !important; color:var(--ink-500) !important; text-transform:uppercase; letter-spacing:.06em; }
+/* Streamlit 1.67 dejo BaseWeb (data-baseweb) por React Aria: el contenedor visible del select es
+   `.react-aria-ComboBox > [role="group"]` y el del date_input `[data-testid="stDateInputField"]`.
+   Se mantienen los selectores BaseWeb para versiones anteriores. */
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+[data-testid="stMultiSelect"] div[data-baseweb="select"] > div,
+[data-testid="stSelectbox"] .react-aria-ComboBox > [role="group"],
+[data-testid="stMultiSelect"] .react-aria-ComboBox > [role="group"],
+[data-testid="stMain"] [data-testid="stDateInput"] [data-testid="stDateInputField"]{
+  background:var(--card) !important; border:1px solid var(--line-strong) !important; border-radius:var(--r-md) !important;
+  box-shadow:0 1px 2px rgba(15,23,42,.03);
+  transition:border-color .25s var(--ease), box-shadow .25s var(--ease);
+}
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div:hover,
+[data-testid="stMultiSelect"] div[data-baseweb="select"] > div:hover,
+[data-testid="stSelectbox"] .react-aria-ComboBox > [role="group"]:hover,
+[data-testid="stMultiSelect"] .react-aria-ComboBox > [role="group"]:hover,
+[data-testid="stMain"] [data-testid="stDateInput"] [data-testid="stDateInputField"]:hover{ border-color:rgba(15,23,42,.22) !important; }
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div:focus-within,
+[data-testid="stMultiSelect"] div[data-baseweb="select"] > div:focus-within,
+[data-testid="stSelectbox"] .react-aria-ComboBox > [role="group"]:focus-within,
+[data-testid="stMultiSelect"] .react-aria-ComboBox > [role="group"]:focus-within,
+[data-testid="stMain"] [data-testid="stDateInput"] [data-testid="stDateInputField"]:focus-within{
+  border-color:var(--accent) !important; box-shadow:0 0 0 4px var(--accent-soft) !important;
+}
+[data-testid="stMultiSelect"] [data-baseweb="tag"],
+[data-testid="stMultiSelect"] [data-tag]{ background:var(--accent-soft) !important; color:var(--accent) !important; border-radius:8px !important; }
+
+/* ───────── Campos de texto (text_input, también type="password") ─────────
+   Streamlit 1.67: el borde vive en [data-testid="stTextInputRootElement"] (contiene el <input> y, en
+   contraseñas, el botón del "ojito"). Un solo borde; el foco solo lo engrosa (sin halo de 4px, que se leía
+   como doble borde). Se mantiene el selector BaseWeb para versiones anteriores. */
+[data-testid="stTextInput"] [data-testid="stTextInputRootElement"],
+[data-testid="stTextInput"] div[data-baseweb="input"]{
+  background:var(--card) !important; border:1px solid var(--line-strong) !important; border-radius:var(--r-md) !important;
+  box-shadow:none !important; align-items:center;
+  transition:border-color .25s var(--ease), box-shadow .25s var(--ease);
+}
+[data-testid="stTextInput"] [data-testid="stTextInputRootElement"]:hover,
+[data-testid="stTextInput"] div[data-baseweb="input"]:hover{ border-color:rgba(15,23,42,.22) !important; }
+[data-testid="stTextInput"] [data-testid="stTextInputRootElement"]:focus-within,
+[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within{
+  border-color:var(--accent) !important; box-shadow:0 0 0 1px var(--accent) !important;
+}
+/* el input y el ojito no repiten borde ni fondo */
+[data-testid="stTextInput"] input{ border:none !important; box-shadow:none !important; background:transparent !important; }
+/* "Press Enter to submit form" flota sobre el campo (y sobre el ojito): los formularios ya tienen botón de envío */
+[data-testid="stForm"] [data-testid="InputInstructions"]{ display:none !important; }
+
+/* ───────── Botones del área principal ───────── */
+[data-testid="stMain"] [data-testid="stBaseButton-secondary"]{
+  background:var(--card) !important; border:1px solid var(--line-strong) !important; border-radius:var(--r-md) !important;
+  color:var(--ink-700) !important; font-weight:600 !important; font-size:.85rem !important;
+  box-shadow:0 1px 2px rgba(15,23,42,.04); transition:all .25s var(--ease);
+}
+[data-testid="stMain"] [data-testid="stBaseButton-secondary"]:hover{ border-color:var(--ink-400) !important; color:var(--ink-950) !important; transform:translateY(-1px); box-shadow:var(--shadow); }
+[data-testid="stMain"] [data-testid="stBaseButton-secondary"]:active{ transform:translateY(0) scale(.98); }
+[data-testid="stMain"] [data-testid="stBaseButton-secondary"]:focus-visible{ box-shadow:0 0 0 4px var(--accent-soft) !important; border-color:var(--accent) !important; }
+
+/* ───────── Expander ───────── */
+[data-testid="stMain"] [data-testid="stExpander"] details{
+  background:var(--card); border:1px solid var(--line) !important; border-radius:var(--r-md) !important; box-shadow:var(--shadow);
+}
+[data-testid="stMain"] [data-testid="stExpander"] summary{ font-weight:600; color:var(--ink-700); transition:color .2s; }
+[data-testid="stMain"] [data-testid="stExpander"] summary:hover{ color:var(--accent); }
+
+/* ───────── Pestañas (segmented control) ───────── */
+[data-testid="stTabs"] [role="tablist"]{
+  gap:.25rem; background:#eef0f3; padding:.3rem; border-radius:14px; width:fit-content; max-width:100%; overflow-x:auto;
+  border:none !important;
+}
+[data-testid="stTabs"] [role="tablist"] > div[data-baseweb="tab-highlight"],
+[data-testid="stTabs"] [role="tablist"] > div[data-baseweb="tab-border"],
+[data-testid="stTabs"] .react-aria-SelectionIndicator{ display:none !important; }
+[data-testid="stTab"]{
+  border-radius:10px !important; padding:.45rem .9rem !important; height:auto !important; color:var(--ink-500) !important;
+  font-weight:600 !important; white-space:nowrap; transition:all .25s var(--ease);
+}
+[data-testid="stTab"]:hover{ color:var(--ink-900) !important; background:rgba(255,255,255,.6); }
+[data-testid="stTab"][aria-selected="true"]{ background:var(--card) !important; color:var(--ink-950) !important; box-shadow:0 1px 3px rgba(15,23,42,.10); }
+[data-testid="stTab"] p{ font-size:.82rem !important; }
+
+/* ───────── Tablas (st.table) ───────── */
+[data-testid="stTable"]{ background:var(--card); border:1px solid var(--line); border-radius:var(--r-lg); box-shadow:var(--shadow); overflow-x:auto; }
+[data-testid="stTable"] table{ border:none !important; width:100%; border-collapse:collapse; }
+[data-testid="stTable"] thead th{
+  background:#f8fafc !important; color:var(--ink-500) !important; font-size:.7rem !important; font-weight:700 !important;
+  text-transform:uppercase; letter-spacing:.05em; border:none !important; border-bottom:1px solid var(--line-strong) !important;
+  padding:.75rem .85rem !important; text-align:right !important; vertical-align:bottom;
+}
+/* columna índice vacía de pandas: oculta (o usa hide_index en el código) */
+[data-testid="stTable"] table:has(tbody th) thead th:first-child, [data-testid="stTable"] tbody th{ display:none; }
+[data-testid="stTable"] table:has(tbody th) thead th:nth-child(2),
+[data-testid="stTable"] table:not(:has(tbody th)) thead th:first-child{ text-align:left !important; }
+[data-testid="stTable"] tbody td{
+  border:none !important; border-bottom:1px solid var(--line) !important; padding:.65rem .85rem !important;
+  font-size:.85rem; color:var(--ink-700);
+}
+[data-testid="stTable"] tbody td:first-of-type{ color:var(--ink-900); font-weight:500; }
+/* Streamlit 1.67 pone `style="text-align:left"` EN LINEA en cada <td>: solo !important lo vence. Numeros a la
+   derecha con cifras tabulares, y NUNCA se parten ("$" / "96.802.791,5..."): el <p> interno tambien va nowrap. */
+[data-testid="stTable"] tbody td:not(:first-of-type){ text-align:right !important; font-variant-numeric:tabular-nums; white-space:nowrap; }
+[data-testid="stTable"] tbody td:not(:first-of-type) p{ text-align:right !important; white-space:nowrap !important; font-variant-numeric:tabular-nums; }
+[data-testid="stTable"] tbody td:last-of-type{ font-weight:600; color:var(--ink-900); }
+[data-testid="stTable"] thead th:not(:nth-child(2)) p{ text-align:right !important; white-space:nowrap; }
+[data-testid="stTable"] tbody tr{ transition:background .2s var(--ease); }
+[data-testid="stTable"] tbody tr:hover{ background:#f8fafc; }
+[data-testid="stTable"] tbody tr:last-child td{ border-bottom:none !important; }
+
+/* ───────── Alertas y gráficos ───────── */
+[data-testid="stAlert"] > div{ border-radius:var(--r-md) !important; border:1px solid var(--line) !important; }
+[data-testid="stPlotlyChart"]{ border-radius:var(--r-md); }
+</style>
+"""
+
+
+def aplicar_estilos() -> None:
+    """Inyecta la hoja de estilos global. Llamar una sola vez por página."""
+    st.markdown(CSS, unsafe_allow_html=True)

@@ -16,9 +16,15 @@ debug_sin_tabla.html
 debug_rutas_red.txt
 page_dump.html
 page_dump.png
+debug_detalle_*.html
 
 # Capturas de pantalla por pagina generadas por scripts/scrape_portal.py
 capturas/
+
+# Texto de oficios SERCOP extraido por scripts/analizar_oficios_desierta.py
+# (opcion B: nunca se guarda el PDF, solo el texto plano -- igual asi, cache
+# local reutilizable, no un artefacto para versionar)
+data/oficios_txt/
 
 # Logs de cada corrida de Importación SERCOP (ver _iniciar_importacion_sercop en app_ui.py)
 logs/
@@ -26,11 +32,29 @@ logs/
 # Documentos Word generados manualmente al probar la app (reportes, Anexo 1)
 /*.docx
 
+# Reportes generados por scripts/completar_montos_resolucion_pdf.py
+/montos_extraidos.csv
+/montos_fallidos.csv
+
 # Configuracion local de Claude Code (permisos especificos de esta maquina)
 .claude/settings.local.json
 
 # Variables de entorno locales (API_KEY, etc.) -- nunca al repo
 .env
+.env.*
+!.env.example
+.streamlit/secrets.toml
 
 # Reglas e instrucciones locales de IA para esta maquina -- no al repo
 CLAUDE.local.md
+
+# Reportes .docx generados y capturas partidas por scripts/reportes_generator.py
+# (ver ui/reportes.py)
+/salidas/
+
+# Respaldos automaticos de la BD/.docx antes de un reset completo (Zona de
+# peligro, ver src/reset.py) -- artefacto local, no versionado
+/respaldos/
+
+# Respaldo manual del codigo antes de separar el modulo de Reportes -- local, no versionado
+/_respaldo_antes_de_separar/

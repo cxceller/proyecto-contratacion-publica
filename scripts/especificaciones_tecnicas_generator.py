@@ -594,7 +594,7 @@ def _configurar_propiedades_tabla_items(tabla) -> None:
 
 
 def _fijar_anchos_fila(celdas, anchos: list[Length]) -> None:
-    for celda, ancho in zip(celdas, anchos):
+    for celda, ancho in zip(celdas, anchos, strict=False):
         celda.width = ancho
         celda.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
 
@@ -623,7 +623,7 @@ def _agregar_caja_titulo(documento: Document, objeto_contratacion: str) -> None:
     tabla._tbl.tblPr.append(tbl_w)
 
     textos_fijos = [TITULO_PROCESO_FIJO, COORDINACION_FIJA]
-    for fila, texto in zip(tabla.rows[:2], textos_fijos):
+    for fila, texto in zip(tabla.rows[:2], textos_fijos, strict=False):
         celda = fila.cells[0]
         celda.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         parrafo = celda.paragraphs[0]
@@ -642,7 +642,7 @@ def _agregar_caja_titulo(documento: Document, objeto_contratacion: str) -> None:
 def _agregar_fila_encabezado_item(tabla, anchos: list[Length]) -> None:
     fila = tabla.add_row()
     _fijar_anchos_fila(fila.cells, anchos)
-    for celda, texto in zip(fila.cells, ENCABEZADOS_COLUMNAS):
+    for celda, texto in zip(fila.cells, ENCABEZADOS_COLUMNAS, strict=False):
         _sombrear_celda(celda, COLOR_FONDO_ENCABEZADO)
         parrafo = celda.paragraphs[0]
         parrafo.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -663,7 +663,7 @@ def _agregar_fila_datos_item(tabla, numero_item: int, item: dict, anchos: list[L
         item.get("descripcion_cpc", ""),
         item.get("numero_cpc", ""),
     ]
-    for celda, valor, alineacion in zip(fila.cells, valores, ALINEACIONES_COLUMNAS):
+    for celda, valor, alineacion in zip(fila.cells, valores, ALINEACIONES_COLUMNAS, strict=False):
         parrafo = celda.paragraphs[0]
         parrafo.alignment = alineacion
         run = parrafo.add_run(str(valor))
@@ -900,7 +900,7 @@ def _agregar_tabla_simple(contenedor, encabezados: list[str], filas: list[list[s
     ambos exponen add_table() con la misma firma."""
     tabla = contenedor.add_table(rows=1, cols=len(encabezados))
     tabla.style = "Table Grid"
-    for celda, texto in zip(tabla.rows[0].cells, encabezados):
+    for celda, texto in zip(tabla.rows[0].cells, encabezados, strict=False):
         celda.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         parrafo = celda.paragraphs[0]
         parrafo.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -908,7 +908,7 @@ def _agregar_tabla_simple(contenedor, encabezados: list[str], filas: list[list[s
         _aplicar_fuente(run, TAMANO_LEGAL_PT)
     for fila_valores in filas:
         fila = tabla.add_row()
-        for celda, valor in zip(fila.cells, fila_valores):
+        for celda, valor in zip(fila.cells, fila_valores, strict=False):
             celda.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
             parrafo = celda.paragraphs[0]
             parrafo.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -923,12 +923,12 @@ def _agregar_tabla_firmas(documento: Document, firmas: dict) -> None:
     for clave, etiqueta in (("elaborado", "Elaborado por:"), ("revisado", "Revisado por:"), ("aprobado", "Aprobado por:")):
         datos_firma = firmas.get(clave, {})
         fila_etiquetas = tabla.add_row()
-        for celda, texto in zip(fila_etiquetas.cells, (etiqueta, "Cargo:", "Firmado por:")):
+        for celda, texto in zip(fila_etiquetas.cells, (etiqueta, "Cargo:", "Firmado por:"), strict=False):
             run = celda.paragraphs[0].add_run(texto)
             _aplicar_fuente(run, TAMANO_LEGAL_PT)
         fila_valores = tabla.add_row()
         valores = [datos_firma.get("nombre", ""), datos_firma.get("cargo", ""), datos_firma.get("firmado_por", "")]
-        for celda, valor in zip(fila_valores.cells, valores):
+        for celda, valor in zip(fila_valores.cells, valores, strict=False):
             run = celda.paragraphs[0].add_run(valor)
             _aplicar_fuente(run, TAMANO_LEGAL_PT, negrita=False)
 
